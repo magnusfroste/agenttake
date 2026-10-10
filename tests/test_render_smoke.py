@@ -264,3 +264,37 @@ def test_the_closing_card_carries_a_qr_code_of_the_link(tmp_path):
         return sum(data) / len(data)
 
     assert corner(with_qr) > corner(plain) + 40  # white quiet zone on a dark card
+
+
+def test_a_time_lapse_ends_when_the_screen_stops_changing():
+    # The director thought for a minute after the answers came in: that
+    # stillness is not part of the action.
+    steps = [(0.0, None, 0.0), (60.0, None, 0.0)]
+    fast, _ = render.plan_segments(steps, 70.0, lead_in=False, speeds=[4, 1], activity=lambda start, end: 6.0)
+    assert fast[0].source_duration == pytest.approx(6.0 + render.LAPSE_TAIL)
+    assert fast[0].output_duration == pytest.approx((6.0 + render.LAPSE_TAIL) / 4)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_active_seconds_finds_where_the_screen_settles(tmp_path):
+    moving = tmp_path / "moving.mp4"
+    _run_ffmpeg("-f", "lavfi", "-i", "testsrc=s=320x176:r=25:d=4", "-pix_fmt", "yuv420p", str(moving))
+    still = _clip(tmp_path / "still.mp4", "black", 10.0)
+    joined = tmp_path / "joined.mp4"
+    _run_ffmpeg("-i", str(moving), "-i", str(still), "-filter_complex", "[0:v][1:v]concat=n=2:v=1[v]",
+                "-map", "[v]", "-pix_fmt", "yuv420p", str(joined))
+    assert render.active_seconds(joined, 0.0, 14.0) == pytest.approx(4.0, abs=0.5)
+    # Still all the way: nothing to show but the tail.
+    assert render.active_seconds(joined, 6.0, 14.0) == pytest.approx(0.0, abs=0.3)
+    # Moving all the way: the whole window.
+    assert render.active_seconds(moving, 0.0, 4.0) == pytest.approx(4.0)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_a_time_lapse_under_a_camera_move_is_still_sped_up(tmp_path):
+    from reel_studio.camera import Camera
+    source = _clip(tmp_path / "s.mp4", "teal", 8.0)
+    camera = Camera(320, 176)
+    camera.move(1.0, 2.0, 160, 88)
+    out = render._render_video_segment(source, 0.0, 8.0, 2.0, tmp_path / "seg.mp4", (320, 176), camera, speed=4.0)
+    assert render.probe_duration(out) == pytest.approx(2.0, abs=0.12)

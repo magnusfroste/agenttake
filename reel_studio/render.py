@@ -8,7 +8,7 @@ import re
 import signal
 import subprocess
 import tempfile
-from typing import TYPE_CHECKING, Sequence, cast
+from typing import TYPE_CHECKING, Callable, Sequence, cast
 import textwrap
 
 if TYPE_CHECKING:
@@ -523,12 +523,50 @@ class Segment:
     speed: float = 1.0
 
 
+# Footage a time-lapse keeps after the screen stops changing, so the result
+# it waited for is seen before the cut.
+LAPSE_TAIL = 2.0
+# What counts as a still screen: freezedetect's noise floor and the shortest
+# stillness that ends the action. A blinking caret or a small spinner stays
+# below the floor.
+FREEZE_NOISE = 0.003
+FREEZE_MIN_SECONDS = 1.5
+
+
+def active_seconds(video_path: Path, start: float, end: float) -> float:
+    """Seconds from start until the screen stops changing for good.
+
+    The last still stretch that runs to the end of the window ends the
+    action; stillness in the middle (a pause before the next answer streams
+    in) does not. The whole window when nothing settles, or ffmpeg fails.
+    """
+    length = max(0.0, end - start)
+    if length <= FREEZE_MIN_SECONDS:
+        return length
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-ss", f"{start:.3f}", "-t", f"{length:.3f}",
+         "-i", str(video_path), "-an",
+         "-vf", f"fps=5,scale=480:-2,freezedetect=n={FREEZE_NOISE}:d={FREEZE_MIN_SECONDS}",
+         "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return length
+    starts = [float(m) for m in re.findall(r"freeze_start: ([0-9.]+)", result.stderr)]
+    ends = [float(m) for m in re.findall(r"freeze_end: ([0-9.]+)", result.stderr)]
+    # A freeze still running when the window ends has a start and no end.
+    if starts and len(ends) < len(starts):
+        return min(length, starts[-1])
+    return length
+
+
 def plan_segments(
     steps: Sequence[tuple[float, Path | None, float]],
     video_duration: float,
     floors: Sequence[float] | None = None,
     lead_in: bool = True,
     speeds: Sequence[float] | None = None,
+    activity: Callable[[float, float], float] | None = None,
 ) -> tuple[list[Segment], list[dict]]:
     """The windows of the recording a segmented render keeps, in order.
 
@@ -542,6 +580,12 @@ def plan_segments(
     step), in the order of ``steps``. ``lead_in`` False drops the second of
     footage before the first step — the video then opens on the first step,
     not on whatever was on screen while it was set up offscreen.
+
+    ``activity(start, end)`` says how many seconds of a window the screen
+    keeps changing; a time-lapse keeps only that much (plus LAPSE_TAIL).
+    Without it a time-lapse ran to the next step — including every minute the
+    director spent thinking — and a 12-second wait for two chat answers came
+    out as 95 s of a still screen at 4× (2026-10-10).
     """
     ordered = sorted(
         (offset, index, clip, max(0.0, duration))
@@ -568,6 +612,9 @@ def plan_segments(
         if speed and speed > 1.0:
             # A time-lapse keeps all of the step's footage, sped up; it lasts
             # at least as long as its line.
+            if activity is not None:
+                active = activity(offset, offset + available)
+                available = min(available, max(active + LAPSE_TAIL, 1.0))
             played = available / speed
             keep = max(played, narration_duration + SEGMENT_TAIL_PAD if narration_duration else 0.0, QUIET_FLOOR)
             segments.append(Segment(f"{index:04d}", offset, available, keep, clip, step_index, speed))
@@ -612,7 +659,11 @@ def segmented_render(
     if camera is not None:
         output_size = camera.output_size(output_size)
     video_duration = probe_duration(video_path)
-    segments, warnings = plan_segments(steps, video_duration, floors, lead_in, speeds)
+    lapsing = speeds is not None and any(speed and speed > 1.0 for speed in speeds)
+    segments, warnings = plan_segments(
+        steps, video_duration, floors, lead_in, speeds,
+        (lambda start, end: active_seconds(video_path, start, end)) if lapsing else None,
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=".segments-", dir=output_path.parent
@@ -923,7 +974,11 @@ def _render_video_segment(
         "-i", str(video_path),
     ]
     played = source_duration / speed if speed > 1.0 else source_duration
-    filters = [f"setpts=PTS/{speed:.4f}"] if speed > 1.0 else []
+    # fps after setpts drops the frames a time-lapse skips. setpts alone only
+    # moves timestamps; zoompan then emits every frame at 25 fps again, and a
+    # 4× segment with a camera move played at 1× under its "4×" badge
+    # (take 11, 2026-10-10).
+    filters = [f"setpts=PTS/{speed:.4f}", "fps=25"] if speed > 1.0 else []
     extension = output_duration - played
     if extension > 0.01:
         filters.append(f"tpad=stop_mode=clone:stop_duration={extension:.3f}")
