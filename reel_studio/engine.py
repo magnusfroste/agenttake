@@ -217,6 +217,37 @@ def screen_geometry(width: int, height: int, scale: float = 1.0) -> dict:
         ],
     }
 
+# How the page measures browser chrome: the window's outer size minus its
+# viewport, in CSS pixels. 0 x 0 in fullscreen; Chrome's tab strip and
+# address bar are 87 pixels high.
+CHROME_PIXELS_JS = "[window.outerHeight - window.innerHeight, window.outerWidth - window.innerWidth]"
+
+
+async def ensure_fullscreen(context, page, settle_ms: int = 1200) -> bool:
+    """Put the browser back in fullscreen if it is showing its chrome.
+
+    --start-fullscreen was enough for every take until take 12 (2026-10-11),
+    which showed Chrome's tab strip and address bar from its first frame to
+    its last; a browser started the same way in the same container came up
+    in fullscreen, so the cause was not found. This checks instead of
+    trusting the flag, and asks Chrome for fullscreen over CDP when it is
+    not (measured: 87 px of chrome before, 0 after). True when the page
+    fills the window.
+    """
+    try:
+        if await page.evaluate(CHROME_PIXELS_JS) == [0, 0]:
+            return True
+        cdp = await context.new_cdp_session(page)
+        window = (await cdp.send("Browser.getWindowForTarget"))["windowId"]
+        # A window that believes it is fullscreen ignores a second request.
+        await cdp.send("Browser.setWindowBounds", {"windowId": window, "bounds": {"windowState": "normal"}})
+        await cdp.send("Browser.setWindowBounds", {"windowId": window, "bounds": {"windowState": "fullscreen"}})
+        await page.wait_for_timeout(settle_ms)
+        return await page.evaluate(CHROME_PIXELS_JS) == [0, 0]
+    except Exception:
+        return False
+
+
 def output_root() -> Path:
     return Path(os.environ.get("REEL_OUTPUT_DIR", str(DEFAULT_OUTPUT_DIR))).expanduser()
 
@@ -345,6 +376,22 @@ class BrowserSession:
         page = context.pages[0] if context.pages else await context.new_page()
         await page.goto(start_url, wait_until="domcontentloaded")
         await page.wait_for_timeout(500)
+        if not await ensure_fullscreen(context, page):
+            for stop in (browser.close, playwright.stop):
+                try:
+                    await stop()
+                except Exception:
+                    pass
+            try:
+                xvfb.terminate()
+                xvfb.wait(timeout=5)
+            except Exception:
+                pass
+            shutil.rmtree(profile_dir, ignore_errors=True)
+            raise RuntimeError(
+                "The browser would not go fullscreen, so the recording would show its tab "
+                "and address bars. Nothing was recorded; start the session again."
+            )
         # Entering fullscreen, Chrome shows "To exit full screen, press and hold
         # Esc" over the top of the page for about five seconds (measured: gone
         # by 5.6 s, and it does not return on navigation or with the pointer at
@@ -1173,6 +1220,14 @@ class BrowserSession:
                 "(id) => document.querySelector(`[data-annotation-id=\"${id}\"]`)?.remove()",
                 live_annotation_id,
             )
+        # Checked after every step: a browser that has left fullscreen shows its
+        # chrome in every frame from then on.
+        chrome_restored = False
+        try:
+            if await self.page.evaluate(CHROME_PIXELS_JS) != [0, 0]:
+                chrome_restored = await ensure_fullscreen(self.page.context, self.page)
+        except PlaywrightError:
+            pass  # mid-navigation: the next step checks again
         screenshot = await self.capture_screenshot()
         result = {
             "ok": True,
@@ -1198,6 +1253,13 @@ class BrowserSession:
         if live_annotation_id:
             result["annotation_id"] = live_annotation_id
             result["annotation_duration"] = round(annotation_duration, 3)
+        if chrome_restored:
+            result["hint"] = (
+                "The browser had left fullscreen and showed its tab and address bars; it is back "
+                "in fullscreen now. Chrome shows an 'exit full screen' notice for about 5 s — do "
+                "the next steps offscreen or wait 6 s before the next visible beat, and check "
+                "storyboard for frames with the bars."
+            )
         return result, screenshot
 
     def status(self) -> dict:

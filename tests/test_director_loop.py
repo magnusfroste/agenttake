@@ -663,3 +663,50 @@ def test_the_director_hears_about_the_new_tricks(mods):
     assert "edit_step" in tools
     assert "move_seconds" in json.dumps(tools["begin_shot"].inputSchema)
     assert "closing_qr" in json.dumps(tools["start_session"].inputSchema)
+
+
+class _FakeCdp:
+    def __init__(self, page):
+        self.page, self.calls = page, []
+
+    async def send(self, method, params=None):
+        self.calls.append((method, (params or {}).get("bounds", {}).get("windowState")))
+        if method == "Browser.getWindowForTarget":
+            return {"windowId": 1}
+        if (params or {}).get("bounds", {}).get("windowState") == "fullscreen" and self.page.obeys:
+            self.page.chrome = [0, 0]
+        return {}
+
+
+class _FakePage:
+    def __init__(self, chrome, obeys=True):
+        self.chrome, self.obeys = chrome, obeys
+        self.cdp = _FakeCdp(self)
+
+    async def evaluate(self, script):
+        return list(self.chrome)
+
+    async def wait_for_timeout(self, ms):
+        pass
+
+
+class _FakeContext:
+    async def new_cdp_session(self, page):
+        return page.cdp
+
+
+def test_a_browser_showing_its_chrome_is_put_back_in_fullscreen():
+    # Take 12 (2026-10-11) showed Chrome's tab strip and address bar in every
+    # frame: --start-fullscreen alone is not trusted any more.
+    from reel_studio.engine import ensure_fullscreen
+    fine = _FakePage([0, 0])
+    assert asyncio.run(ensure_fullscreen(_FakeContext(), fine))
+    assert fine.cdp.calls == []
+
+    bars = _FakePage([87, 0])
+    assert asyncio.run(ensure_fullscreen(_FakeContext(), bars))
+    assert ("Browser.setWindowBounds", "normal") in bars.cdp.calls
+    assert bars.cdp.calls[-1] == ("Browser.setWindowBounds", "fullscreen")
+
+    stubborn = _FakePage([87, 0], obeys=False)
+    assert not asyncio.run(ensure_fullscreen(_FakeContext(), stubborn))
