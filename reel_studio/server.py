@@ -1877,15 +1877,28 @@ async def act_batch(
             results.append(payload)
             break
         action = dict(step["action"])
-        # The flags belong inside the action, but a step-level one is plainly
+        # The fields belong inside the action, but a step-level one is plainly
         # meant for it too: an agent that wrote {"action": {...}, "quiet": true}
-        # had every flag silently dropped (2026-10-09).
-        for flag in ("quiet", "sticky", "offscreen"):
-            if flag in step and flag not in action:
-                action[flag] = step[flag]
+        # had every flag silently dropped (2026-10-09), and take 14's
+        # {"action": {...}, "speed": 4} played at 1× (2026-10-12). Any action
+        # field is lifted; anything else is reported, not dropped in silence.
+        ignored = []
+        for key, value in step.items():
+            if key in ("action", "narration"):
+                continue
+            if key in Action.model_fields:
+                action.setdefault(key, value)
+            else:
+                ignored.append(key)
         payload, screenshot = await _run_action(
             session_id, action, str(step.get("narration") or "")
         )
+        if ignored:
+            payload["ignored_fields"] = ignored
+            payload.setdefault("hint", (
+                f"Not action fields, so not applied: {', '.join(ignored)}. A caption is its own "
+                "step ({\"type\": \"caption\", \"text\": ...}) placed before or after this one."
+            ))
         results.append(payload)
         if not payload.get("ok"):
             break

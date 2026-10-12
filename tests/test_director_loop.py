@@ -710,3 +710,22 @@ def test_a_browser_showing_its_chrome_is_put_back_in_fullscreen():
 
     stubborn = _FakePage([87, 0], obeys=False)
     assert not asyncio.run(ensure_fullscreen(_FakeContext(), stubborn))
+
+
+def test_act_batch_lifts_speed_and_reports_what_it_cannot_apply(mods):
+    # Take 14: {"action": {...}, "speed": 4, "caption": "..."} played at 1×
+    # with no caption, and nothing said so.
+    server, store, _ = mods
+    _new_session(store, "s-lift")
+    server.sessions["s-lift"] = FakeSession(act_result={"ok": True, "offset_seconds": 1.0})
+    try:
+        out = asyncio.run(server.act_batch("s-lift", [
+            {"action": {"type": "click", "ref": "r"}, "speed": 4, "caption": "Ask them all at once"},
+        ]))
+    finally:
+        server.sessions.pop("s-lift", None)
+    steps = store.get_session("s-lift")["steps"]
+    assert steps[0]["speed"] == 4
+    structured = getattr(out, "structuredContent", None)
+    text = json.dumps(structured) if structured else " ".join(getattr(c, "text", "") for c in getattr(out, "content", []))
+    assert "ignored_fields" in text and "caption" in text
