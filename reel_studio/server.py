@@ -41,7 +41,7 @@ from .render import (
     SEGMENT_FLOOR,
 )
 from .camera import MAX_OUTPUT_SCALE, MAX_ZOOM, Camera
-from .schema import ACTION_CONTRACT, ACTION_TYPES, FRAMINGS, Action, action_json_schema, mask_stylesheet
+from .schema import secret_names, ACTION_CONTRACT, ACTION_TYPES, FRAMINGS, Action, action_json_schema, mask_stylesheet
 from .tts import (
     TTSProviderError,
     elevenlabs_configured,
@@ -1423,6 +1423,10 @@ The screen records from start_session until finish, so plan first and record onc
    offscreen=true does a step without showing it: sign in, dismiss a cookie
    banner, get to the first page worth showing. Open the video on the product,
    not on a login form — the first seconds decide whether anyone watches.
+   A password is never yours to handle: type it as {"type": "type", "ref":
+   ..., "text": "{{secret:NAME}}"} and reel-studio types its own
+   REEL_SECRET_NAME into the field and masks it. start_session lists the
+   names it has under "secrets"; ask the operator to add one if it is missing.
    The voice is yours to choose: list_voices(language="en") lists them with
    their gender and personality; pass one as start_session(voice=...). It
    stays for the whole video. When list_voices says elevenlabs_available,
@@ -1698,6 +1702,10 @@ async def start_session(
         render_config.closing_qr,
     )
     result: dict = {"session_id": session.session_id}
+    secrets = secret_names()
+    if secrets:
+        # Names only: type {{secret:NAME}} and reel-studio types the value.
+        result["secrets"] = secrets
     if others:
         result["active_sessions"] = others
         result["warning"] = (

@@ -729,3 +729,25 @@ def test_act_batch_lifts_speed_and_reports_what_it_cannot_apply(mods):
     structured = getattr(out, "structuredContent", None)
     text = json.dumps(structured) if structured else " ".join(getattr(c, "text", "") for c in getattr(out, "content", []))
     assert "ignored_fields" in text and "caption" in text
+
+
+def test_a_secret_placeholder_resolves_from_reel_studios_own_environment(monkeypatch):
+    # gpt-5.6-luna would not take the panel password from its environment
+    # (take 16): reel-studio types it from its own, by name.
+    from reel_studio.schema import resolve_secret, secret_names, ACTION_CONTRACT
+    monkeypatch.setenv("REEL_SECRET_PANEL_PASSWORD", "s3cret-value")
+    assert resolve_secret("{{secret:PANEL_PASSWORD}}") == ("PANEL_PASSWORD", "s3cret-value")
+    assert resolve_secret(" {{ secret: panel_password }} ") == ("PANEL_PASSWORD", "s3cret-value")
+    assert resolve_secret("${PANEL_PASSWORD}") == ("PANEL_PASSWORD", "s3cret-value")
+    assert resolve_secret("${MISSING}") == ("MISSING", None)
+    assert resolve_secret("hello {{secret:PANEL_PASSWORD}}") == (None, None)  # only a whole field
+    assert resolve_secret("plain text") == (None, None)
+    assert "PANEL_PASSWORD" in secret_names()
+    assert "{{secret:NAME}}" in ACTION_CONTRACT
+
+
+def test_start_session_lists_secret_names_and_the_director_is_told(mods, monkeypatch):
+    server, _, _ = mods
+    assert "{{secret:NAME}}" in server.DIRECTOR_PROMPT
+    import inspect
+    assert 'result["secrets"] = secrets' in inspect.getsource(server.start_session)
