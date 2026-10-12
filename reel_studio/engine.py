@@ -432,8 +432,39 @@ class BrowserSession:
         session.camera = Camera(width, height, scale)
         return session
 
+    async def _grab_display(self, output: Path, crop: dict | None = None, scale_to: str | None = None) -> bool:
+        """One frame of the X display the recorder grabs, as a JPEG.
+
+        Playwright's page.screenshot re-renders the page, and the recording
+        caught it: in take 15 (720x900 at device scale 1.5, 2026-10-12) a
+        frame shrank to the top-left with white around it at the moment of
+        each screenshot — after a step, and at a preview_shot. Reading the
+        screen the recorder already reads never touches the page. crop is a
+        CSS-pixel box; scale_to an ffmpeg scale.
+        """
+        scale = self.camera.scale if self.camera is not None else 1.0
+        physical = f"{round(self.width * scale)}x{round(self.height * scale)}"
+        filters = []
+        if crop:
+            filters.append(
+                f"crop={round(crop['w'] * scale)}:{round(crop['h'] * scale)}"
+                f":{round(crop['x'] * scale)}:{round(crop['y'] * scale)}"
+            )
+        if scale_to:
+            filters.append(f"scale={scale_to}")
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["ffmpeg", "-loglevel", "error", "-y", "-f", "x11grab", "-draw_mouse", "0", "-video_size", physical,
+             "-i", f":{self.display_number}.0", "-frames:v", "1",
+             *(["-vf", ",".join(filters)] if filters else []), "-q:v", "4", str(output)],
+            capture_output=True,
+        )
+        return result.returncode == 0 and output.is_file()
+
     async def capture_screenshot(self) -> Path:
         screenshot = self.directory / f"screenshot-{int(time.time() * 1000)}.jpg"
+        if await self._grab_display(screenshot, scale_to=f"{self.width}:{self.height}"):
+            return screenshot
         scale = self.camera.scale if self.camera is not None else 1.0
         if scale == 1.0:
             await self.page.screenshot(path=str(screenshot), type="jpeg", quality=80)
@@ -851,6 +882,8 @@ class BrowserSession:
             frame = self.camera.view()
         raw = self.directory / f"preview-{int(time.time() * 1000)}.raw.jpg"
         out = raw.with_name(raw.name.replace(".raw", ""))
+        if await self._grab_display(out, crop=frame, scale_to="960:-2"):
+            return out, {k: round(frame[k]) for k in ("x", "y", "w", "h")} | {"zoom": round(frame["zoom"], 2)}
         await self.page.screenshot(
             path=str(raw), type="jpeg", quality=85,
             clip={"x": frame["x"], "y": frame["y"], "width": frame["w"], "height": frame["h"]},
@@ -997,7 +1030,8 @@ class BrowserSession:
                     )
                 await target.wait_for(state="visible", timeout=5000)
                 await target.scroll_into_view_if_needed(timeout=5000)
-                await self._follow(target)
+                if not (action.quiet or action.offscreen):
+                    await self._follow(target)
                 box = await target.bounding_box()
                 if not box:
                     return await self.error_result(
@@ -1049,7 +1083,10 @@ class BrowserSession:
                         )
                 await target.wait_for(state="visible", timeout=5000)
                 await target.scroll_into_view_if_needed(timeout=5000)
-                if action_type not in {"mask", "unmask"}:
+                # A quiet or offscreen step is not watched: a pan to it — to
+                # the phone layout's menu button in a corner, in take 15 —
+                # only showed as a whip to the corner and back (2026-10-12).
+                if action_type not in {"mask", "unmask"} and not (action.quiet or action.offscreen):
                     await self._follow(target)
                 if action_type in {"click", "click_and_wait"}:
                     await self._inject_spotlight(target)

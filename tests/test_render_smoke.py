@@ -298,3 +298,22 @@ def test_a_time_lapse_under_a_camera_move_is_still_sped_up(tmp_path):
     camera.move(1.0, 2.0, 160, 88)
     out = render._render_video_segment(source, 0.0, 8.0, 2.0, tmp_path / "seg.mp4", (320, 176), camera, speed=4.0)
     assert render.probe_duration(out) == pytest.approx(2.0, abs=0.12)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_the_time_lapse_badge_leaves_with_the_fast_footage(tmp_path):
+    # Take 15: a 4× step held for its line kept "4×" over a still frame.
+    if not Path(render.FONT_PATH).is_file():
+        pytest.skip("badge font missing")
+    source = _clip(tmp_path / "s.mp4", "black", 4.0, "640x360")
+    out = render._render_video_segment(source, 0.0, 4.0, 3.0, tmp_path / "seg.mp4", speed=4.0)
+
+    def corner(t):
+        data = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-ss", str(t), "-i", str(out), "-frames:v", "1",
+             "-vf", "crop=120:60:640-130:30,format=gray", "-f", "rawvideo", "-"],
+            capture_output=True, check=True).stdout
+        return sum(data) / len(data)
+
+    # The badge while 1 s of fast footage plays; a plain black frame on the hold.
+    assert corner(0.4) > 1.0 and corner(2.5) < 0.5
