@@ -45,7 +45,7 @@ from .annotations import (
     validate_annotation,
 )
 from .refs import semantic_ref
-from .schema import Action, mask_stylesheet
+from .schema import resolve_secret, secret_names, Action, mask_stylesheet
 from .tts import synthesize
 
 
@@ -1094,7 +1094,24 @@ class BrowserSession:
                     await self.page.wait_for_timeout(500)
                     await self._clear_spotlights()
                 elif action_type == "type":
-                    await target.fill(action.text or "")
+                    # {{secret:NAME}}: reel-studio types its own
+                    # REEL_SECRET_NAME, so a password never passes through
+                    # the directing model (gpt-5.6-luna would not take one
+                    # from its environment, take 16, 2026-10-12). The field
+                    # is marked data-secret, so a mask blurs it on screen.
+                    secret_name, secret_value = resolve_secret(action.text or "")
+                    if secret_name is not None:
+                        if secret_value is None:
+                            return await self.error_result(
+                                "unknown_secret",
+                                f"reel-studio has no secret {secret_name}. Its operator sets "
+                                f"REEL_SECRET_{secret_name} in reel-studio's environment; it has: "
+                                f"{', '.join(secret_names()) or 'none'}.",
+                            )
+                        await target.evaluate("(el) => el.setAttribute('data-secret', '')")
+                        await target.fill(secret_value)
+                    else:
+                        await target.fill(action.text or "")
                 elif action_type == "select_option":
                     option_text = (action.text or "").strip()
                     if not option_text:
