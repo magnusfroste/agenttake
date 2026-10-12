@@ -232,3 +232,12 @@ def test_output_size_larger_than_the_page_must_keep_its_aspect():
         _resolve_output_size("1080x1000", 720, 900)
     with pytest.raises(ValueError):
         _resolve_output_size("2160x2700", 720, 900)
+
+
+def test_quiet_and_offscreen_steps_do_not_move_the_camera():
+    # Take 15: quiet clicks on the phone layout's menu button whipped the
+    # camera to the corner and back.
+    import inspect
+    from reel_studio.engine import BrowserSession
+    source = inspect.getsource(BrowserSession.act)
+    assert source.count("not (action.quiet or action.offscreen)") >= 2

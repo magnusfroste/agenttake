@@ -994,9 +994,12 @@ def _render_video_segment(
         filters.append(f"scale={output_size[0]}:{output_size[1]}")
     if speed > 1.0 and Path(FONT_PATH).is_file():
         # Say it is sped up, so a time-lapse never reads as the real pace.
+        # Only while the footage plays fast: a hold after it (the line, or
+        # an edit_step hold) is a still frame, and "4×" over it read as a
+        # frozen time-lapse for eight seconds in take 15 (2026-10-12).
         filters.append(
             f"drawtext=fontfile={FONT_PATH}:text='{speed:g}×':fontcolor=white:fontsize=h/22:"
-            "box=1:boxcolor=black@0.55:boxborderw=14:x=w-tw-48:y=40"
+            f"box=1:boxcolor=black@0.55:boxborderw=14:x=w-tw-48:y=40:enable='lt(t,{played:.3f})'"
         )
     if filters:
         command.extend(["-vf", ",".join(filters)])
