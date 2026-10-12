@@ -35,17 +35,27 @@ CAMERA_FILE = "camera.json"
 SCALE_CANDIDATES = (4 / 3, 1.5, 2.0)
 # 2560x1440 is what a 2-core host records at 25 fps without dropping frames.
 MAX_CAPTURE_PIXELS = 2560 * 1440
+# The largest scale an output_size may ask the capture for.
+MAX_OUTPUT_SCALE = 2.0
 
 
-def capture_scale(width: int, height: int) -> float:
+def capture_scale(width: int, height: int, output: tuple[int, int] | None = None) -> float:
     """Pick the device scale factor the browser is recorded at.
 
     The physical frame must be whole, even pixels (libx264 with yuv420p) and
     no larger than MAX_CAPTURE_PIXELS. ``REEL_CAPTURE_SCALE`` overrides; 1
     turns hi-res capture off.
+
+    An ``output`` larger than the page asks for that scale: a 720x900 page
+    (the panel's phone layout) recorded for a 1080x1350 video is captured at
+    1.5, so the 4:5 video is sharp at full size rather than upscaled.
     """
     configured = os.environ.get("REEL_CAPTURE_SCALE", "").strip()
     candidates: tuple[float, ...] = SCALE_CANDIDATES
+    if output is not None and output[0] > width:
+        wanted = output[0] / width
+        if abs(output[1] / height - wanted) < 1e-6 and wanted <= MAX_OUTPUT_SCALE:
+            candidates = (wanted,)
     if configured:
         try:
             value = float(configured)
