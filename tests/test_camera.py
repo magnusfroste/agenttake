@@ -211,3 +211,24 @@ def test_a_move_can_take_its_own_time_and_a_time_lapse_runs_the_clock_faster():
     normal = camera.zoompan(0.0, 10.0, (1920, 1080))
     fast = camera.zoompan(0.0, 10.0, (1920, 1080), speed=4.0)
     assert "(0.000+it)" in normal and "it*4.0000" in fast
+
+
+def test_a_portrait_video_of_a_phone_layout_is_captured_at_full_size():
+    # 4:5 for LinkedIn: the panel's phone layout is 720 CSS pixels wide, and
+    # the video should be 1080x1350 without upscaling (2026-10-12).
+    from reel_studio.camera import capture_scale
+    assert capture_scale(720, 900, (1080, 1350)) == 1.5
+    assert capture_scale(720, 900) == 4 / 3  # unchanged without an output
+    assert capture_scale(720, 900, (1080, 1000)) == 4 / 3  # not the same aspect: ignored
+    assert capture_scale(1920, 1080, (1280, 720)) == 4 / 3  # downscaling as before
+
+
+def test_output_size_larger_than_the_page_must_keep_its_aspect():
+    from reel_studio.server import _resolve_output_size
+    assert _resolve_output_size("1080x1350", 720, 900) == (1080, 1350)
+    assert _resolve_output_size("1280x720", 1920, 1080) == (1280, 720)
+    import pytest
+    with pytest.raises(ValueError):
+        _resolve_output_size("1080x1000", 720, 900)
+    with pytest.raises(ValueError):
+        _resolve_output_size("2160x2700", 720, 900)

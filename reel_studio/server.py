@@ -40,7 +40,7 @@ from .render import (
     QUIET_FLOOR,
     SEGMENT_FLOOR,
 )
-from .camera import MAX_ZOOM, Camera
+from .camera import MAX_OUTPUT_SCALE, MAX_ZOOM, Camera
 from .schema import ACTION_CONTRACT, ACTION_TYPES, FRAMINGS, Action, action_json_schema, mask_stylesheet
 from .tts import (
     TTSProviderError,
@@ -957,7 +957,16 @@ def _resolve_output_size(
     if width <= 0 or height <= 0:
         raise ValueError("output_size dimensions must be positive")
     if width > capture_width or height > capture_height:
-        raise ValueError("output_size cannot exceed the capture dimensions")
+        # Larger than the page: captured at that scale (camera.capture_scale),
+        # same aspect, at most twice the page.
+        scale = width / capture_width
+        if abs(height / capture_height - scale) > 1e-6 or scale > MAX_OUTPUT_SCALE:
+            raise ValueError(
+                "output_size larger than the page must keep its aspect and be at most twice it "
+                "(e.g. a 720x900 page with output_size 1080x1350)"
+            )
+        if width % 2 or height % 2:
+            raise ValueError("output_size dimensions must be even")
     return width, height
 
 
@@ -1605,7 +1614,9 @@ async def start_session(
 
     Recording starts now and runs until finish, so plan the script and find
     your way around the site before calling this. Defaults: 1920x1080 capture
-    (output_size, e.g. "1280x720", downscales only the final MP4); voice
+    (output_size, e.g. "1280x720", downscales the final MP4; larger than the
+    page at the same aspect — a 720x900 page with output_size "1080x1350" —
+    records at that scale, for a sharp 4:5 video of a site's phone layout); voice
     en-US-JennyNeural on the free Edge provider — list_voices shows the others
     (provider "elevenlabs" needs ELEVENLABS_API_KEY and takes a voice id); no
     music ("subtle" adds a quiet bed); title/subtitle add a 3-second intro

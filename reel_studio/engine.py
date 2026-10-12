@@ -326,7 +326,7 @@ class BrowserSession:
         directory.mkdir(parents=True, exist_ok=True)
         display_number = _free_display()
         display = f":{display_number}"
-        scale = capture_scale(width, height)
+        scale = capture_scale(width, height, output_size)
         geometry = screen_geometry(width, height, scale)
         xvfb = subprocess.Popen(
             ["Xvfb", display, "-screen", "0", geometry["screen"], "-ac"],
