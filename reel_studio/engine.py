@@ -248,6 +248,18 @@ async def ensure_fullscreen(context, page, settle_ms: int = 1200) -> bool:
         return False
 
 
+# How many text matches focus_text ranks; a word that is everywhere on a
+# page should not cost a round trip per occurrence.
+MAX_TEXT_CANDIDATES = 20
+
+# (in navigation chrome, font size in px) for a text match.
+_TEXT_RANK_JS = """(el) => {
+  const chrome = el.closest('nav, aside, header, footer, [role=navigation], [role=menu], '
+    + '[role=menubar], [role=banner], [role=complementary], [class*=sidebar], [class*=topbar]');
+  return [chrome ? 1 : 0, parseFloat(getComputedStyle(el).fontSize) || 0];
+}"""
+
+
 def output_root() -> Path:
     return Path(os.environ.get("REEL_OUTPUT_DIR", str(DEFAULT_OUTPUT_DIR))).expanduser()
 
@@ -622,14 +634,24 @@ class BrowserSession:
         if not text:
             return None
         matches = self.page.get_by_text(text, exact=exact)
-        for index in range(await matches.count()):
+        # The first visible match in document order was the sidebar's entry
+        # whenever a name was also a nav link: focus_text "reel-studio" pushed
+        # in on the panel's sidebar, not its reel-studio card, in take 17
+        # (2026-10-13). Rank visible matches instead: page content before
+        # navigation chrome, then larger text, then document order.
+        best = None
+        for index in range(min(await matches.count(), MAX_TEXT_CANDIDATES)):
             candidate = matches.nth(index)
             try:
-                if await candidate.is_visible():
-                    return candidate
+                if not await candidate.is_visible():
+                    continue
+                in_chrome, font_size = await candidate.evaluate(_TEXT_RANK_JS)
             except PlaywrightError:
                 continue
-        return None
+            rank = (in_chrome, -font_size, index)
+            if best is None or rank < best[0]:
+                best = (rank, candidate)
+        return best[1] if best else None
 
     async def _action_target(
         self, action: Action, actionable: bool = False

@@ -241,3 +241,35 @@ def test_quiet_and_offscreen_steps_do_not_move_the_camera():
     from reel_studio.engine import BrowserSession
     source = inspect.getsource(BrowserSession.act)
     assert source.count("not (action.quiet or action.offscreen)") >= 2
+
+
+def test_focus_text_prefers_the_page_content_over_its_sidebar():
+    # Take 17: focus_text "reel-studio" pushed in on the sidebar entry, not
+    # the reel-studio card, because the sidebar came first in the document.
+    playwright = pytest.importorskip("playwright.async_api")
+    import asyncio
+    from types import SimpleNamespace
+    from reel_studio.engine import BrowserSession
+
+    html = """<body style="display:flex;margin:0">
+      <aside class="sidebar" style="width:200px"><a href="#">reel-studio</a><a href="#">lobby</a></aside>
+      <main><h1>Fleet</h1><div class="card"><h3 id="card">reel-studio</h3></div></main></body>"""
+
+    async def run():
+        async with playwright.async_playwright() as p:
+            try:
+                browser = await p.chromium.launch()
+            except Exception as exc:  # no browser in this environment
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = await browser.new_page()
+            await page.set_content(html)
+            target = await BrowserSession._visible_text_target(SimpleNamespace(page=page), "reel-studio")
+            chosen = await target.evaluate("(el) => el.id")
+            only = await BrowserSession._visible_text_target(SimpleNamespace(page=page), "lobby")
+            only_tag = await only.evaluate("(el) => el.tagName")
+            await browser.close()
+            return chosen, only_tag
+
+    chosen, only_tag = asyncio.run(run())
+    assert chosen == "card"
+    assert only_tag == "A"  # a text only in the sidebar is still found there
