@@ -273,3 +273,34 @@ def test_focus_text_prefers_the_page_content_over_its_sidebar():
     chosen, only_tag = asyncio.run(run())
     assert chosen == "card"
     assert only_tag == "A"  # a text only in the sidebar is still found there
+
+
+def test_the_pointer_is_nudged_off_a_link_after_a_click():
+    # Take 20: the pointer left on a card's link put Chrome's address bubble
+    # under the closing close-up.
+    playwright = pytest.importorskip("playwright.async_api")
+    import asyncio
+    from reel_studio.engine import _POINTER_PARK_JS
+
+    html = """<body style="margin:0"><a id="l" href="https://example.com/x"
+      style="position:absolute;left:100px;top:100px;width:200px;height:60px;display:block">card</a>
+      <p style="position:absolute;left:100px;top:300px">text</p></body>"""
+
+    async def run():
+        async with playwright.async_playwright() as p:
+            try:
+                browser = await p.chromium.launch()
+            except Exception as exc:
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = await browser.new_page(viewport={"width": 800, "height": 600})
+            await page.set_content(html)
+            spot = await page.evaluate(_POINTER_PARK_JS, [200, 130])
+            off_link = await page.evaluate(_POINTER_PARK_JS, [500, 400])
+            await browser.close()
+            return spot, off_link
+
+    spot, off_link = asyncio.run(run())
+    assert off_link is None  # not on a link: the pointer stays where it is
+    x, y = spot
+    assert not (100 <= x <= 300 and 100 <= y <= 160)  # off the link
+    assert ((x - 200) ** 2 + (y - 130) ** 2) ** 0.5 <= 60  # and close by

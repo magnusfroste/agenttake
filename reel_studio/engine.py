@@ -248,6 +248,25 @@ async def ensure_fullscreen(context, page, settle_ms: int = 1200) -> bool:
         return False
 
 
+# The nearest point to (x, y) that is not on a link, or null when (x, y)
+# is not on one. Searched in rings of 16 directions, 12 px apart, inside the
+# viewport.
+_POINTER_PARK_JS = """([x, y]) => {
+  const LINK = 'a[href], [role=link]';
+  const onLink = (px, py) => { const el = document.elementFromPoint(px, py); return !!(el && el.closest(LINK)); };
+  if (!onLink(x, y)) return null;
+  const w = window.innerWidth, h = window.innerHeight;
+  for (let r = 12; r <= 360; r += 12) {
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * 2 * Math.PI;
+      const px = x + r * Math.cos(a), py = y + r * Math.sin(a);
+      if (px < 2 || py < 2 || px > w - 2 || py > h - 2) continue;
+      if (!onLink(px, py)) return [px, py];
+    }
+  }
+  return null;
+}"""
+
 # How many text matches focus_text ranks; a word that is everywhere on a
 # page should not cost a round trip per occurrence.
 MAX_TEXT_CANDIDATES = 20
@@ -837,6 +856,22 @@ class BrowserSession:
             # goes before it happens.
             await asyncio.sleep(EASE_SECONDS)
 
+    async def _park_pointer(self, x: float, y: float) -> None:
+        """Move the pointer off a link, the shortest way, after a click.
+
+        A pointer left on a link makes Chrome show the link's address in a
+        status bubble at the bottom of the window, and the recording keeps
+        it: "https://panel.froste.eu/agent/hermes-…" under a close-up in
+        take 20 (2026-10-13). The pointer is visible in the video, so it is
+        nudged to the nearest spot that is not a link, not sent to a corner.
+        """
+        try:
+            spot = await self.page.evaluate(_POINTER_PARK_JS, [x, y])
+            if spot:
+                await self.page.mouse.move(spot[0], spot[1], steps=6)
+        except PlaywrightError:
+            pass
+
     async def _redraw_sticky_caption(self) -> None:
         if self.sticky_caption is None:
             return
@@ -953,6 +988,8 @@ class BrowserSession:
         live_annotation_id: str | None = None
         annotation_duration = 0.0
         settled_by: dict[str, str] = {}
+        # Where the pointer was left by a click, to move it off a link.
+        pointer: tuple[float, float] | None = None
         action_finished_at: float | None = None
         action_completed_at: float | None = None
         before_url = self.page.url
@@ -1112,6 +1149,10 @@ class BrowserSession:
                     await self._follow(target)
                 if action_type in {"click", "click_and_wait"}:
                     await self._inject_spotlight(target)
+                    clicked_box = await target.bounding_box()
+                    if clicked_box:
+                        pointer = (clicked_box["x"] + clicked_box["width"] / 2,
+                                   clicked_box["y"] + clicked_box["height"] / 2)
                     await target.click()
                     await self.page.wait_for_timeout(500)
                     await self._clear_spotlights()
@@ -1240,6 +1281,8 @@ class BrowserSession:
                         "(up to 60000) for slow answers.",
                     )
             await self.page.wait_for_timeout(action.settle_ms)
+            if pointer is not None:
+                await self._park_pointer(*pointer)
             action_completed_at = time.monotonic() - self.t0
         except PlaywrightTimeoutError as exc:
             if self.page.url != before_url:
