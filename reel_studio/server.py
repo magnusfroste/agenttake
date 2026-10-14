@@ -183,14 +183,22 @@ def page_shell(
     canonical_path: str = "/",
     base_url: str = "",
     structured_data: str = "",
+    og_image_path: str = "/og.png",
+    share_title: str | None = None,
 ) -> str:
-    """Wrap public page content in the shared landing/docs layout."""
+    """Wrap public page content in the shared landing/docs layout.
+
+    og_image_path and share_title are what a link preview on LinkedIn, X or
+    Slack shows — a watch page passes its own poster and title, so a shared
+    video looks like the video and not like reel-studio.
+    """
     escaped_title = html.escape(title)
+    escaped_share_title = html.escape(share_title or f"{title} · reel-studio", quote=True)
     escaped_description = html.escape(description, quote=True)
     canonical_url = html.escape(
         f"{base_url.rstrip('/')}{canonical_path}", quote=True
     )
-    og_image = html.escape(f"{base_url.rstrip('/')}/og.png", quote=True)
+    og_image = html.escape(f"{base_url.rstrip('/')}{og_image_path}", quote=True)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -203,14 +211,14 @@ def page_shell(
   <link rel="alternate icon" href="/favicon.png" type="image/png">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="reel-studio">
-  <meta property="og:title" content="{escaped_title} · reel-studio">
+  <meta property="og:title" content="{escaped_share_title}">
   <meta property="og:description" content="{escaped_description}">
   <meta property="og:url" content="{canonical_url}">
   <meta property="og:image" content="{og_image}">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="{escaped_title} · reel-studio">
+  <meta name="twitter:title" content="{escaped_share_title}">
   <meta name="twitter:description" content="{escaped_description}">
   <meta name="twitter:image" content="{og_image}">
   {structured_data}
@@ -255,7 +263,8 @@ before the step it is for, checked with `preview_shot` (a still of the exact fra
 `offscreen` (done but cut — signing in), `speed` 2-16 (a labelled time-lapse).
 After `finish`: `storyboard` shows the film part by part; `edit_step` hides a step,
 sets a hold or a speed; `update_step_narration` rewrites a line; `rerender` applies
-them without recording again.
+them without recording again. Before sharing, `set_watch_page` gives the watch page a
+title, a description and the moment its link-preview image is taken from.
 Secrets: type a password as `{{{{secret:NAME}}}}` and reel-studio types its own
 `REEL_SECRET_NAME` and masks the field; `start_session` lists the names it has.
 `start_session(mask=[...])` blurs CSS selectors from the first frame.
@@ -446,14 +455,80 @@ def video_url(session_id: str) -> str:
     return f"/videos/{session_id}/video.mp4"
 
 
+def display_title_for(session: dict) -> str:
+    """The title a finished video is shown and shared under."""
+    if (session.get("page_title") or "").strip():
+        return session["page_title"].strip()
+    return clean_display_title(session.get("title") or session.get("start_url") or "Video Demo")
+
+
+POSTER_SIZE = (1200, 630)
+
+
+def poster_path(session_id: str) -> Path:
+    return output_root() / session_id / "poster.jpg"
+
+
+def poster_seconds(session: dict) -> float:
+    """Where the poster frame is taken: the chosen moment, else a third in —
+    past any title card, into the product."""
+    duration = float(session.get("duration_seconds") or 0.0)
+    chosen = session.get("poster_at")
+    if chosen is not None:
+        return max(0.0, min(float(chosen), max(duration - 0.1, 0.0)))
+    return round(duration * 0.33, 2) if duration > 0 else 0.0
+
+
+def ensure_poster(session: dict, force: bool = False) -> Path | None:
+    """A 1200x630 link-preview image from the video itself.
+
+    The frame is fitted inside the card over a blurred, darkened copy of
+    itself, so a 4:5 or 9:16 video fills the card as well as a 16:9 one.
+    Rebuilt when the video is newer than the poster (a re-render).
+    """
+    video = Path(session["video_path"]) if session.get("video_path") else None
+    if video is None or not video.is_file():
+        return None
+    path = poster_path(session["id"])
+    if not force and path.is_file() and path.stat().st_mtime >= video.stat().st_mtime:
+        return path
+    width, height = POSTER_SIZE
+    graph = (
+        f"[0:v]split[a][b];"
+        f"[a]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
+        f"boxblur=30:2,eq=brightness=-0.22[bg];"
+        f"[b]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
+        f"[bg][fg]overlay=(W-w)/2:(H-h)/2"
+    )
+    tmp = path.with_suffix(".tmp.jpg")
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{poster_seconds(session):.2f}", "-i", str(video),
+         "-frames:v", "1", "-filter_complex", graph, "-q:v", "3", str(tmp)],
+        capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode != 0 or not tmp.is_file():
+        print(f"[reel-studio] poster for {session['id']} failed: {(result.stderr or '')[-300:]}", flush=True)
+        tmp.unlink(missing_ok=True)
+        return None
+    tmp.replace(path)
+    return path
+
+
+def poster_url(session: dict) -> str:
+    """The poster's public path, versioned so a link preview that cached an
+    older poster fetches the new one."""
+    path = poster_path(session["id"])
+    version = int(path.stat().st_mtime) if path.is_file() else 0
+    return f"/videos/{session['id']}/poster.jpg?v={version}"
+
+
 def format_duration(duration: float | None) -> str:
     return f"{duration:.1f}s" if duration is not None else "Duration unavailable"
 
 
 def video_card(session: dict) -> str:
     session_id = html.escape(session["id"], quote=True)
-    raw_title = session.get("title") or session.get("start_url") or "Video Demo"
-    display_title = clean_display_title(raw_title)
+    display_title = display_title_for(session)
     title = html.escape(display_title)
     duration = html.escape(format_duration(session.get("duration_seconds")))
     finished_at = html.escape(session.get("finished_at") or "Recently finished")
@@ -735,8 +810,9 @@ def watch_page(session_id: str, base_url: str = "/") -> str | None:
     session = store.get_session(session_id)
     if not session or session.get("status") != "finished":
         return None
-    raw_title = session.get("title") or session.get("start_url") or "Video Demo"
-    title = clean_display_title(raw_title)
+    title = display_title_for(session)
+    ensure_poster(session)
+    poster = poster_url(session)
     duration = format_duration(session.get("duration_seconds"))
     finished_at = session.get("finished_at") or "Recently finished"
     steps = session.get("steps", [])
@@ -799,7 +875,7 @@ def watch_page(session_id: str, base_url: str = "/") -> str | None:
     </section>
     
     <div style="background:#080b11; border:1px solid #2a354d; border-radius:14px; overflow:hidden; margin-bottom:32px;">
-      <video controls autoplay preload="auto" style="width:100%; max-height:75vh; display:block;" src="{video_url(session_id)}"></video>
+      <video controls autoplay preload="auto" poster="{html.escape(poster, quote=True)}" style="width:100%; max-height:75vh; display:block;" src="{video_url(session_id)}"></video>
     </div>
 
     <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; margin-bottom:32px;">
@@ -839,12 +915,15 @@ def watch_page(session_id: str, base_url: str = "/") -> str | None:
     </script>
     {video_admin_script()}
     """
+    description = (session.get("page_description") or "").strip() or f"Watch the narrated demo for {title}."
     return page_shell(
         title,
         content,
-        f"Watch the narrated demo for {title}.",
+        description,
         f"/watch/{session_id}",
         base_url,
+        og_image_path=poster,
+        share_title=title if (session.get("page_title") or "").strip() else None,
     )
 
 
@@ -1142,6 +1221,11 @@ def docs_page(base_url: str = "/") -> str:
       <p>Analyze storyboard steps and session metadata for security issues
       (accidental tokens, credentials, and URL secrets), focus/narration alignment,
       and ending quality before finishing or publishing.</p></div>
+    <div class="tool card"><h3><code>set_watch_page(session_id, title?, description?, poster_at_seconds?)</code></h3>
+      <p>Set what a finished video's public watch page and its link previews on
+      LinkedIn, X or Slack show: the title, a description, and the moment of the
+      film the 1200x630 preview image is taken from. Nothing is re-rendered.</p>
+      <p><strong>Returns:</strong> <code>{{"ok": true, "watch_url": "...", "poster_url": "..."}}</code></p></div>
     <div class="tool card"><h3><code>update_step_narration(session_id, index, narration, voice?)</code></h3>
       <p>Replace the narration text (and optionally the voice) for one step
       in a finished session. The recorded browser video is not changed.</p>
@@ -1326,7 +1410,7 @@ async def videos_api(request: Request) -> Response:
             {
                 "id": video["id"],
                 "start_url": sanitize_public_url(video["start_url"]),
-                "title": clean_display_title(video.get("title") or video["start_url"]),
+                "title": display_title_for(video),
                 "duration_seconds": video["duration_seconds"],
                 "finished_at": video["finished_at"],
             }
@@ -2284,6 +2368,53 @@ async def update_step_narration(
 
 
 @mcp.tool()
+async def set_watch_page(
+    session_id: str,
+    title: Annotated[
+        str | None,
+        Field(description="The title the watch page and every shared link show, e.g. 'AgentHotel — your agents, always on'. Does not touch the video's title card."),
+    ] = None,
+    description: Annotated[
+        str | None,
+        Field(description="One or two sentences under the title in a link preview on LinkedIn, X or Slack."),
+    ] = None,
+    poster_at_seconds: Annotated[
+        float | None,
+        Field(description="The moment in the video the preview image is taken from. Default: a third of the way in. Pick a frame where the product is on screen and readable."),
+    ] = None,
+) -> dict:
+    """Set what a finished video's public watch page and its link previews show.
+
+    The preview image is made from the video itself: the chosen frame,
+    1200x630, fitted over a blurred copy of itself so any aspect ratio fills
+    the card. Nothing is re-rendered. Returns the watch URL and the poster URL;
+    look at the poster before sharing.
+    """
+    session, error = _editable_session(session_id)
+    if error:
+        return error
+    if poster_at_seconds is not None and poster_at_seconds < 0:
+        return {"ok": False, "error": {"type": "invalid_argument", "message": "poster_at_seconds must be 0 or more"}}
+    store.update_watch_page(
+        session_id,
+        page_title=title.strip() if title is not None else None,
+        page_description=description.strip() if description is not None else None,
+        poster_at=poster_at_seconds,
+    )
+    session = store.get_session(session_id)
+    poster = await asyncio.to_thread(ensure_poster, session, poster_at_seconds is not None)
+    base = os.environ.get("REEL_PUBLIC_BASE_URL", "").rstrip("/")
+    return {
+        "ok": True,
+        "title": display_title_for(session),
+        "description": session.get("page_description") or "",
+        "poster_at_seconds": poster_seconds(session),
+        "watch_url": f"{base}/watch/{session_id}",
+        "poster_url": f"{base}{poster_url(session)}" if poster else None,
+    }
+
+
+@mcp.tool()
 async def rerender(
     session_id: str,
     voice: Annotated[
@@ -2859,6 +2990,25 @@ async def storyboard_still(request: Request) -> Response:
 
 
 @mcp.custom_route(
+    "/videos/{session_id}/poster.jpg",
+    methods=["GET", "HEAD"],
+    include_in_schema=False,
+)
+async def video_poster(request: Request) -> Response:
+    """A finished video's link-preview image (public, like the video)."""
+    session_id = request.path_params["session_id"]
+    if not re.fullmatch(r"[0-9a-f]+", session_id):
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    session = store.get_session(session_id)
+    if not session or session.get("status") != "finished":
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    path = await asyncio.to_thread(ensure_poster, session)
+    if path is None:
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=300"})
+
+
+@mcp.custom_route(
     "/videos/{session_id}/video.mp4",
     methods=["GET", "HEAD"],
     include_in_schema=False,
@@ -2882,7 +3032,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         self.token = token
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        public_video = re.fullmatch(r"/videos/[^/]+/(video\.mp4|storyboard/[a-z0-9-]+\.jpg)", request.url.path)
+        public_video = re.fullmatch(r"/videos/[^/]+/(video\.mp4|poster\.jpg|storyboard/[a-z0-9-]+\.jpg)", request.url.path)
         public_watch = re.fullmatch(r"/watch/[^/]+", request.url.path)
         if request.method in {"GET", "HEAD"} and (
             request.url.path in {

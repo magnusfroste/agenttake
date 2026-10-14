@@ -124,3 +124,44 @@ def test_watch_and_theater_pages_offer_a_share_link(tmp_path, monkeypatch):
     assert 'data-share-path="/watch/abc123"' in watch
     assert "navigator.clipboard.writeText" in watch
     assert 'data-share-path="/watch/abc123"' in server.theater_page()
+
+
+def test_watch_page_shares_its_own_title_and_poster(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+    import pytest
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not installed")
+    monkeypatch.setenv("REEL_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv("REEL_DB_PATH", str(tmp_path / "poster.db"))
+    from reel_studio import server, store
+    session_id = "beef01"
+    out = tmp_path / session_id
+    out.mkdir()
+    video = out / "video.mp4"
+    # A 4:5 clip: the poster must still come out 1200x630.
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=720x900:rate=10",
+                    "-t", "3", "-pix_fmt", "yuv420p", str(video)], check=True)
+    store.create_session(session_id, "https://panel.example.eu", "en-US-JennyNeural", 720, 900, str(out))
+    store.finish_session(session_id, str(video), None, 3.0)
+
+    before = server.watch_page(session_id, "https://reel.test")
+    assert "· reel-studio" in before
+    assert f'/videos/{session_id}/poster.jpg?v=' in before
+    assert 'content="https://reel.test/og.png"' not in before
+
+    store.update_watch_page(session_id, page_title="AgentHotel — your agents, always on",
+                            page_description="Any agent, any model, on your own server.", poster_at=1.5)
+    session = store.get_session(session_id)
+    poster = server.ensure_poster(session, force=True)
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0", str(poster)],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    assert probe == "1200,630"
+    assert server.poster_seconds(session) == 1.5
+
+    page = server.watch_page(session_id, "https://reel.test")
+    assert '<meta property="og:title" content="AgentHotel — your agents, always on">' in page
+    assert 'content="Any agent, any model, on your own server."' in page
+    assert store.list_finished_sessions()[0]["page_title"] == "AgentHotel — your agents, always on"
+    # The title card is untouched: page_title is only the page.
+    assert session["title"] == ""
