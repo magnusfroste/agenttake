@@ -1,14 +1,26 @@
+# Reel-studio on any Docker host: `cp .env.example .env`, fill it in, then
+# `docker compose up -d --build`. Put a reverse proxy with HTTPS in front of
+# the port, at the address in REEL_PUBLIC_BASE_URL.
 services:
   reel-studio:
     build: .
+    restart: unless-stopped
     ports:
       - "${PORT:-8000}:8000"
     environment:
       REEL_TRANSPORT: http
-      REEL_API_TOKEN: "${REEL_API_TOKEN:?set REEL_API_TOKEN}"
-      REEL_PUBLIC_BASE_URL: "${REEL_PUBLIC_BASE_URL:?set REEL_PUBLIC_BASE_URL}"
+      REEL_API_TOKEN: "${REEL_API_TOKEN:?set REEL_API_TOKEN in .env}"
+      REEL_PUBLIC_BASE_URL: "${REEL_PUBLIC_BASE_URL:?set REEL_PUBLIC_BASE_URL in .env}"
+      REEL_ALLOWED_HOSTS: "${REEL_ALLOWED_HOSTS:-}"
+      ELEVENLABS_API_KEY: "${ELEVENLABS_API_KEY:-}"
       REEL_OUTPUT_DIR: /data
       HOST: 0.0.0.0
       PORT: 8000
+    # Further settings (REEL_SECRET_<NAME>, REEL_MAX_CLIPS, …) from .env.
+    env_file:
+      - path: .env
+        required: false
     volumes:
-      - "${REEL_HOST_DATA_DIR:-/etc/easypanel/projects/reel-studio/data}:/data"
+      - "${REEL_HOST_DATA_DIR:-./data}:/data"
+    # Chromium needs more shared memory than Docker's 64 MB default.
+    shm_size: "1gb"
