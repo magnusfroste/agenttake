@@ -4,223 +4,275 @@
 
 **Reel-studio turns any AI agent into a video director.** Point your agent at a
 web app and it drives a real browser, decides what to click, narrates what
-matters, and walks away with a polished, narrated MP4 — no human in the loop,
-no editing suite, no screen-recording plugins.
+matters, moves the camera, and walks away with a polished, narrated MP4 and a
+public link — no human in the loop, no editing suite, no screen-recording
+plugins.
 
 It's not another autopilot. It's a clean MCP surface that hands the camera to
 *your* agent. The agent that already knows your product is the best director
 you'll ever hire — Reel-studio just gives it a studio.
 
+▶ **Watch what agents have made:** [reel.froste.eu/theater](https://reel.froste.eu/theater) —
+including [AgentHotel's launch video](https://reel.froste.eu/watch/eadb09c7f7954004a620e12e24794526),
+directed end to end by a Hermes agent with Reel-studio.
+
 **Give the camera to the agent:**
 
 - 🎥 **Agent-directed capture** — `observe` returns a live screenshot plus
-  structured, clickable elements; `act` clicks, types, scrolls, hovers, and
+  structured, clickable elements; `act` clicks, types, scrolls, hovers and
   narrates. The agent sees the screen and directs the shot.
-- 🗣️ **Narration on the beat** — per-step text-to-speech rendered onto the exact
-  moment the content is on screen. Free Edge TTS by default; optional
-  ElevenLabs for premium voices.
-- ✂️ **No dead air** — segment rendering drops the wall-clock gaps between steps,
-  so a seven-take evening becomes a tight first-take film.
-- 🖼️ **1080p, framed to read** — 1920×1080 capture with optional downscale, a
-  click spotlight, and `scroll_to_text` / `assert_visible` so the agent never
-  narrates over something that isn't actually on screen.
-- 🎞️ **Branded and ready to ship** — server-rendered intro/outro title cards,
-  CTA, accent color, and an optional subtle music bed.
-- 🔁 **Edit without a reshoot** — rewrite a line and `rerender` the audio onto
-  the existing recording; no re-recording the browser.
-- 🌐 **Publishes itself** — every finished film gets a public URL and lands in
-  the built-in `/theater`.
-- 🛠️ **Self-improving** — agents file friction and bugs straight into a public
-  `/backlog` roadmap through MCP.
+- 🎬 **A real camera** — shots push in on what the voice names (`wide`,
+  `medium`, `close`), ease at the speed the director sets, and follow clicks.
+  Recorded at a higher pixel density, so a close-up stays sharp.
+- 🗣️ **Narration on the beat** — per-step speech placed on the exact moment its
+  content is on screen. Free Edge voices by default, ElevenLabs optional, and
+  `list_voices` lets the agent cast its own narrator.
+- ✂️ **No dead air** — the minutes an agent spends thinking between steps are
+  cut; long waits can play as a labelled time-lapse that ends when the screen
+  goes still.
+- 👀 **The director sees** — `preview_shot` shows the exact frame before a beat
+  is recorded; `storyboard` shows the finished film as a contact sheet, part by
+  part.
+- 🔁 **Edit without a reshoot** — hide a step, hold a result, speed up a wait,
+  or rewrite a line, then `rerender`: no re-recording the browser.
+- 📐 **Any format** — 16:9 for X and YouTube, or 4:5 from a site's phone
+  layout for the LinkedIn feed, captured sharp at full size.
+- 🎞️ **Branded and ready to ship** — intro and closing cards built from the
+  video's own frames, a call to action with a QR code, smooth transitions, an
+  optional music bed.
+- 🔒 **Secrets stay secret** — CSS masks blur keys and passwords from the first
+  frame, and a password is typed by Reel-studio itself (`{{secret:NAME}}`), so
+  it never passes through the directing model.
+- 🌐 **Publishes itself** — every finished film gets a public watch page with
+  its storyboard, and lands in the built-in `/theater`.
 
-MIT-licensed. Bring your own agent.
-
-▶ **See what agents have already made:**
-https://app-reel-studio.katsu6.easypanel.host/theater
+MIT-licensed. Bring your own agent, on any model.
 
 ---
 
-Under the hood, `reel-studio` is an MCP server that launches headed Chromium on
-Xvfb, records the display with ffmpeg/x11grab, and renders delayed narration
-into the final MP4. Edge TTS is the free default; ElevenLabs is an optional
-premium backend.
+## Run it
 
-## Setup
+Reel-studio is one Docker container: Chromium, Xvfb and ffmpeg behind an MCP
+server on port 8000. It runs anywhere Docker runs. It needs **2 CPU cores and
+2 GB of RAM** (the encoder keeps a core busy while recording) and a few GB of
+disk for the image and the videos. For agents elsewhere to reach it, give it a
+domain with HTTPS.
+
+### Ask your agent to install it
+
+Any agent with a shell on your server can set it up. Paste this:
+
+> Install Reel-studio from https://github.com/magnusfroste/reel-studio on this
+> server with Docker Compose, following its README. Use the domain
+> `reel.example.com` with HTTPS, generate a long random `REEL_API_TOKEN`, and
+> then add it to your own MCP servers so you can direct videos with it.
+
+### Docker on your own server
 
 ```bash
-python3.10 -m venv .venv
+git clone https://github.com/magnusfroste/reel-studio.git && cd reel-studio
+cp .env.example .env   # set REEL_API_TOKEN and REEL_PUBLIC_BASE_URL
+docker compose up -d --build
+```
+
+The MCP endpoint is then `http://<server>:8000/mcp` and videos are kept in
+`./data`. Put your usual reverse proxy (Caddy, Traefik, nginx) in front of
+port 8000 for HTTPS, at the address in `REEL_PUBLIC_BASE_URL`.
+
+### Easypanel, Coolify and similar panels
+
+Create an app from this GitHub repository; it builds from the `Dockerfile`.
+Set `REEL_API_TOKEN` and `REEL_PUBLIC_BASE_URL`, mount a volume at `/data`,
+expose port `8000` and give it a domain — the panel handles TLS.
+
+### AgentHotel
+
+[AgentHotel](https://github.com/magnusfroste/agenthotel) has Reel-studio as a
+ready template: pick it, give it a domain, deploy. The token is generated and
+shown under Credentials, ready to hand to the hotel's agents.
+
+### From source
+
+```bash
+python3 -m venv .venv
 .venv/bin/pip install -e .
-.venv/bin/playwright install chromium
+.venv/bin/playwright install --with-deps chromium
+.venv/bin/python -m reel_studio.server          # MCP over stdio
 ```
 
-System packages `Xvfb` and `ffmpeg` are required.
+Python 3.10+, with `Xvfb` and `ffmpeg` installed. For HTTP instead of stdio,
+set `REEL_TRANSPORT=http`, `REEL_API_TOKEN` and `REEL_PUBLIC_BASE_URL`.
 
-## Run
+## Connect your agent
+
+The MCP endpoint is `https://<your-domain>/mcp` (streamable HTTP), with
+`Authorization: Bearer <REEL_API_TOKEN>` on every request. **No trailing
+slash** — `/mcp/` answers with a redirect that looks like a hang.
+
+Claude Code:
 
 ```bash
-.venv/bin/python -m reel_studio.server
+claude mcp add --transport http reel-studio https://reel.example.com/mcp --header "Authorization: Bearer <REEL_API_TOKEN>"
 ```
 
-The server uses MCP stdio by default. For HTTP mode:
-
-```bash
-REEL_TRANSPORT=http \
-REEL_API_TOKEN=replace-with-a-long-random-token \
-REEL_PUBLIC_BASE_URL=https://reel.example.com \
-# Optional comma-separated extra hostnames:
-# REEL_ALLOWED_HOSTS=internal.example.com,another.example.com \
-.venv/bin/python -m reel_studio.server
-```
-
-HTTP serves a public marketing landing page at `/`, detailed API docs at
-`/docs`, a public video theater at `/theater`, the theater feed at
-`/api/videos`, a public agent backlog at `/backlog` with JSON feed at
-`/api/backlog`, public bug reports at `/bug_report` with JSON feed at
-`/api/bug_reports`, a public JSON health check at `/health`, MCP at `/mcp`, and
-finished videos at `/videos/{session_id}/video.mp4`. Branding and discovery
-assets are available at `/favicon.svg`, `/favicon.png`, and `/og.png`; crawler
-and agent guidance is available at `/robots.txt`, `/sitemap.xml`, and
-`/llms.txt`. MCP requests require
-`Authorization: Bearer <REEL_API_TOKEN>`; finished videos are public by
-default. `REEL_OUTPUT_DIR` defaults to
-`/home/ubuntu/.video-director/sessions`; set it to a persistent volume path
-such as `/data` in a container. The public host is automatically allowed from
-`REEL_PUBLIC_BASE_URL`; use optional comma-separated `REEL_ALLOWED_HOSTS` for
-additional deployment hostnames. Example Claude Desktop / MCP config for local
-stdio:
+Claude Desktop, or any client that takes a command:
 
 ```json
 {
   "mcpServers": {
     "reel-studio": {
-      "command": "/home/ubuntu/repos/video-director/.venv/bin/python",
-      "args": ["-m", "reel_studio.server"],
-      "cwd": "/home/ubuntu/repos/video-director"
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://reel.example.com/mcp", "--header", "Authorization: Bearer <REEL_API_TOKEN>"]
     }
   }
 }
 ```
 
-Tools are `start_session`, `observe`, `act`, `finish`, and `get_status`.
-The `director` MCP prompt walks an agent through the whole loop — plan, one
-session, `act_batch` per beat, narration on every visible step, shots, review,
-`finish` once. `act` and `act_batch` publish the full action contract (every
-verb and its fields) in their input schema, inline with no `$ref`.
-`observe(detail="refs")` returns only ref, role and text per element — no
-screenshot or page text — for when an agent only needs refs to act; elements are
-collected in one pass inside the page either way. A session with no tool call
-for `REEL_IDLE_TIMEOUT_SECONDS` (default `900`, `0` disables) stops recording and
-is marked as ended without a video; its media stays. `observe` gives up after
-`REEL_OBSERVE_TIMEOUT_SECONDS` (default `60`) with a hint instead of hanging the
-client. `finish` refuses a session with no recorded steps, and `review_session`
-flags a take whose visible steps are mostly silent.
-`start_session(mask=[...])` takes CSS selectors that are blurred on every page from
-the first frame — keys, tokens, personal data never appear readable — and the
-`mask`/`unmask` actions blur one element mid-recording. When several controls
-share a name, `observe` marks them `same_name` and flags the one that
-`submits_form`; every stored selector matches exactly one element.
-`start_session` captures at 1920x1080 by default; `width` and `height` remain
-overridable. Set optional `output_size` (for example `1280x720`) to downscale
-only the final MP4 while retaining the larger capture viewport, or set
-`REEL_OUTPUT_SIZE` as the default. Without either setting, output matches the
-capture resolution.
-Optional `title` and `subtitle` add a branded three-second intro card.
-Optional `cta_url` and `cta_text` add a three-second outro card. `accent`
-sets the cards' hex background color. Set `music="subtle"` for a quiet,
-generated ambient bed; the default is `music="none"`. These settings are
-persisted with the session and are also applied during `rerender`.
-`start_session` accepts an optional `provider` (`edge` or `elevenlabs`) and
-defaults to `edge`. Set `REEL_TTS_PROVIDER=elevenlabs` to make ElevenLabs the
-default provider, or select it per session. ElevenLabs requires the
-`ELEVENLABS_API_KEY` environment variable, and the `voice` value is passed as
-the ElevenLabs voice ID. No API key is needed for the default Edge provider.
-Set `REEL_MAX_CLIPS` to the number of newest finished sessions to retain
-(default `50`; `0` disables full-session pruning). Set
-`REEL_KEEP_RAW_CLIPS` to retain `screen.mp4` for only the newest retained
-sessions (default `0`, which keeps raw recordings for all retained sessions);
-older retained sessions keep their public `video.mp4` but cannot be rerendered.
-The token-gated `prune` tool runs this cleanup on demand, and successful
-`finish` calls run it automatically.
-`list_sessions` and `get_session` read durable SQLite metadata, including
-finished sessions and their storyboard steps after a restart.
-The token-gated `submit_backlog`, `list_backlog`, and `update_backlog` tools
-manage the public roadmap. Backlog statuses are `open`, `planned`,
-`in_progress`, `shipped`, and `wont_fix`; updates can include a resolution
-note. Public backlog and bug-report feeds expose the status, note, and update
-timestamp.
-For a finished session, `update_step_narration` edits one storyboard
-narration and `rerender` rebuilds only the audio track onto the existing
-recorded video without re-recording the browser. Overlapping narration is
-reported as warnings; audio that exceeds the original timeline extends the
-last video frame.
-`delete_session(session_id, confirm=true)` removes one finished session's
-media and metadata without pruning unrelated videos. Confirmation is required
-and active sessions cannot be deleted.
-`observe` and `act` return structured feedback plus a viewable screenshot.
-`observe` also includes truncated visible `page_text` so agents can verify
-plain page content such as table rows without reading the image.
-`act` accepts `goto`, `click`, `click_and_wait`, `type`, `select_option`, `press_key`, `set_zoom`, `scroll`, `hover`, `highlight`,
-`scroll_to_text`, and `wait` actions. `select_option` supports native selects
-and ARIA comboboxes; `press_key` sends a keyboard key to the observed control.
-`click_and_wait` (or `click` with `wait_for_url`/`wait_for_text`) waits for the
-destination state before starting narration; `settle_ms` adds a final layout
-stability pause. Use `target_text` to disambiguate a child module from a parent
-sidebar section. `annotate` follows its target through scroll, resize, and
-layout changes and holds for the longer of annotation and narration duration.
-`set_zoom` changes the page's CSS zoom (it reflows the page) between `0.5`
-and `2.0`; for a camera move use `begin_shot` instead.
-`annotate` adds a persistent in-video callout, marker, or underline to an
-observed target for the requested duration; use `dim=true` to reduce competing
-visual noise while the narration explains the target.
-The director can declare and verify shots with `begin_shot` and `verify_shot`.
-Shots record framing (`wide`, `medium`, `close`), zoom, focus target, teaching
-intent, and whether the visual result matched the narration.
+Hermes Agent (`config.yaml`):
 
-**Shots move the camera.** `medium` pushes in to 1.5x and `close` to 2x on the
-shot's `focus_ref` or `focus_text` (an explicit `zoom` from 1 to 2.5 overrides
-the framing); `wide` pulls back to the full page. The move starts with the
-shot's first step and eases over a second, so the push-in lands while that
-step's narration names what it frames. While pushed in, the camera pans to any
-element a step clicks or types into that is outside the frame, captions are
-drawn inside the framed region at their normal size, and a new page returns
-the camera to wide. The browser is recorded at a higher pixel density than its
-layout (2560x1440 for a 1920x1080 page; `REEL_CAPTURE_SCALE=1` turns it off),
-so text stays sharp at the closest framing; the final video and screenshots
-are at the CSS size. Moves are rendered in post and kept in `camera.json`, so
-`rerender` reproduces them.
-When shots exist, `finish` acts as a quality gate and refuses to publish until
-every shot is explicitly verified. If a live focus text is missing,
-`verify_shot` records `needs_review` automatically.
-Use `review_session` to run an automated post-recording quality check: scanning for
-accidental secrets or tokens in URLs and storyboard metadata, verifying focus-narration
-alignment, and checking ending quality before publishing.
-Watch finished videos on `/theater` or directly on `/watch/{session_id}` with
-a full storyboard breakdown and MP4 download links.
-`scroll_to_text` finds visible text,
-scrolls it into view, and returns its bounding box. Use `assert_visible` to
-check text without adding a storyboard step or changing the recording.
-Re-observe after navigation to refresh element refs;
-same-page DOM re-renders are handled by re-queryable locators. The scripted
+```yaml
+mcp_servers:
+  reel-studio:
+    url: "https://reel.example.com/mcp"
+    headers:
+      Authorization: "Bearer <REEL_API_TOKEN>"
+    timeout: 300
+```
+
+Then ask your agent to read the `director` prompt and make a video.
+
+## How a take works
+
+The `director` MCP prompt walks an agent through the loop: explore the site
+first and write the script; `start_session` once; one `act_batch` per beat,
+with narration on every visible step and a caption on every line; a
+`begin_shot` before each camera move, checked with `preview_shot`;
+`review_session`; `finish` once. After that, `storyboard` shows the film part
+by part, and `edit_step` plus `rerender` fix a beat without recording it again.
+
+---
+
+## Reference
+
+### Tools
+
+| | |
+|---|---|
+| **Session** | `start_session`, `get_status`, `finish`, `list_sessions`, `get_session`, `delete_session`, `prune` |
+| **Directing** | `observe`, `act`, `act_batch`, `assert_visible`, `begin_shot`, `preview_shot`, `verify_shot`, `review_session` |
+| **After finish** | `storyboard`, `edit_step`, `update_step_narration`, `rerender` |
+| **Voices** | `list_voices` |
+| **Roadmap** | `submit_backlog`, `list_backlog`, `update_backlog` |
+
+`act` and `act_batch` publish the full action contract (every verb and its
+fields) in their input schema, inline with no `$ref`. Verbs: `goto`, `click`,
+`click_and_wait`, `type`, `select_option`, `press_key`, `hover`, `highlight`,
+`scroll`, `scroll_to_text`, `wait`, `caption`, `annotate`, `set_zoom`, `mask`
+and `unmask`. Any step can carry `narration`, `narration_timing`,
+`target_text`, `wait_for_url`, `wait_for_text`, `wait_timeout_ms`, `settle_ms`,
+and the flags `quiet` (silent on purpose), `offscreen` (done but cut from the
+video — signing in, a cookie banner) and `speed` (2–16, a labelled time-lapse).
+
+### Recording
+
+- **Size and density** — 1920×1080 by default (`width`/`height` override). The
+  browser is recorded at a higher pixel density than its layout (2560×1440 for a
+  1920×1080 page; `REEL_CAPTURE_SCALE=1` turns it off), so text stays sharp at
+  the closest framing. `output_size` downscales the final MP4; an `output_size`
+  larger than the page, at the same aspect and at most 2×, records at that scale
+  — a 720×900 page with `output_size` `1080x1350` gives a sharp 4:5 video of a
+  site's phone layout.
+- **Fullscreen, always** — the browser runs fullscreen with no tab or address
+  bar, checked at the start and after every step and restored if it ever leaves.
+- **Masks** — `start_session(mask=[...])` takes CSS selectors that are blurred
+  on every page from the first frame; `mask` / `unmask` blur one element
+  mid-recording.
+- **Secrets** — a `type` action whose text is `{{secret:NAME}}` types
+  Reel-studio's own `REEL_SECRET_NAME` and marks the field secret;
+  `start_session` lists the names it has, never the values.
+- **Idle sessions** — a session with no tool call for
+  `REEL_IDLE_TIMEOUT_SECONDS` (default `900`, `0` disables) stops recording and
+  is marked as ended; its media stays. `observe` gives up after
+  `REEL_OBSERVE_TIMEOUT_SECONDS` (default `60`) with a hint instead of hanging.
+- **Element refs** — `observe(detail="refs")` returns only ref, role and text
+  per element. When several controls share a name, `observe` marks them
+  `same_name` and flags the one that `submits_form`. Re-observe after
+  navigation; same-page re-renders are handled by re-queryable locators.
+
+### Camera
+
+`medium` pushes in to 1.5× and `close` to 2× on the shot's `focus_ref` or
+`focus_text` (an explicit `zoom` from 1 to 2.5 overrides the framing); `wide`
+pulls back to the full page. `focus_text` prefers the page's content over its
+navigation. The move starts with the shot's first step and eases over
+`move_seconds` (default 1), so the push-in lands while that step's narration
+names what it frames. While pushed in, the camera pans to anything a step
+clicks or types into outside the frame; quiet and offscreen steps never move
+it; a new page cuts back to wide. Moves are rendered in post and kept in
+`camera.json`, so `rerender` reproduces them. When shots exist, `finish`
+refuses to publish until every shot is verified.
+
+### Rendering
+
+- **Segments** — each step keeps its narration plus a short tail; the time
+  between steps is cut. A step with `speed` keeps all its footage until the
+  screen goes still, played fast under a badge.
+- **Transitions** — `smooth` (default) dissolves within a page and cuts on a
+  new one; `cuts` cuts everywhere.
+- **Cards** — `title`/`subtitle` add an intro card, `cta_url`/`cta_text` a
+  closing card with a QR code of the link (`closing_qr`); `title_background`
+  `auto` builds them on blurred stills from the video. `accent` sets the
+  colour; `music="subtle"` adds a quiet generated bed.
+- **Storyboard** — every render records where each part landed and a still of
+  it; the watch page shows the storyboard, and clicking a step plays from there.
+- **Re-voicing** — `update_step_narration` edits one line and `rerender`
+  rebuilds the film from the original recording; unchanged lines reuse their
+  audio.
+- **Review** — `review_session` scans for secrets in URLs and metadata, checks
+  focus-narration alignment and flags a mostly silent take.
+
+### Voices
+
+`provider` is `edge` (free, the default) or `elevenlabs`. Set
+`ELEVENLABS_API_KEY` to use ElevenLabs, where `voice` is an ElevenLabs voice
+id; `REEL_TTS_PROVIDER=elevenlabs` makes it the default. `start_session`
+speaks one word first and refuses a voice that cannot speak, before anything
+is recorded.
+
+### Public pages
+
+`/` (landing page), `/docs` (API docs), `/theater` and `/api/videos`,
+`/watch/{session_id}`, `/videos/{session_id}/video.mp4`, `/backlog` and
+`/api/backlog`, `/bug_report` and `/api/bug_reports`, `/health`, plus
+`/favicon.svg`, `/og.png`, `/robots.txt`, `/sitemap.xml` and `/llms.txt`.
+Only `/mcp` needs the token; finished videos are public.
+
+### Configuration
+
+| Variable | |
+|---|---|
+| `REEL_API_TOKEN` | **Required for HTTP.** The bearer token MCP clients send. |
+| `REEL_PUBLIC_BASE_URL` | **Required for HTTP.** The public address, e.g. `https://reel.example.com`; its host is allowed automatically. |
+| `REEL_ALLOWED_HOSTS` | Extra hostnames, comma-separated. |
+| `REEL_TRANSPORT` | `stdio` (default) or `http`. |
+| `ELEVENLABS_API_KEY` | Enables ElevenLabs voices. |
+| `REEL_TTS_PROVIDER` | Default voice provider, `edge` or `elevenlabs`. |
+| `REEL_SECRET_<NAME>` | A secret the director types as `{{secret:NAME}}`. |
+| `REEL_OUTPUT_DIR` | Where sessions are kept (`/data` in the container). |
+| `REEL_DB_PATH` | SQLite file; defaults to one under `REEL_OUTPUT_DIR`. |
+| `REEL_OUTPUT_SIZE` | Default final video size, e.g. `1280x720`. |
+| `REEL_CAPTURE_SCALE` | Capture density; `1` turns hi-res capture off. |
+| `REEL_IDLE_TIMEOUT_SECONDS` | Stop an abandoned session (default `900`). |
+| `REEL_OBSERVE_TIMEOUT_SECONDS` | Give up on a slow `observe` (default `60`). |
+| `REEL_MAX_CLIPS` | Newest finished sessions to keep (default `50`, `0` keeps all). |
+| `REEL_KEEP_RAW_CLIPS` | Keep `screen.mp4` (needed to rerender) for only the newest N (default `0`, all). |
+| `REEL_SEGMENTED` | `0` renders the raw recording instead of cut segments. |
+
 `examples/demo_client.py` runs a complete smoke test against
 `https://example.com`.
 
-## Deploy on EasyPanel/Hetzner
+## Contributing
 
-Build the image with `docker compose build`, then configure
-`REEL_API_TOKEN`, `REEL_PUBLIC_BASE_URL`, and optionally `REEL_DB_PATH` in
-EasyPanel. `REEL_DB_PATH` defaults to a SQLite file under the configured output
-root, so it persists when `/data` is mounted. Mount a persistent
-volume at `/data` (for example, the shared
-`/etc/easypanel/projects/reel-studio/data` host path) and expose container port
-`8000`. Point a domain at the service; EasyPanel/Traefik handles TLS. The
-included `docker-compose.yml` documents these settings.
-
-For a remote MCP client, connect to
-`https://reel.example.com/mcp` using the streamable HTTP transport and send
-`Authorization: Bearer <REEL_API_TOKEN>` on each request. `finish` returns both
-the local `video_path` and a downloadable `video_url`.
-
-## Auto-merge
-
-Label a pull request `auto-merge` and it will be merged automatically once the
-workflow's package import and compile checks pass.
+Agents file friction and bugs into the public `/backlog` through MCP. Label a
+pull request `auto-merge` and it is merged once the package import and compile
+checks pass.

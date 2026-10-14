@@ -234,9 +234,12 @@ def build_llms_txt(base_url: str) -> str:
     base = base_url.rstrip("/")
     return f"""# reel-studio
 
-reel-studio turns any AI agent into a video director for narrated browser tutorials.
-Bring your own agent: observe the UI, direct deliberate actions, narrate the story,
-and finish a polished MP4.
+reel-studio turns any AI agent into a video director for narrated browser tutorials
+and product demos. Bring your own agent, on any model: observe the UI, direct
+deliberate actions, move the camera, narrate the story, and finish a polished MP4
+with a public watch page.
+
+Start with the `director` MCP prompt: it walks an agent through the whole loop.
 
 ## MCP
 
@@ -246,6 +249,20 @@ Authentication: `Authorization: Bearer <REEL_API_TOKEN>`
 Core loop: `start_session` → `observe` → `act` with optional narration → `finish`.
 Core tools include `start_session`, `observe`, `act`, `act_batch`, `finish`,
 `get_status`, `get_session`, and `list_sessions`.
+Camera: `begin_shot(framing=wide|medium|close, focus_text|focus_ref, move_seconds)`
+before the step it is for, checked with `preview_shot` (a still of the exact frame);
+`verify_shot` after. Step flags, inside the action: `quiet` (silent on purpose),
+`offscreen` (done but cut — signing in), `speed` 2-16 (a labelled time-lapse).
+After `finish`: `storyboard` shows the film part by part; `edit_step` hides a step,
+sets a hold or a speed; `update_step_narration` rewrites a line; `rerender` applies
+them without recording again.
+Secrets: type a password as `{{{{secret:NAME}}}}` and reel-studio types its own
+`REEL_SECRET_NAME` and masks the field; `start_session` lists the names it has.
+`start_session(mask=[...])` blurs CSS selectors from the first frame.
+Formats: 1920x1080 by default; `output_size` larger than the page at the same
+aspect records at that scale (a 720x900 page with `output_size` `1080x1350` is a
+sharp 4:5 video of a site's phone layout). Voices: `list_voices`, Edge free by
+default, ElevenLabs with `provider="elevenlabs"`.
 `act_batch(session_id, steps)` runs a whole beat of actions in one call; each
 step is `{{"action": ..., "narration": ...}}` and execution stops on first error.
 Finished sessions can be removed explicitly with `delete_session(session_id,
@@ -255,7 +272,8 @@ The theater's Manage mode deletes over HTTP with
 `DELETE /api/videos/{{id}}?confirm=true` and the same bearer token.
 
 Optional `start_session` branding parameters: `title`, `subtitle`, `accent`,
-`cta_url`, `cta_text`, and `music` (`none` or `subtle`).
+`cta_url`, `cta_text` (a closing card with a QR code of the link), `transitions`
+(`smooth` or `cuts`), `title_background`, and `music` (`none` or `subtle`).
 Target text reliably with `scroll_to_text` and non-recording `assert_visible`.
 Use `click_and_wait` (or `click` with `wait_for_url`, `wait_for_text`, and
 `settle_ms`) so narration starts after the destination page is visibly ready.
@@ -274,6 +292,12 @@ token-protected `prune` tool to clean old finished sessions manually.
 - `/backlog` and `/bug_report` — public roadmap and bug reports
 - `/docs` — detailed API documentation
 - `/api/videos`, `/api/backlog`, `/api/bug_reports` — JSON feeds
+
+## Run your own
+
+Open source (MIT): https://github.com/magnusfroste/reel-studio — one Docker
+container (`docker compose up -d --build`), 2 CPU cores and 2 GB RAM, on any
+server, in Easypanel, or as a template in AgentHotel.
 
 """
 
@@ -638,8 +662,10 @@ def landing_page(base_url: str = "/") -> str:
     <ol class="steps">
       <li><span><strong>Observe</strong> The agent sees the current page, screenshot, and interactive refs.</span></li>
       <li><span><strong>Act</strong> It clicks, types, scrolls, hovers, or navigates one deliberate step at a time.</span></li>
-      <li><span><strong>Narrate</strong> Each step can explain the product story in a natural voice.</span></li>
-      <li><span><strong>Render</strong> reel-studio produces a downloadable MP4 with audio and screen capture.</span></li>
+      <li><span><strong>Frame</strong> It pushes the camera in on what matters, and previews the exact frame first.</span></li>
+      <li><span><strong>Narrate</strong> Each step explains the product story in a natural voice, with a caption for muted viewers.</span></li>
+      <li><span><strong>Render</strong> The dead air between steps is cut; the film gets title and closing cards and a public page.</span></li>
+      <li><span><strong>Edit</strong> The agent reads its storyboard and fixes a beat without shooting it again.</span></li>
     </ol>
     <h2>Latest from the theater</h2>
     {featured_content}
@@ -652,6 +678,11 @@ def landing_page(base_url: str = "/") -> str:
   --header "Authorization: Bearer &lt;YOUR_TOKEN&gt;"</code></pre>
     <p class="muted">Use the server's <code>REEL_API_TOKEN</code> as the
     placeholder. Never commit or share the real token.</p>
+    <h2>Run your own</h2>
+    <p>reel-studio is open source (MIT) and one Docker container: on your own
+    server with <code>docker compose up -d --build</code>, in Easypanel, or as a
+    template in AgentHotel. Or ask your agent to install it.</p>
+    <p><a class="button secondary" href="https://github.com/magnusfroste/reel-studio#run-it">How to run it →</a></p>
     """
     description = (
         "Turn any AI agent into a video director for narrated browser tutorials "
