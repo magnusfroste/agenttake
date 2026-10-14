@@ -157,6 +157,11 @@ def init_schema() -> None:
             ("transitions", "TEXT NOT NULL DEFAULT 'smooth'"),
             ("title_background", "TEXT NOT NULL DEFAULT 'auto'"),
             ("closing_qr", "INTEGER NOT NULL DEFAULT 1"),
+            # The public watch page, apart from the video: what a shared link
+            # shows. Not the title card — changing these never re-renders.
+            ("page_title", "TEXT NOT NULL DEFAULT ''"),
+            ("page_description", "TEXT NOT NULL DEFAULT ''"),
+            ("poster_at", "REAL"),
         ):
             if column not in session_columns:
                 connection.execute(
@@ -386,6 +391,28 @@ def update_session_voice(session_id: str, voice: str, provider: str) -> None:
         )
 
 
+def update_watch_page(
+    session_id: str,
+    page_title: str | None = None,
+    page_description: str | None = None,
+    poster_at: float | None = None,
+) -> None:
+    """Set what a finished video's watch page and its link previews show."""
+    init_schema()
+    fields, values = [], []
+    for column, value in (("page_title", page_title), ("page_description", page_description), ("poster_at", poster_at)):
+        if value is not None:
+            fields.append(f"{column} = ?")
+            values.append(value)
+    if not fields:
+        return
+    with _lock, _connect() as connection:
+        connection.execute(
+            f"UPDATE sessions SET {', '.join(fields)} WHERE id = ?",
+            (*values, session_id),
+        )
+
+
 def update_session_duration(session_id: str, duration_seconds: float) -> None:
     init_schema()
     with _lock, _connect() as connection:
@@ -447,7 +474,7 @@ def list_finished_sessions() -> list[dict[str, Any]]:
     with _lock, _connect() as connection:
         rows = connection.execute(
             """
-            SELECT id, start_url, title, duration_seconds, finished_at, video_path,
+            SELECT id, start_url, title, page_title, duration_seconds, finished_at, video_path,
                    video_url, output_dir
             FROM sessions
             WHERE status = 'finished'

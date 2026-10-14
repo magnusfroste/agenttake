@@ -160,7 +160,7 @@ by part, and `edit_step` plus `rerender` fix a beat without recording it again.
 |---|---|
 | **Session** | `start_session`, `get_status`, `finish`, `list_sessions`, `get_session`, `delete_session`, `prune` |
 | **Directing** | `observe`, `act`, `act_batch`, `assert_visible`, `begin_shot`, `preview_shot`, `verify_shot`, `review_session` |
-| **After finish** | `storyboard`, `edit_step`, `update_step_narration`, `rerender` |
+| **After finish** | `storyboard`, `edit_step`, `update_step_narration`, `rerender`, `set_watch_page` |
 | **Voices** | `list_voices` |
 | **Roadmap** | `submit_backlog`, `list_backlog`, `update_backlog` |
 
@@ -228,6 +228,10 @@ refuses to publish until every shot is verified.
 - **Re-voicing** — `update_step_narration` edits one line and `rerender`
   rebuilds the film from the original recording; unchanged lines reuse their
   audio.
+- **Sharing** — a shared watch link previews as the video, not as
+  reel-studio: a 1200x630 poster made from a frame of the film (any aspect
+  ratio, fitted over a blurred copy of itself). `set_watch_page` gives the page
+  its own title and description and picks the poster's moment.
 - **Review** — `review_session` scans for secrets in URLs and metadata, checks
   focus-narration alignment and flags a mostly silent take.
 
