@@ -455,6 +455,12 @@ def video_url(session_id: str) -> str:
     return f"/videos/{session_id}/video.mp4"
 
 
+def public_video_url(session_id: str) -> str | None:
+    """The finished video's absolute URL at the address this service has now."""
+    base = os.environ.get("REEL_PUBLIC_BASE_URL", "").rstrip("/")
+    return f"{base}{video_url(session_id)}" if base else None
+
+
 def display_title_for(session: dict) -> str:
     """The title a finished video is shown and shared under."""
     if (session.get("page_title") or "").strip():
@@ -2544,7 +2550,9 @@ async def rerender(
     return {
         "ok": True,
         "duration": round(duration, 3),
-        "video_url": session["video_url"],
+        # From the address the service has now, not the one stored at finish:
+        # after a move to another hostname the stored URL is dead.
+        "video_url": public_video_url(session_id) or session["video_url"],
         "warnings": warnings,
     }
 
