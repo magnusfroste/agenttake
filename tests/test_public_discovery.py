@@ -165,3 +165,11 @@ def test_watch_page_shares_its_own_title_and_poster(tmp_path, monkeypatch):
     assert store.list_finished_sessions()[0]["page_title"] == "AgentHotel — your agents, always on"
     # The title card is untouched: page_title is only the page.
     assert session["title"] == ""
+
+
+def test_public_video_url_follows_the_current_address(monkeypatch):
+    from reel_studio import server
+    monkeypatch.setenv("REEL_PUBLIC_BASE_URL", "https://take.example.com/")
+    assert server.public_video_url("abc") == "https://take.example.com/videos/abc/video.mp4"
+    monkeypatch.delenv("REEL_PUBLIC_BASE_URL")
+    assert server.public_video_url("abc") is None
