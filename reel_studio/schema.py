@@ -79,7 +79,7 @@ ACTION_CONTRACT = (
     "the previous beat; review does not flag it), offscreen (true: done but cut "
     "from the video — signing in, a cookie banner; no narration), speed (2-16: show "
     "the step's footage until the next step as a time-lapse instead of cutting it). "
-    "A secret (a password) is typed with text \"{{secret:NAME}}\": reel-studio types its "
+    "A secret (a password) is typed with text \"{{secret:NAME}}\": AgentTake types its "
     "own REEL_SECRET_NAME, the value never passes through you, and the field is masked; "
     "start_session lists the names it has."
 )
@@ -91,13 +91,13 @@ SECRET_PLACEHOLDER = re.compile(r"^\s*(?:\{\{\s*secret:\s*([A-Za-z0-9_]+)\s*\}\}
 
 
 def secret_names() -> list[str]:
-    """The secrets reel-studio can type: REEL_SECRET_<NAME> in its environment."""
+    """The secrets AgentTake can type: REEL_SECRET_<NAME> in its environment."""
     return sorted(k[len("REEL_SECRET_"):] for k in os.environ if k.startswith("REEL_SECRET_") and os.environ[k])
 
 
 def resolve_secret(text: str) -> tuple[str | None, str | None]:
     """(name, value) when text is a secret placeholder, else (None, None).
-    value is None for a name reel-studio does not have."""
+    value is None for a name AgentTake does not have."""
     match = SECRET_PLACEHOLDER.match(text or "")
     if not match:
         return None, None

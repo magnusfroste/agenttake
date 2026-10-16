@@ -1,8 +1,8 @@
-# Reel-studio on any Docker host: `cp .env.example .env`, fill it in, then
+# AgentTake on any Docker host: `cp .env.example .env`, fill it in, then
 # `docker compose up -d --build`. Put a reverse proxy with HTTPS in front of
 # the port, at the address in REEL_PUBLIC_BASE_URL.
 services:
-  reel-studio:
+  agenttake:
     build: .
     restart: unless-stopped
     ports:

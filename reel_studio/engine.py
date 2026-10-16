@@ -1167,8 +1167,8 @@ class BrowserSession:
                         if secret_value is None:
                             return await self.error_result(
                                 "unknown_secret",
-                                f"reel-studio has no secret {secret_name}. Its operator sets "
-                                f"REEL_SECRET_{secret_name} in reel-studio's environment; it has: "
+                                f"AgentTake has no secret {secret_name}. Its operator sets "
+                                f"REEL_SECRET_{secret_name} in AgentTake's environment; it has: "
                                 f"{', '.join(secret_names()) or 'none'}.",
                             )
                         await target.evaluate("(el) => el.setAttribute('data-secret', '')")

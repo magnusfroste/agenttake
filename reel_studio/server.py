@@ -1,4 +1,4 @@
-"""FastMCP entry point for Reel Studio."""
+"""FastMCP entry point for AgentTake (formerly reel-studio)."""
 
 import asyncio
 import time
@@ -97,7 +97,7 @@ def transport_security_from_env() -> TransportSecuritySettings:
     )
 
 
-mcp = FastMCP("reel-studio", transport_security=transport_security_from_env())
+mcp = FastMCP("agenttake", transport_security=transport_security_from_env())
 sessions: dict[str, BrowserSession] = {}
 
 
@@ -190,10 +190,10 @@ def page_shell(
 
     og_image_path and share_title are what a link preview on LinkedIn, X or
     Slack shows — a watch page passes its own poster and title, so a shared
-    video looks like the video and not like reel-studio.
+    video looks like the video and not like AgentTake.
     """
     escaped_title = html.escape(title)
-    escaped_share_title = html.escape(share_title or f"{title} · reel-studio", quote=True)
+    escaped_share_title = html.escape(share_title or f"{title} · AgentTake", quote=True)
     escaped_description = html.escape(description, quote=True)
     canonical_url = html.escape(
         f"{base_url.rstrip('/')}{canonical_path}", quote=True
@@ -204,13 +204,13 @@ def page_shell(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{escaped_title} · reel-studio</title>
+  <title>{escaped_title} · AgentTake</title>
   <meta name="description" content="{escaped_description}">
   <link rel="canonical" href="{canonical_url}">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="alternate icon" href="/favicon.png" type="image/png">
   <meta property="og:type" content="website">
-  <meta property="og:site_name" content="reel-studio">
+  <meta property="og:site_name" content="AgentTake">
   <meta property="og:title" content="{escaped_share_title}">
   <meta property="og:description" content="{escaped_description}">
   <meta property="og:url" content="{canonical_url}">
@@ -226,7 +226,7 @@ def page_shell(
 </head>
 <body>
   <main>
-    <nav><strong>reel-studio</strong><span><a href="/">Home</a> · <a href="/theater">Theater</a> · <a href="/backlog">Backlog</a> · <a href="/bug_report">Bug reports</a> · <a href="/docs">Docs</a></span></nav>
+    <nav><strong>AgentTake</strong><span><a href="/">Home</a> · <a href="/theater">Theater</a> · <a href="/backlog">Backlog</a> · <a href="/bug_report">Bug reports</a> · <a href="/docs">Docs</a></span></nav>
     {content}
   </main>
 </body>
@@ -240,9 +240,9 @@ def mcp_endpoint() -> str:
 
 def build_llms_txt(base_url: str) -> str:
     base = base_url.rstrip("/")
-    return f"""# reel-studio
+    return f"""# AgentTake
 
-reel-studio turns any AI agent into a video director for narrated browser tutorials
+AgentTake turns any AI agent into a video director for narrated browser tutorials
 and product demos. Bring your own agent, on any model: observe the UI, direct
 deliberate actions, move the camera, narrate the story, and finish a polished MP4
 with a public watch page.
@@ -265,7 +265,7 @@ After `finish`: `storyboard` shows the film part by part; `edit_step` hides a st
 sets a hold or a speed; `update_step_narration` rewrites a line; `rerender` applies
 them without recording again. Before sharing, `set_watch_page` gives the watch page a
 title, a description and the moment its link-preview image is taken from.
-Secrets: type a password as `{{{{secret:NAME}}}}` and reel-studio types its own
+Secrets: type a password as `{{{{secret:NAME}}}}` and AgentTake types its own
 `REEL_SECRET_NAME` and masks the field; `start_session` lists the names it has.
 `start_session(mask=[...])` blurs CSS selectors from the first frame.
 Formats: 1920x1080 by default; `output_size` larger than the page at the same
@@ -304,7 +304,7 @@ token-protected `prune` tool to clean old finished sessions manually.
 
 ## Run your own
 
-Open source (MIT): https://github.com/magnusfroste/reel-studio — one Docker
+Open source (MIT): https://github.com/magnusfroste/agenttake — one Docker
 container (`docker compose up -d --build`), 2 CPU cores and 2 GB RAM, on any
 server, in Easypanel, or as a template in AgentHotel.
 
@@ -416,7 +416,7 @@ def _generate_png_asset(path: Path, width: int, height: int) -> None:
     else:
         filters = ",".join(
             [
-                f"drawtext=fontfile={FONT_PATH}:text='Reel-studio':"
+                f"drawtext=fontfile={FONT_PATH}:text='AgentTake':"
                 "fontcolor=white:fontsize=92:x=80:y=170",
                 f"drawtext=fontfile={FONT_PATH}:text='The ultimate tool for agentic directors':"
                 "fontcolor=#b9c8ff:fontsize=38:x=84:y=300",
@@ -507,7 +507,7 @@ def ensure_poster(session: dict, force: bool = False) -> Path | None:
         capture_output=True, text=True, timeout=60,
     )
     if result.returncode != 0 or not tmp.is_file():
-        print(f"[reel-studio] poster for {session['id']} failed: {(result.stderr or '')[-300:]}", flush=True)
+        print(f"[agenttake] poster for {session['id']} failed: {(result.stderr or '')[-300:]}", flush=True)
         tmp.unlink(missing_ok=True)
         return None
     tmp.replace(path)
@@ -646,8 +646,8 @@ def video_admin_script() -> str:
         if (!token || retry) {
           token = window.prompt(
             retry
-              ? "That token was rejected. Enter the reel-studio admin token:"
-              : "Enter the reel-studio admin token (the REEL_API_TOKEN):",
+              ? "That token was rejected. Enter the AgentTake admin token:"
+              : "Enter the AgentTake admin token (the REEL_API_TOKEN):",
             token);
           if (token === null) return "";
           token = token.trim();
@@ -722,12 +722,14 @@ def landing_page(base_url: str = "/") -> str:
     <section class="hero">
       <div class="eyebrow">Your AI product demo team</div>
       <h1>Give your product a demo it deserves.</h1>
-      <p class="lede">reel-studio lets an AI agent log into your web app and
+      <p class="lede">AgentTake lets an AI agent log into your web app and
       autonomously produce cool, inspiring narrated demo and marketing videos.
       It is like having an employee who demos your product better than you can.</p>
+      <p class="muted">Part of <a href="https://github.com/magnusfroste/agenthotel">AgentHotel</a>,
+      where it comes installed as Take — and it runs anywhere on its own.</p>
       <div class="actions">
         <a class="button" href="/docs">Read the docs</a>
-        <a class="button secondary" href="https://github.com/magnusfroste/reel-studio">View on GitHub</a>
+        <a class="button secondary" href="https://github.com/magnusfroste/agenttake">View on GitHub</a>
       </div>
     </section>
     <h2>Turn complex flows into compelling stories</h2>
@@ -749,15 +751,15 @@ def landing_page(base_url: str = "/") -> str:
     <h2>Connect your agent</h2>
     <p class="endpoint">MCP endpoint: <code>{endpoint}</code></p>
     <!-- Example placeholder: Bearer <YOUR_TOKEN> -->
-    <pre><code>claude mcp add --transport http reel-studio {endpoint} \
+    <pre><code>claude mcp add --transport http agenttake {endpoint} \
   --header "Authorization: Bearer &lt;YOUR_TOKEN&gt;"</code></pre>
     <p class="muted">Use the server's <code>REEL_API_TOKEN</code> as the
     placeholder. Never commit or share the real token.</p>
     <h2>Run your own</h2>
-    <p>reel-studio is open source (MIT) and one Docker container: on your own
+    <p>AgentTake is open source (MIT) and one Docker container: on your own
     server with <code>docker compose up -d --build</code>, in Easypanel, or as a
     template in AgentHotel. Or ask your agent to install it.</p>
-    <p><a class="button secondary" href="https://github.com/magnusfroste/reel-studio#run-it">How to run it →</a></p>
+    <p><a class="button secondary" href="https://github.com/magnusfroste/agenttake#run-it">How to run it →</a></p>
     """
     description = (
         "Turn any AI agent into a video director for narrated browser tutorials "
@@ -768,7 +770,7 @@ def landing_page(base_url: str = "/") -> str:
         + json.dumps({
             "@context": "https://schema.org",
             "@type": "SoftwareApplication",
-            "name": "reel-studio",
+            "name": "AgentTake",
             "applicationCategory": [
                 "DeveloperApplication",
                 "MultimediaApplication",
@@ -937,8 +939,8 @@ def theater_page(base_url: str = "/") -> str:
     <section class="hero" style="padding-bottom: 28px;">
       <div class="eyebrow">Public showcase</div>
       <h1>Theater.</h1>
-      <p class="lede">Watch the latest narrated product stories created by
-      reel-studio agents.</p>
+      <p class="lede">Watch the latest narrated product stories directed by
+      agents with AgentTake.</p>
       <button id="manage-toggle" class="button secondary" type="button" style="margin-top:16px;">Manage videos</button>
     </section>
     <div id="theater-videos" class="theater-grid">
@@ -1045,7 +1047,7 @@ def bug_report_page(base_url: str = "/") -> str:
     return page_shell(
         "Public bug reports",
         content,
-        "Track known reel-studio bugs found while directing real product stories.",
+        "Track known AgentTake bugs found while directing real product stories.",
         "/bug_report",
         base_url,
     )
@@ -1311,13 +1313,13 @@ def docs_page(base_url: str = "/") -> str:
     variable. Finished videos are public by default: browse
     <a href="/theater">/theater</a>, query <code>/api/videos</code>, or play
     the relative <code>video_url</code> directly without a token.</p>
-    <p><a href="/">← Back to the reel-studio overview</a></p>
+    <p><a href="/">← Back to the AgentTake overview</a></p>
     """
     content += '<p class="muted">Agent brief: <a href="/llms.txt">/llms.txt</a></p>'
     return page_shell(
         "MCP and API docs",
         content,
-        "Learn how AI agents use reel-studio to direct narrated browser tutorials.",
+        "Learn how AI agents use AgentTake to direct narrated browser tutorials.",
         "/docs",
         base_url,
     )
@@ -1483,7 +1485,7 @@ async def reap_idle_sessions(now: float | None = None) -> list[str]:
             pass
         store.mark_session_error(session_id)
         reaped.append(session_id)
-        print(f"[reel-studio] stopped idle session {session_id}: no tool call for {idle_timeout_seconds():.0f}s", flush=True)
+        print(f"[agenttake] stopped idle session {session_id}: no tool call for {idle_timeout_seconds():.0f}s", flush=True)
     return reaped
 
 
@@ -1502,7 +1504,7 @@ def ensure_idle_reaper() -> None:
             try:
                 await reap_idle_sessions()
             except Exception as exc:  # never let the reaper die
-                print(f"[reel-studio] idle check failed: {exc}", flush=True)
+                print(f"[agenttake] idle check failed: {exc}", flush=True)
 
     _reaper_task = asyncio.create_task(loop())
 
@@ -1513,7 +1515,7 @@ def _touch(session_id: str) -> None:
         session.touch()
 
 
-DIRECTOR_PROMPT = """You are directing a narrated screen recording with reel-studio.
+DIRECTOR_PROMPT = """You are directing a narrated screen recording with AgentTake.
 The screen records from start_session until finish, so plan first and record once.
 
 1. Before start_session: find your way around the site with your own browser
@@ -1539,7 +1541,7 @@ The screen records from start_session until finish, so plan first and record onc
    banner, get to the first page worth showing. Open the video on the product,
    not on a login form — the first seconds decide whether anyone watches.
    A password is never yours to handle: type it as {"type": "type", "ref":
-   ..., "text": "{{secret:NAME}}"} and reel-studio types its own
+   ..., "text": "{{secret:NAME}}"} and AgentTake types its own
    REEL_SECRET_NAME into the field and masks it. start_session lists the
    names it has under "secrets"; ask the operator to add one if it is missing.
    The voice is yours to choose: list_voices(language="en") lists them with
@@ -1612,7 +1614,7 @@ The screen records from start_session until finish, so plan first and record onc
 """
 
 
-@mcp.prompt(name="director", description="How to direct a narrated recording with reel-studio, start to finish")
+@mcp.prompt(name="director", description="How to direct a narrated recording with AgentTake, start to finish")
 def director() -> str:
     return DIRECTOR_PROMPT
 
@@ -1632,7 +1634,7 @@ async def list_voices(
     ] = "",
     provider: Annotated[
         str,
-        Field(description="edge (free, default) or elevenlabs (natural voices; needs ELEVENLABS_API_KEY on this reel-studio).",
+        Field(description="edge (free, default) or elevenlabs (natural voices; needs ELEVENLABS_API_KEY on this AgentTake).",
               json_schema_extra={"enum": ["edge", "elevenlabs"]}),
     ] = "edge",
 ) -> dict:
@@ -1641,7 +1643,7 @@ async def list_voices(
     The free Edge provider has several hundred neural voices across languages;
     every session used to get the default en-US-JennyNeural because nothing
     told an agent what else there was. With an ElevenLabs key on this
-    reel-studio, provider="elevenlabs" lists the account's voices — pass one's
+    AgentTake, provider="elevenlabs" lists the account's voices — pass one's
     "voice" id with start_session(provider="elevenlabs", voice=...). Pick one
     that suits the audience and the brand — and keep it for the whole video.
     """
@@ -1819,7 +1821,7 @@ async def start_session(
     result: dict = {"session_id": session.session_id}
     secrets = secret_names()
     if secrets:
-        # Names only: type {{secret:NAME}} and reel-studio types the value.
+        # Names only: type {{secret:NAME}} and AgentTake types the value.
         result["secrets"] = secrets
     if others:
         result["active_sessions"] = others

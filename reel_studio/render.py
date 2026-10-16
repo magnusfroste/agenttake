@@ -215,7 +215,7 @@ def _download_image(url: str, output: Path) -> Path | None:
 
     if not _public_https(url):
         return None
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 reel-studio"})
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 agenttake"})
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             if not (response.headers.get("Content-Type") or "").startswith("image/"):

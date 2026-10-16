@@ -1,8 +1,10 @@
-# 🎬 Reel-studio
+# 🎬 AgentTake
 
 ### The ultimate tool for agentic directors.
 
-**Reel-studio turns any AI agent into a video director.** Point your agent at a
+*Part of [AgentHotel](https://github.com/magnusfroste/agenthotel) — where it is installed as **Take** — and it runs anywhere on its own. Formerly agenttake.*
+
+**AgentTake turns any AI agent into a video director.** Point your agent at a
 web app and it drives a real browser, decides what to click, narrates what
 matters, moves the camera, and walks away with a polished, narrated MP4 and a
 public link — no human in the loop, no editing suite, no screen-recording
@@ -10,11 +12,11 @@ plugins.
 
 It's not another autopilot. It's a clean MCP surface that hands the camera to
 *your* agent. The agent that already knows your product is the best director
-you'll ever hire — Reel-studio just gives it a studio.
+you'll ever hire — AgentTake just gives it a studio.
 
 ▶ **Watch what agents have made:** [reel.froste.eu/theater](https://reel.froste.eu/theater) —
 including [AgentHotel's launch video](https://reel.froste.eu/watch/eadb09c7f7954004a620e12e24794526),
-directed end to end by a Hermes agent with Reel-studio.
+directed end to end by a Hermes agent with AgentTake.
 
 **Give the camera to the agent:**
 
@@ -41,7 +43,7 @@ directed end to end by a Hermes agent with Reel-studio.
   video's own frames, a call to action with a QR code, smooth transitions, an
   optional music bed.
 - 🔒 **Secrets stay secret** — CSS masks blur keys and passwords from the first
-  frame, and a password is typed by Reel-studio itself (`{{secret:NAME}}`), so
+  frame, and a password is typed by AgentTake itself (`{{secret:NAME}}`), so
   it never passes through the directing model.
 - 🌐 **Publishes itself** — every finished film gets a public watch page with
   its storyboard, and lands in the built-in `/theater`.
@@ -52,7 +54,7 @@ MIT-licensed. Bring your own agent, on any model.
 
 ## Run it
 
-Reel-studio is one Docker container: Chromium, Xvfb and ffmpeg behind an MCP
+AgentTake is one Docker container: Chromium, Xvfb and ffmpeg behind an MCP
 server on port 8000. It runs anywhere Docker runs. It needs **2 CPU cores and
 2 GB of RAM** (the encoder keeps a core busy while recording) and a few GB of
 disk for the image and the videos. For agents elsewhere to reach it, give it a
@@ -62,7 +64,7 @@ domain with HTTPS.
 
 Any agent with a shell on your server can set it up. Paste this:
 
-> Install Reel-studio from https://github.com/magnusfroste/reel-studio on this
+> Install AgentTake from https://github.com/magnusfroste/agenttake on this
 > server with Docker Compose, following its README. Use the domain
 > `reel.example.com` with HTTPS, generate a long random `REEL_API_TOKEN`, and
 > then add it to your own MCP servers so you can direct videos with it.
@@ -70,7 +72,7 @@ Any agent with a shell on your server can set it up. Paste this:
 ### Docker on your own server
 
 ```bash
-git clone https://github.com/magnusfroste/reel-studio.git && cd reel-studio
+git clone https://github.com/magnusfroste/agenttake.git && cd agenttake
 cp .env.example .env   # set REEL_API_TOKEN and REEL_PUBLIC_BASE_URL
 docker compose up -d --build
 ```
@@ -87,7 +89,7 @@ expose port `8000` and give it a domain — the panel handles TLS.
 
 ### AgentHotel
 
-[AgentHotel](https://github.com/magnusfroste/agenthotel) has Reel-studio as a
+[AgentHotel](https://github.com/magnusfroste/agenthotel) has AgentTake as a
 ready template: pick it, give it a domain, deploy. The token is generated and
 shown under Credentials, ready to hand to the hotel's agents.
 
@@ -112,7 +114,7 @@ slash** — `/mcp/` answers with a redirect that looks like a hang.
 Claude Code:
 
 ```bash
-claude mcp add --transport http reel-studio https://reel.example.com/mcp --header "Authorization: Bearer <REEL_API_TOKEN>"
+claude mcp add --transport http agenttake https://reel.example.com/mcp --header "Authorization: Bearer <REEL_API_TOKEN>"
 ```
 
 Claude Desktop, or any client that takes a command:
@@ -120,7 +122,7 @@ Claude Desktop, or any client that takes a command:
 ```json
 {
   "mcpServers": {
-    "reel-studio": {
+    "agenttake": {
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://reel.example.com/mcp", "--header", "Authorization: Bearer <REEL_API_TOKEN>"]
     }
@@ -132,7 +134,7 @@ Hermes Agent (`config.yaml`):
 
 ```yaml
 mcp_servers:
-  reel-studio:
+  agenttake:
     url: "https://reel.example.com/mcp"
     headers:
       Authorization: "Bearer <REEL_API_TOKEN>"
@@ -188,7 +190,7 @@ video — signing in, a cookie banner) and `speed` (2–16, a labelled time-laps
   on every page from the first frame; `mask` / `unmask` blur one element
   mid-recording.
 - **Secrets** — a `type` action whose text is `{{secret:NAME}}` types
-  Reel-studio's own `REEL_SECRET_NAME` and marks the field secret;
+  AgentTake's own `REEL_SECRET_NAME` and marks the field secret;
   `start_session` lists the names it has, never the values.
 - **Idle sessions** — a session with no tool call for
   `REEL_IDLE_TIMEOUT_SECONDS` (default `900`, `0` disables) stops recording and
@@ -229,7 +231,7 @@ refuses to publish until every shot is verified.
   rebuilds the film from the original recording; unchanged lines reuse their
   audio.
 - **Sharing** — a shared watch link previews as the video, not as
-  reel-studio: a 1200x630 poster made from a frame of the film (any aspect
+  agenttake: a 1200x630 poster made from a frame of the film (any aspect
   ratio, fitted over a blurred copy of itself). `set_watch_page` gives the page
   its own title and description and picks the poster's moment.
 - **Review** — `review_session` scans for secrets in URLs and metadata, checks
