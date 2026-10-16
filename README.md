@@ -2,7 +2,9 @@
 
 ### The ultimate tool for agentic directors.
 
-*Part of [AgentHotel](https://github.com/magnusfroste/agenthotel) — where it is installed as **Take** — and it runs anywhere on its own. Formerly agenttake.*
+*Part of [AgentHotel](https://github.com/magnusfroste/agenthotel) — where it is installed as **Take** — and it runs anywhere on its own. Formerly reel-studio.*
+
+🌐 **[agenttake.clawable.org](https://agenttake.clawable.org)** — what it is, in two minutes.
 
 **AgentTake turns any AI agent into a video director.** Point your agent at a
 web app and it drives a real browser, decides what to click, narrates what
@@ -14,8 +16,8 @@ It's not another autopilot. It's a clean MCP surface that hands the camera to
 *your* agent. The agent that already knows your product is the best director
 you'll ever hire — AgentTake just gives it a studio.
 
-▶ **Watch what agents have made:** [reel.froste.eu/theater](https://reel.froste.eu/theater) —
-including [AgentHotel's launch video](https://reel.froste.eu/watch/eadb09c7f7954004a620e12e24794526),
+▶ **Watch what agents have made:** [take.clawable.org/theater](https://take.clawable.org/theater) —
+including [AgentHotel's launch video](https://take.clawable.org/watch/eadb09c7f7954004a620e12e24794526),
 directed end to end by a Hermes agent with AgentTake.
 
 **Give the camera to the agent:**
@@ -66,7 +68,7 @@ Any agent with a shell on your server can set it up. Paste this:
 
 > Install AgentTake from https://github.com/magnusfroste/agenttake on this
 > server with Docker Compose, following its README. Use the domain
-> `reel.example.com` with HTTPS, generate a long random `REEL_API_TOKEN`, and
+> `take.example.com` with HTTPS, generate a long random `REEL_API_TOKEN`, and
 > then add it to your own MCP servers so you can direct videos with it.
 
 ### Docker on your own server
@@ -114,7 +116,7 @@ slash** — `/mcp/` answers with a redirect that looks like a hang.
 Claude Code:
 
 ```bash
-claude mcp add --transport http agenttake https://reel.example.com/mcp --header "Authorization: Bearer <REEL_API_TOKEN>"
+claude mcp add --transport http agenttake https://take.example.com/mcp --header "Authorization: Bearer <REEL_API_TOKEN>"
 ```
 
 Claude Desktop, or any client that takes a command:
@@ -124,7 +126,7 @@ Claude Desktop, or any client that takes a command:
   "mcpServers": {
     "agenttake": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://reel.example.com/mcp", "--header", "Authorization: Bearer <REEL_API_TOKEN>"]
+      "args": ["-y", "mcp-remote", "https://take.example.com/mcp", "--header", "Authorization: Bearer <REEL_API_TOKEN>"]
     }
   }
 }
@@ -135,7 +137,7 @@ Hermes Agent (`config.yaml`):
 ```yaml
 mcp_servers:
   agenttake:
-    url: "https://reel.example.com/mcp"
+    url: "https://take.example.com/mcp"
     headers:
       Authorization: "Bearer <REEL_API_TOKEN>"
     timeout: 300
@@ -258,7 +260,7 @@ Only `/mcp` needs the token; finished videos are public.
 | Variable | |
 |---|---|
 | `REEL_API_TOKEN` | **Required for HTTP.** The bearer token MCP clients send. |
-| `REEL_PUBLIC_BASE_URL` | **Required for HTTP.** The public address, e.g. `https://reel.example.com`; its host is allowed automatically. |
+| `REEL_PUBLIC_BASE_URL` | **Required for HTTP.** The public address, e.g. `https://take.example.com`; its host is allowed automatically. |
 | `REEL_ALLOWED_HOSTS` | Extra hostnames, comma-separated. |
 | `REEL_TRANSPORT` | `stdio` (default) or `http`. |
 | `ELEVENLABS_API_KEY` | Enables ElevenLabs voices. |
