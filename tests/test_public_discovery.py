@@ -146,7 +146,7 @@ def test_watch_page_shares_its_own_title_and_poster(tmp_path, monkeypatch):
     store.finish_session(session_id, str(video), None, 3.0)
 
     before = server.watch_page(session_id, "https://reel.test")
-    assert "· reel-studio" in before
+    assert "· AgentTake" in before
     assert f'/videos/{session_id}/poster.jpg?v=' in before
     assert 'content="https://reel.test/og.png"' not in before
 

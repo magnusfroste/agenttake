@@ -50,7 +50,7 @@ async def _synthesize_elevenlabs(text: str, voice: str, path: Path) -> Path:
                 "Accept": "audio/mpeg",
                 "Content-Type": "application/json",
                 "xi-api-key": api_key,
-                "User-Agent": "reel-studio",
+                "User-Agent": "agenttake",
             },
             method="POST",
         )
@@ -78,12 +78,12 @@ async def list_elevenlabs_voices() -> list[dict]:
     """The voices on the ElevenLabs account the host's key belongs to."""
     api_key = os.environ.get("ELEVENLABS_API_KEY")
     if not api_key:
-        raise TTSProviderError("ELEVENLABS_API_KEY is not set on this reel-studio")
+        raise TTSProviderError("ELEVENLABS_API_KEY is not set on this AgentTake")
 
     def fetch() -> dict:
         request = urllib.request.Request(
             "https://api.elevenlabs.io/v1/voices",
-            headers={"xi-api-key": api_key, "Accept": "application/json", "User-Agent": "reel-studio"},
+            headers={"xi-api-key": api_key, "Accept": "application/json", "User-Agent": "agenttake"},
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
