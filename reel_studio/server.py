@@ -458,6 +458,18 @@ def video_url(session_id: str) -> str:
     return f"/videos/{session_id}/video.mp4"
 
 
+def narrations_by_part(session: dict) -> dict[int, str]:
+    """Each storyboard part's line. A part's "step" counts the steps that are
+    in the video (offscreen and failed ones are not), not the session's step
+    numbers — keyed by those, take 21's lines (steps 16-26, after an
+    offscreen sign-in) matched no part and the video got no subtitles."""
+    visible = [
+        step for step in session.get("steps", [])
+        if step.get("offset_seconds") is not None and not step.get("offscreen")
+    ]
+    return {number: step.get("narration_text") or "" for number, step in enumerate(visible)}
+
+
 def apply_subtitles(session_id: str) -> bool:
     """Burn the narration into a finished video when its session asks for it.
 
@@ -468,8 +480,7 @@ def apply_subtitles(session_id: str) -> bool:
     if not session or not session.get("subtitles") or not session.get("video_path"):
         return False
     video = Path(session["video_path"])
-    narrations = {step.get("idx"): step.get("narration_text") for step in session.get("steps", [])}
-    cues = subtitle_cues(read_storyboard(video.parent), narrations)
+    cues = subtitle_cues(read_storyboard(video.parent), narrations_by_part(session))
     return burn_subtitles(video, cues)
 
 

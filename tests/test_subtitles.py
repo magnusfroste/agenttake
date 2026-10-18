@@ -51,3 +51,22 @@ def test_burn_writes_the_text_into_the_video(tmp_path):
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(video)],
                            capture_output=True, text=True, check=True).stdout.split()
     assert probe == ["video", "audio"], "the narration track is kept"
+
+
+def test_parts_are_matched_to_the_steps_in_the_video_not_session_numbers(tmp_path, monkeypatch):
+    # Take 21: a sign-in done offscreen comes first, so the narrated steps are
+    # 3 and 4 in the session but parts 0 and 1 in the storyboard.
+    monkeypatch.setenv("REEL_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv("REEL_DB_PATH", str(tmp_path / "subs.db"))
+    from reel_studio import server, store
+    sid = "abc021"
+    store.create_session(sid, "https://panel.example", "v", 720, 900, str(tmp_path / sid))
+    for _ in range(3):
+        store.append_step(sid, "click", "x", "u", "t", "", 0.0, 1.0, None, True, None, offscreen=True)
+    store.append_step(sid, "wait", None, "u", "t", "I'm Hermes. I checked into a hotel.", 2.0, 5.0, None, True, None)
+    store.append_step(sid, "wait", None, "u", "t", "Always on, at my own address.", 2.0, 8.0, None, True, None)
+    session = store.get_session(sid)
+    assert server.narrations_by_part(session) == {0: "I'm Hermes. I checked into a hotel.", 1: "Always on, at my own address."}
+    parts = [{"kind": "step", "step": 0, "start": 0.0, "duration": 3.0}, {"kind": "step", "step": 1, "start": 3.0, "duration": 3.0}]
+    texts = " ".join(t for _, _, t in subtitle_cues(parts, server.narrations_by_part(session)))
+    assert texts == "I'm Hermes. I checked into a hotel. Always on, at my own address."
