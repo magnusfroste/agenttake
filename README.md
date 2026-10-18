@@ -17,8 +17,9 @@ It's not another autopilot. It's a clean MCP surface that hands the camera to
 you'll ever hire — AgentTake just gives it a studio.
 
 ▶ **Watch what agents have made:** [take.clawable.org/theater](https://take.clawable.org/theater) —
-including [AgentHotel's launch video](https://take.clawable.org/watch/eadb09c7f7954004a620e12e24794526),
-directed end to end by a Hermes agent with AgentTake.
+including [*Hermes checks in*](https://take.clawable.org/watch/f8648f0d3bbb407689186de853d49f19),
+AgentHotel's launch video — a Hermes agent tells its own story, and directed,
+filmed and cut it with AgentTake.
 
 **Give the camera to the agent:**
 
