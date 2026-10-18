@@ -162,6 +162,8 @@ def init_schema() -> None:
             ("page_title", "TEXT NOT NULL DEFAULT ''"),
             ("page_description", "TEXT NOT NULL DEFAULT ''"),
             ("poster_at", "REAL"),
+            # Narration burned into the picture, for feeds that play muted.
+            ("subtitles", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in session_columns:
                 connection.execute(
@@ -389,6 +391,12 @@ def update_session_voice(session_id: str, voice: str, provider: str) -> None:
             "UPDATE sessions SET voice = ?, provider = ? WHERE id = ?",
             (voice, provider, session_id),
         )
+
+
+def update_session_subtitles(session_id: str, on: bool) -> None:
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.execute("UPDATE sessions SET subtitles = ? WHERE id = ?", (int(bool(on)), session_id))
 
 
 def update_watch_page(

@@ -36,6 +36,8 @@ from .render import (
     segmented_render_enabled,
     read_storyboard,
     write_storyboard,
+    subtitle_cues,
+    burn_subtitles,
     STORYBOARD_DIR,
     QUIET_FLOOR,
     SEGMENT_FLOOR,
@@ -265,6 +267,7 @@ After `finish`: `storyboard` shows the film part by part; `edit_step` hides a st
 sets a hold or a speed; `update_step_narration` rewrites a line; `rerender` applies
 them without recording again. Before sharing, `set_watch_page` gives the watch page a
 title, a description and the moment its link-preview image is taken from.
+`subtitles=true` (start_session or rerender) burns the narration in, for feeds that play muted.
 Secrets: type a password as `{{{{secret:NAME}}}}` and AgentTake types its own
 `REEL_SECRET_NAME` and masks the field; `start_session` lists the names it has.
 `start_session(mask=[...])` blurs CSS selectors from the first frame.
@@ -453,6 +456,21 @@ def og_image_path() -> Path:
 def video_url(session_id: str) -> str:
     """Return the public relative URL for a finished session video."""
     return f"/videos/{session_id}/video.mp4"
+
+
+def apply_subtitles(session_id: str) -> bool:
+    """Burn the narration into a finished video when its session asks for it.
+
+    Runs on the freshly rendered file (finish, rerender), so it is never
+    applied twice. The storyboard stills are taken before, without text.
+    """
+    session = store.get_session(session_id)
+    if not session or not session.get("subtitles") or not session.get("video_path"):
+        return False
+    video = Path(session["video_path"])
+    narrations = {step.get("idx"): step.get("narration_text") for step in session.get("steps", [])}
+    cues = subtitle_cues(read_storyboard(video.parent), narrations)
+    return burn_subtitles(video, cues)
 
 
 def public_video_url(session_id: str) -> str | None:
@@ -1730,6 +1748,10 @@ async def start_session(
         bool,
         Field(description="A QR code of cta_url on the closing card (default true): on LinkedIn a link in a video cannot be clicked, but it can be scanned."),
     ] = True,
+    subtitles: Annotated[
+        bool,
+        Field(description="Burn the narration into the picture as subtitles (default false). For LinkedIn and other feeds that autoplay muted: the story still reads without sound. Can also be switched on later with rerender(subtitles=true)."),
+    ] = False,
     mask: Annotated[
         list[str] | None,
         Field(description="CSS selectors blurred on every page from the first frame, e.g. "
@@ -1824,6 +1846,8 @@ async def start_session(
         render_config.title_background,
         render_config.closing_qr,
     )
+    if subtitles:
+        store.update_session_subtitles(session.session_id, True)
     result: dict = {"session_id": session.session_id}
     secrets = secret_names()
     if secrets:
@@ -2433,6 +2457,10 @@ async def rerender(
         str | None,
         Field(description="The voice's provider, edge or elevenlabs, when voice is given."),
     ] = None,
+    subtitles: Annotated[
+        bool | None,
+        Field(description="true burns the narration into the picture as subtitles, false takes them out. Omit to keep what the video has."),
+    ] = None,
 ) -> dict:
     """Rebuild narration audio and mux it onto an existing finished video.
 
@@ -2547,8 +2575,16 @@ async def rerender(
         )
         duration = await asyncio.to_thread(probe_duration, video_path)
     store.update_session_duration(session_id, duration)
+    if subtitles is not None:
+        store.update_session_subtitles(session_id, subtitles)
+    try:
+        subtitled = await asyncio.to_thread(apply_subtitles, session_id)
+    except Exception as exc:
+        subtitled = False
+        warnings = list(warnings) + [f"Subtitles could not be added: {exc}"]
     return {
         "ok": True,
+        "subtitles": subtitled,
         "duration": round(duration, 3),
         # From the address the service has now, not the one stored at finish:
         # after a move to another hostname the stored URL is dead.
@@ -2871,6 +2907,10 @@ async def finish(session_id: str) -> dict:
         video_url,
         duration,
     )
+    try:
+        await asyncio.to_thread(apply_subtitles, session_id)
+    except Exception as exc:  # the video stands without them
+        print(f"[agenttake] subtitles for {session_id} failed: {exc}", flush=True)
     # A finished MP4 is not automatically an editorially safe deliverable.
     # Run the durable review while the session metadata is still available and
     # return the report alongside the artifact so callers cannot silently skip

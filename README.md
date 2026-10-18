@@ -232,6 +232,9 @@ refuses to publish until every shot is verified.
 - **Re-voicing** — `update_step_narration` edits one line and `rerender`
   rebuilds the film from the original recording; unchanged lines reuse their
   audio.
+- **Subtitles** — `subtitles=true` on `start_session` (or `rerender`) burns the
+  narration into the picture, timed to each step, so the story reads in feeds
+  that autoplay muted, like LinkedIn.
 - **Sharing** — a shared watch link previews as the video, not as
   agenttake: a 1200x630 poster made from a frame of the film (any aspect
   ratio, fitted over a blurred copy of itself). `set_watch_page` gives the page

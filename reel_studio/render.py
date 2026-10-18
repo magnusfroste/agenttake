@@ -1105,3 +1105,78 @@ def rerender_narration(
     else:
         temp_path.replace(output_path)
     return output_path
+
+
+# Subtitles: the narration written into the picture, for the feeds that play
+# video muted (LinkedIn does by default). Each line shows while its step is on
+# screen; a long line is split into short chunks, timed by their length.
+SUBTITLE_MAX_WORDS = 8
+
+
+def subtitle_cues(parts: Sequence[dict], narrations: dict, max_words: int = SUBTITLE_MAX_WORDS) -> list[tuple[float, float, str]]:
+    """(start, end, text) per chunk, from the storyboard and each step's line."""
+    cues: list[tuple[float, float, str]] = []
+    for part in parts:
+        if part.get("kind", "step") != "step":
+            continue
+        text = " ".join(str(narrations.get(part.get("step")) or "").split())
+        if not text:
+            continue
+        start = float(part.get("start") or 0.0)
+        duration = float(part.get("duration") or 0.0)
+        if duration <= 0.2:
+            continue
+        words = text.split(" ")
+        chunks = [" ".join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
+        # Even out a short last chunk: "…the hotel" + "too." reads badly.
+        if len(chunks) > 1 and len(chunks[-1].split(" ")) <= 2:
+            merged = (chunks[-2] + " " + chunks[-1]).split(" ")
+            half = (len(merged) + 1) // 2
+            chunks[-2:] = [" ".join(merged[:half]), " ".join(merged[half:])]
+        total = sum(len(c) for c in chunks)
+        at = start
+        for chunk in chunks:
+            length = duration * len(chunk) / total
+            cues.append((round(at, 2), round(at + length, 2), chunk))
+            at += length
+    return cues
+
+
+def _ass_time(seconds: float) -> str:
+    centis = int(round(max(seconds, 0.0) * 100))
+    return f"{centis // 360000}:{centis // 6000 % 60:02d}:{centis // 100 % 60:02d}.{centis % 100:02d}"
+
+
+def subtitles_ass(cues: Sequence[tuple[float, float, str]], width: int, height: int) -> str:
+    """An ASS script: white text on a dark box near the bottom, sized to the frame."""
+    size = max(18, round(min(width, height) / 22))
+    margin = max(24, round(height * 0.07))
+    escape = lambda t: t.replace("\\", "\\\\").replace("{", "(").replace("}", ")").replace("\n", " ")
+    lines = [
+        "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}", "WrapStyle: 0", "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Default,DejaVu Sans,{size},&H00FFFFFF,&H00FFFFFF,&H96000000,&H96000000,1,0,0,0,100,100,0,0,3,{max(6, size // 3)},0,2,{round(width * 0.08)},{round(width * 0.08)},{margin},1",
+        "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for start, end, text in cues:
+        lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{escape(text)}")
+    return "\n".join(lines) + "\n"
+
+
+def burn_subtitles(video: Path, cues: Sequence[tuple[float, float, str]]) -> bool:
+    """Write the cues into the video in place. False when there was nothing to write."""
+    if not cues:
+        return False
+    width, height = probe_video_size(video)
+    script = video.with_name("subtitles.ass")
+    script.write_text(subtitles_ass(cues, width, height), encoding="utf-8")
+    temporary = video.with_name("video.subtitled.mp4")
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-y", "-i", str(video), "-vf", f"ass={script.name}",
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+         "-c:a", "copy", "-movflags", "+faststart", str(temporary)],
+        check=True, cwd=str(video.parent), timeout=900,
+    )
+    temporary.replace(video)
+    return True
