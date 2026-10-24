@@ -150,10 +150,10 @@ def test_scroll_takes_a_glide_duration():
     assert "glide" in ACTION_CONTRACT
 
 
-def test_glide_script_eases_whatever_scrolls_the_page():
+def test_glide_script_scrolls_what_is_under_the_middle_of_the_screen():
     from reel_studio.engine import GLIDE_SCROLL_MAX_MS, _GLIDE_SCROLL_JS
 
     assert GLIDE_SCROLL_MAX_MS == 20000
     assert "requestAnimationFrame" in _GLIDE_SCROLL_JS
     assert "behavior: 'instant'" in _GLIDE_SCROLL_JS
-    assert "overflowY" in _GLIDE_SCROLL_JS
+    assert "elementFromPoint" in _GLIDE_SCROLL_JS
