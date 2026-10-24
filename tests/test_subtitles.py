@@ -70,3 +70,16 @@ def test_parts_are_matched_to_the_steps_in_the_video_not_session_numbers(tmp_pat
     parts = [{"kind": "step", "step": 0, "start": 0.0, "duration": 3.0}, {"kind": "step", "step": 1, "start": 3.0, "duration": 3.0}]
     texts = " ".join(t for _, _, t in subtitle_cues(parts, server.narrations_by_part(session)))
     assert texts == "I'm Hermes. I checked into a hotel. Always on, at my own address."
+
+
+def test_a_line_ends_where_the_next_part_begins():
+    # Take 2 of the FlowWink film: "And a broken checkout." ran on under the
+    # next part's line, two subtitles at once.
+    parts = [
+        {"kind": "step", "step": 0, "start": 10.0, "duration": 3.0},
+        {"kind": "step", "step": 1, "start": 12.2, "duration": 3.0},
+    ]
+    cues = subtitle_cues(parts, {0: "And a broken checkout.", 1: "My colleague briefs me every morning."})
+    first_end = max(end for start, end, text in cues if "checkout" in text or "broken" in text)
+    second_start = min(start for start, end, text in cues if "colleague" in text)
+    assert first_end <= second_start <= 12.2 + 0.01
