@@ -140,3 +140,20 @@ def test_click_feedback_is_not_a_single_frame_flash():
     assert "cursor-halo" in script
     assert "click-pulse" in script
     assert "900" in script
+
+
+def test_scroll_takes_a_glide_duration():
+    from reel_studio.schema import ACTION_CONTRACT
+
+    action = Action(type="scroll", dy=1800, ms=6000)
+    assert (action.dy, action.ms) == (1800, 6000)
+    assert "glide" in ACTION_CONTRACT
+
+
+def test_glide_script_eases_whatever_scrolls_the_page():
+    from reel_studio.engine import GLIDE_SCROLL_MAX_MS, _GLIDE_SCROLL_JS
+
+    assert GLIDE_SCROLL_MAX_MS == 20000
+    assert "requestAnimationFrame" in _GLIDE_SCROLL_JS
+    assert "behavior: 'instant'" in _GLIDE_SCROLL_JS
+    assert "overflowY" in _GLIDE_SCROLL_JS
