@@ -267,6 +267,33 @@ _POINTER_PARK_JS = """([x, y]) => {
   return null;
 }"""
 
+# A scroll with ms glides there instead of jumping: dy pixels over ms, eased
+# in and out, on whatever scrolls the page (the document, or the largest
+# scrolling panel in an app shell, where the document itself barely
+# scrolls). behavior "instant" keeps a site's CSS
+# smooth scrolling from adding its own animation on top. Resolves when done.
+GLIDE_SCROLL_MAX_MS = 20000
+_GLIDE_SCROLL_JS = """([dy, ms]) => new Promise((resolve) => {
+  let box = document.scrollingElement || document.documentElement;
+  if (box.scrollHeight - box.clientHeight < 50) {
+    let best = null;
+    for (const el of document.querySelectorAll('*')) {
+      const s = getComputedStyle(el).overflowY;
+      if ((s === 'auto' || s === 'scroll' || s === 'overlay') && el.scrollHeight > el.clientHeight + 1
+          && (!best || el.clientHeight * el.clientWidth > best.clientHeight * best.clientWidth)) best = el;
+    }
+    if (best) box = best;
+  }
+  const start = box.scrollTop, t0 = performance.now();
+  const ease = (x) => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+  const frame = (now) => {
+    const x = Math.min(1, (now - t0) / ms);
+    box.scrollTo({ top: start + dy * ease(x), behavior: 'instant' });
+    if (x < 1) requestAnimationFrame(frame); else resolve(box.scrollTop - start);
+  };
+  requestAnimationFrame(frame);
+})"""
+
 # How many text matches focus_text ranks; a word that is everywhere on a
 # page should not cost a round trip per occurrence.
 MAX_TEXT_CANDIDATES = 20
@@ -1223,7 +1250,13 @@ class BrowserSession:
                         "delete el.dataset.videoDirectorOldOutline; }"
                     )
             elif action_type == "scroll":
-                await self.page.mouse.wheel(0, action.dy)
+                if action.ms:
+                    glide_ms = min(action.ms, GLIDE_SCROLL_MAX_MS)
+                    await self.page.evaluate(_GLIDE_SCROLL_JS, [action.dy, glide_ms])
+                    # The glide is the footage: the step holds for all of it.
+                    annotation_duration = max(annotation_duration, glide_ms / 1000)
+                else:
+                    await self.page.mouse.wheel(0, action.dy)
             elif action_type == "wait":
                 await self.page.wait_for_timeout(action.ms)
             action_finished_at = time.monotonic() - self.t0
@@ -1296,9 +1329,13 @@ class BrowserSession:
             if self.page.url != before_url:
                 self.refs_stale = True
             return await self.error_result("action_failed", str(exc))
-        if action.narration_timing == "after_action" and action_finished_at is not None:
+        # A glide is filmed from its first frame, so its line plays over the
+        # move; timed after the action, the move fell in the gap between
+        # steps that the render cuts.
+        glide = action_type == "scroll" and bool(action.ms)
+        if not glide and action.narration_timing == "after_action" and action_finished_at is not None:
             offset = action_finished_at
-        elif action.narration_timing == "after_settle" and action_completed_at is not None:
+        elif not glide and action.narration_timing == "after_settle" and action_completed_at is not None:
             # TTS is prepared before the browser action; align narration with
             # the settled visual state rather than with synthesis start.
             offset = action_completed_at
@@ -1371,6 +1408,7 @@ class BrowserSession:
             result.update({"box": action_box, "in_viewport": action_in_viewport})
         if live_annotation_id:
             result["annotation_id"] = live_annotation_id
+        if live_annotation_id or glide:
             result["annotation_duration"] = round(annotation_duration, 3)
         if chrome_restored:
             result["hint"] = (
