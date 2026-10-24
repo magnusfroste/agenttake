@@ -268,22 +268,24 @@ _POINTER_PARK_JS = """([x, y]) => {
 }"""
 
 # A scroll with ms glides there instead of jumping: dy pixels over ms, eased
-# in and out, on whatever scrolls the page (the document, or the largest
-# scrolling panel in an app shell, where the document itself barely
-# scrolls). behavior "instant" keeps a site's CSS
-# smooth scrolling from adding its own animation on top. Resolves when done.
+# in and out, on what a wheel at the middle of the screen would scroll — the
+# nearest scrollable box from there up (a dialog's list, an app shell's
+# panel), else the document. The largest scrolling panel was the first
+# guess, and behind an open dialog that is the page under it. behavior
+# "instant" keeps a site's CSS smooth scrolling from adding its own
+# animation on top. Resolves with the distance moved.
 GLIDE_SCROLL_MAX_MS = 20000
 _GLIDE_SCROLL_JS = """([dy, ms]) => new Promise((resolve) => {
-  let box = document.scrollingElement || document.documentElement;
-  if (box.scrollHeight - box.clientHeight < 50) {
-    let best = null;
-    for (const el of document.querySelectorAll('*')) {
-      const s = getComputedStyle(el).overflowY;
-      if ((s === 'auto' || s === 'scroll' || s === 'overlay') && el.scrollHeight > el.clientHeight + 1
-          && (!best || el.clientHeight * el.clientWidth > best.clientHeight * best.clientWidth)) best = el;
-    }
-    if (best) box = best;
+  const scrolls = (el) => {
+    const s = getComputedStyle(el).overflowY;
+    return (s === 'auto' || s === 'scroll' || s === 'overlay') && el.scrollHeight > el.clientHeight + 1;
+  };
+  let box = null;
+  for (let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2); el && el !== document.body
+       && el !== document.documentElement; el = el.parentElement) {
+    if (scrolls(el)) { box = el; break; }
   }
+  box = box || document.scrollingElement || document.documentElement;
   const start = box.scrollTop, t0 = performance.now();
   const ease = (x) => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
   const frame = (now) => {
