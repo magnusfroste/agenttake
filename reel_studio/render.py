@@ -1116,6 +1116,10 @@ SUBTITLE_MAX_WORDS = 8
 def subtitle_cues(parts: Sequence[dict], narrations: dict, max_words: int = SUBTITLE_MAX_WORDS) -> list[tuple[float, float, str]]:
     """(start, end, text) per chunk, from the storyboard and each step's line."""
     cues: list[tuple[float, float, str]] = []
+    # Parts overlap where a transition blends one into the next, so a part's
+    # line ends where the next part begins — two subtitles on screen at once
+    # read as one garbled sentence (FlowWink take 2, 2026-10-24).
+    starts = sorted(float(p.get("start") or 0.0) for p in parts)
     for part in parts:
         if part.get("kind", "step") != "step":
             continue
@@ -1124,6 +1128,9 @@ def subtitle_cues(parts: Sequence[dict], narrations: dict, max_words: int = SUBT
             continue
         start = float(part.get("start") or 0.0)
         duration = float(part.get("duration") or 0.0)
+        following = [s for s in starts if s > start + 0.01]
+        if following:
+            duration = min(duration, following[0] - start)
         if duration <= 0.2:
             continue
         words = text.split(" ")
