@@ -268,23 +268,39 @@ _POINTER_PARK_JS = """([x, y]) => {
 }"""
 
 # A scroll with ms glides there instead of jumping: dy pixels over ms, eased
-# in and out, on what a wheel at the middle of the screen would scroll — the
-# nearest scrollable box from there up (a dialog's list, an app shell's
-# panel), else the document. The largest scrolling panel was the first
-# guess, and behind an open dialog that is the page under it. behavior
-# "instant" keeps a site's CSS smooth scrolling from adding its own
-# animation on top. Resolves with the distance moved.
+# in and out. What it moves, first match wins: the scrollable box at or
+# around ref when one is given; the largest scrollable box in the topmost
+# open dialog — a side sheet sits off-centre, and in take 4 a glide meant
+# for FlowWink's block library moved nothing because the middle of the
+# screen was the dimmed page behind it (2026-10-24); what a wheel at the
+# middle of the screen would scroll; the document. behavior "instant" keeps
+# a site's CSS smooth scrolling from adding its own animation on top.
+# Resolves with the distance moved.
 GLIDE_SCROLL_MAX_MS = 20000
-_GLIDE_SCROLL_JS = """([dy, ms]) => new Promise((resolve) => {
+_GLIDE_SCROLL_JS = """([dy, ms, anchor]) => new Promise((resolve) => {
   const scrolls = (el) => {
     const s = getComputedStyle(el).overflowY;
     return (s === 'auto' || s === 'scroll' || s === 'overlay') && el.scrollHeight > el.clientHeight + 1;
   };
-  let box = null;
-  for (let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2); el && el !== document.body
-       && el !== document.documentElement; el = el.parentElement) {
-    if (scrolls(el)) { box = el; break; }
-  }
+  const area = (el) => el.clientWidth * el.clientHeight;
+  const up = (el) => {
+    for (; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+      if (scrolls(el)) return el;
+    }
+    return null;
+  };
+  const inside = (root) => {
+    let best = scrolls(root) ? root : null;
+    for (const el of root.querySelectorAll('*')) {
+      if (scrolls(el) && (!best || area(el) > area(best))) best = el;
+    }
+    return best;
+  };
+  const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const dialogs = [...document.querySelectorAll('[role=dialog], [aria-modal=true], dialog[open]')].filter(shown);
+  let box = anchor ? (up(anchor) || inside(anchor)) : null;
+  if (!box && dialogs.length) box = inside(dialogs[dialogs.length - 1]);
+  if (!box) box = up(document.elementFromPoint(innerWidth / 2, innerHeight / 2));
   box = box || document.scrollingElement || document.documentElement;
   const start = box.scrollTop, t0 = performance.now();
   const ease = (x) => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
@@ -1016,6 +1032,7 @@ class BrowserSession:
         action_in_viewport: bool | None = None
         live_annotation_id: str | None = None
         annotation_duration = 0.0
+        glide_started_at: float | None = None
         settled_by: dict[str, str] = {}
         # Where the pointer was left by a click, to move it off a link.
         pointer: tuple[float, float] | None = None
@@ -1254,7 +1271,17 @@ class BrowserSession:
             elif action_type == "scroll":
                 if action.ms:
                     glide_ms = min(action.ms, GLIDE_SCROLL_MAX_MS)
-                    await self.page.evaluate(_GLIDE_SCROLL_JS, [action.dy, glide_ms])
+                    anchor = None
+                    if action.ref:
+                        if action.ref not in self.refs:
+                            return await self.error_result(
+                                "unknown_ref", f"Unknown element ref: {action.ref}"
+                            )
+                        anchor = await self.page.locator(self.refs[action.ref]).first.element_handle(
+                            timeout=5000
+                        )
+                    glide_started_at = time.monotonic() - self.t0
+                    await self.page.evaluate(_GLIDE_SCROLL_JS, [action.dy, glide_ms, anchor])
                     # The glide is the footage: the step holds for all of it.
                     annotation_duration = max(annotation_duration, glide_ms / 1000)
                 else:
@@ -1333,9 +1360,14 @@ class BrowserSession:
             return await self.error_result("action_failed", str(exc))
         # A glide is filmed from its first frame, so its line plays over the
         # move; timed after the action, the move fell in the gap between
-        # steps that the render cuts.
+        # steps that the render cuts. Its first frame is when it starts, not
+        # when act was called: the narration is synthesized in between, and
+        # take 4 opened on four seconds of a still page and lost the end of
+        # the glide (2026-10-24).
         glide = action_type == "scroll" and bool(action.ms)
-        if not glide and action.narration_timing == "after_action" and action_finished_at is not None:
+        if glide and glide_started_at is not None:
+            offset = glide_started_at
+        elif not glide and action.narration_timing == "after_action" and action_finished_at is not None:
             offset = action_finished_at
         elif not glide and action.narration_timing == "after_settle" and action_completed_at is not None:
             # TTS is prepared before the browser action; align narration with

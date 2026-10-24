@@ -157,3 +157,4 @@ def test_glide_script_scrolls_what_is_under_the_middle_of_the_screen():
     assert "requestAnimationFrame" in _GLIDE_SCROLL_JS
     assert "behavior: 'instant'" in _GLIDE_SCROLL_JS
     assert "elementFromPoint" in _GLIDE_SCROLL_JS
+    assert "[role=dialog]" in _GLIDE_SCROLL_JS
