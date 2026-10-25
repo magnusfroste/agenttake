@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import shutil
 from pathlib import Path
 import urllib.error
 import urllib.request
@@ -121,6 +122,17 @@ async def synthesize(
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"narration-{uuid.uuid4().hex}.mp3"
     selected = normalize_provider(provider)
+    # A line some session already has in this voice is copied, not bought
+    # again (store.spoken_clip).
+    from . import store
+
+    try:
+        spoken = await asyncio.to_thread(store.spoken_clip, text, voice, selected)
+    except Exception:
+        spoken = None
+    if spoken is not None:
+        await asyncio.to_thread(shutil.copyfile, spoken, path)
+        return path
     validate_provider(selected)
     if selected == "elevenlabs":
         await _synthesize_elevenlabs(text, voice, path)

@@ -752,3 +752,24 @@ def test_start_session_lists_secret_names_and_the_director_is_told(mods, monkeyp
     assert "{{secret:NAME}}" in server.DIRECTOR_PROMPT
     import inspect
     assert 'result["secrets"] = secrets' in inspect.getsource(server.start_session)
+
+
+def test_a_line_already_spoken_in_the_voice_is_reused_not_bought_again(mods, tmp_path, monkeypatch):
+    import asyncio
+    from reel_studio import tts
+
+    _, store, _ = mods
+    old_dir = tmp_path / "take12"
+    old_dir.mkdir()
+    (old_dir / "narration-old.mp3").write_bytes(b"ID3-old-take")
+    store.create_session("s-spoken", "https://example.com", "voice-x", 64, 36, str(old_dir), "elevenlabs")
+    store.append_step("s-spoken", "wait", None, "https://example.com", "t", "Room to grow.", 1.2, 1.0,
+                      None, True, None, voice="voice-x", narration_clip="narration-old.mp3")
+    # No ElevenLabs key: only a reuse can succeed.
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    clip = asyncio.run(tts.synthesize("Room to grow.", "voice-x", tmp_path / "take13", "elevenlabs"))
+    assert clip.read_bytes() == b"ID3-old-take"
+    assert clip.parent == tmp_path / "take13"
+    # Another voice or another line is not a match.
+    assert store.spoken_clip("Room to grow.", "voice-y", "elevenlabs") is None
+    assert store.spoken_clip("Room to shrink.", "voice-x", "elevenlabs") is None
