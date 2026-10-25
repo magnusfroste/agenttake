@@ -317,3 +317,40 @@ def test_the_time_lapse_badge_leaves_with_the_fast_footage(tmp_path):
 
     # The badge while 1 s of fast footage plays; a plain black frame on the hold.
     assert corner(0.4) > 1.0 and corner(2.5) < 0.5
+
+
+def test_a_glide_keeps_its_whole_move_and_leaves_out_its_stalls():
+    # A 12 s glide (its hold) with an 8 s line; the browser stalled 4 s in
+    # the middle. The agent then thought for 30 s before the next step.
+    steps = [(0.0, None, 12.0), (42.0, None, 0.0)]
+    stalls = lambda start, end: [(3.0, 7.0)]
+    segments, _ = render.plan_segments(
+        steps, 50.0, lead_in=False, glides=[8.0, None], stalls=stalls,
+    )
+    glide = segments[0]
+    assert glide.source_duration == pytest.approx(12.0 + render.SEGMENT_TAIL_PAD)
+    assert glide.drop == ((3.0, 7.0),)
+    # 12.4 s of footage less the 4 s stall; the line (8 s + pad) fits in it.
+    assert glide.output_duration == pytest.approx(8.4)
+    # A line longer than the moving footage still gets its time.
+    long_line, _ = render.plan_segments(
+        steps, 50.0, lead_in=False, glides=[11.0, None], stalls=stalls,
+    )
+    assert long_line[0].output_duration == pytest.approx(11.0 + render.SEGMENT_TAIL_PAD)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_a_glide_segment_cuts_its_stalls(tmp_path):
+    source = tmp_path / "glide.mp4"
+    # Moving for 2 s, still for 2 s, moving for 2 s.
+    _run_ffmpeg("-f", "lavfi", "-i", "testsrc=size=320x180:rate=25:duration=2",
+                "-f", "lavfi", "-i", "color=c=gray:size=320x180:rate=25:duration=2",
+                "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25:duration=2",
+                "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1[v]", "-map", "[v]",
+                "-pix_fmt", "yuv420p", str(source))
+    spans = render.frozen_spans(source, 0.0, 6.0)
+    assert len(spans) == 1
+    start, end = spans[0]
+    assert start == pytest.approx(2.0, abs=0.1) and end == pytest.approx(4.0, abs=0.1)
+    out = render._render_video_segment(source, 0.0, 6.0, 4.0, tmp_path / "seg.mp4", drop=spans)
+    assert render.probe_duration(out) == pytest.approx(4.0, abs=0.12)
