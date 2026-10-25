@@ -324,6 +324,23 @@ _GLIDE_SCROLL_JS = """([dy, ms, anchor]) => new Promise((resolve) => {
   requestAnimationFrame(frame);
 })"""
 
+def color_scheme_script(scheme: str) -> str:
+    """Seeds a site's own theme choice before its scripts run.
+
+    Emulating prefers-color-scheme reaches only sites that follow the system;
+    a site with its own default (FlowWink's Nordbrygg defaults to light) keeps
+    it until a visitor picks from its theme menu, and in takes 14 and 15 of the
+    FlowWink film the director's clicks there did not hold (2026-10-25). Sites
+    on next-themes keep that pick in localStorage "theme": seeded here when the
+    site has none, every page starts in the scheme. A choice the site already
+    stored is left alone.
+    """
+    return (
+        "(() => { try { if (!localStorage.getItem('theme')) "
+        f"localStorage.setItem('theme', {json.dumps(scheme)}); }} catch (e) {{}} }})()"
+    )
+
+
 # How many text matches focus_text ranks; a word that is everywhere on a
 # page should not cost a round trip per occurrence.
 MAX_TEXT_CANDIDATES = 20
@@ -409,6 +426,7 @@ class BrowserSession:
         output_size: tuple[int, int] | None = None,
         render_config: RenderConfig | None = None,
         mask_selectors: list[str] | None = None,
+        color_scheme: str | None = None,
     ) -> "BrowserSession":
         session_id = uuid.uuid4().hex
         mask_css = mask_stylesheet(mask_selectors)
@@ -441,6 +459,7 @@ class BrowserSession:
             env={**os.environ, "DISPLAY": display},
             args=geometry["browser_args"],
             no_viewport=True,
+            **({"color_scheme": color_scheme} if color_scheme else {}),
         )
         # A persistent context has no separate Browser; closing the context
         # closes the browser, which is what _close_runtime needs.
@@ -451,6 +470,8 @@ class BrowserSession:
         await context.add_init_script(
             "document.addEventListener('invalid', (e) => e.preventDefault(), true);"
         )
+        if color_scheme:
+            await context.add_init_script(color_scheme_script(color_scheme))
         if mask_css:
             # Applied by the browser before any page script runs, on every page
             # and frame, so a masked element is blurred from its first frame —

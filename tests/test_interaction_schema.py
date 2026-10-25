@@ -158,3 +158,11 @@ def test_glide_script_scrolls_what_is_under_the_middle_of_the_screen():
     assert "behavior: 'instant'" in _GLIDE_SCROLL_JS
     assert "elementFromPoint" in _GLIDE_SCROLL_JS
     assert "[role=dialog]" in _GLIDE_SCROLL_JS
+
+
+def test_a_dark_session_seeds_the_sites_theme_choice():
+    from reel_studio.engine import color_scheme_script
+
+    script = color_scheme_script("dark")
+    assert "localStorage.getItem('theme')" in script
+    assert "localStorage.setItem('theme', \"dark\")" in script

@@ -1769,6 +1769,12 @@ async def start_session(
                           "[\"input[type=password]\", \"[data-secret]\"]. For anything that must "
                           "never be readable in the video: keys, tokens, personal data."),
     ] = None,
+    color_scheme: Annotated[
+        Literal["light", "dark"] | None,
+        Field(description="Film every site in dark (or light) mode: the browser prefers that "
+                          "scheme, and sites that keep the choice in localStorage \"theme\" "
+                          "(next-themes) start in it. No theme menu to click on each site."),
+    ] = None,
 ) -> dict:
     """Launch a headed browser and begin recording.
 
@@ -1832,7 +1838,7 @@ async def start_session(
     )
     session = await BrowserSession.create(
         start_url, width, height, voice, selected_provider, selected_output_size,
-        render_config, mask_selectors=mask,
+        render_config, mask_selectors=mask, color_scheme=color_scheme,
     )
     session.touch()
     others = [other for other in sessions if other != session.session_id]
