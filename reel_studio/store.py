@@ -293,6 +293,33 @@ def append_step(
         )
 
 
+def spoken_clip(text: str, voice: str, provider: str) -> Path | None:
+    """A clip a session already has for exactly this line, voice and provider.
+
+    A line costs the same every time it is synthesized, and a director that
+    re-records a take speaks most of it again: take 13 of the FlowWink film
+    ran ElevenLabs out of quota on lines take 12 had already paid for
+    (2026-10-25). The newest clip whose file still exists wins.
+    """
+    init_schema()
+    with _lock, _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT sessions.output_dir, steps.narration_clip
+            FROM steps JOIN sessions ON sessions.id = steps.session_id
+            WHERE steps.narration_text = ? AND steps.voice = ? AND sessions.provider = ?
+              AND steps.narration_clip IS NOT NULL AND steps.narration_clip != ''
+            ORDER BY steps.created_at DESC
+            """,
+            (text, voice, provider),
+        ).fetchall()
+    for output_dir, clip in rows:
+        path = Path(output_dir) / clip
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+    return None
+
+
 def update_step_narration(
     session_id: str,
     index: int,
