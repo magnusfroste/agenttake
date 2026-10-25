@@ -60,7 +60,7 @@ ACTION_FIELDS: dict[str, str] = {
     "type": "ref, text (the verb is type, not fill)",
     "press_key": "ref, text (a key such as Enter or Escape)",
     "select_option": "ref, text (the option label)",
-    "scroll": "dy (pixels; negative scrolls up), ms (optional: glide there over ms, up to 20000 — a slow scroll to film, held in the video for its whole length, with its line spoken over the move; it moves an open dialog's list before the page behind it, and ref picks the list to move)",
+    "scroll": "dy (pixels; negative scrolls up), ms (optional: glide there over ms, up to 20000 — a slow scroll to film, held in the video for its whole length, with its line spoken over the move; it moves an open dialog's list before the page behind it, and ref picks the list to move; a dy past the end stops there, so dy 99999 tours a page down to its footer)",
     "scroll_to_text": "text",
     "wait": "ms",
     "caption": "text, ms, sticky (true: stays until the next caption or page)",

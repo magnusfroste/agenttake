@@ -653,7 +653,8 @@ def test_a_finished_step_can_be_hidden_held_or_sped_up(mods, monkeypatch, tmp_pa
     assert asyncio.run(server.rerender("s-edit"))["ok"]
     offsets = [offset for offset, _, _ in captured["steps"]]
     assert 1.0 not in offsets  # the hidden step is gone
-    assert captured["args"][-1][-2:] == [6.0, 1.0]
+    assert captured["args"][-2][-2:] == [6.0, 1.0]
+    assert captured["args"][-1] == [None, None]  # no glides
     assert captured["steps"][-1][2] == 4.0
 
 

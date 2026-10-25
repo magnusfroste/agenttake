@@ -274,7 +274,8 @@ _POINTER_PARK_JS = """([x, y]) => {
 # for FlowWink's block library moved nothing because the middle of the
 # screen was the dimmed page behind it (2026-10-24); what a wheel at the
 # middle of the screen would scroll; the document. behavior "instant" keeps
-# a site's CSS smooth scrolling from adding its own animation on top.
+# a site's CSS smooth scrolling from adding its own animation on top. A
+# stall makes the glide longer, never jumpy; the render cuts the stall.
 # Resolves with the distance moved.
 GLIDE_SCROLL_MAX_MS = 20000
 _GLIDE_SCROLL_JS = """([dy, ms, anchor]) => new Promise((resolve) => {
@@ -302,11 +303,18 @@ _GLIDE_SCROLL_JS = """([dy, ms, anchor]) => new Promise((resolve) => {
   if (!box && dialogs.length) box = inside(dialogs[dialogs.length - 1]);
   if (!box) box = up(document.elementFromPoint(innerWidth / 2, innerHeight / 2));
   box = box || document.scrollingElement || document.documentElement;
-  const start = box.scrollTop, t0 = performance.now();
+  // The glide's own clock moves at most 50 ms a frame, so after a stall it
+  // carries on from where it was instead of leaping ahead.
+  // A dy past either end stops there, and the ease lands on it.
+  const start = box.scrollTop;
+  const dist = Math.max(-start, Math.min(dy, box.scrollHeight - box.clientHeight - start));
+  let last = performance.now(), clock = 0;
   const ease = (x) => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
   const frame = (now) => {
-    const x = Math.min(1, (now - t0) / ms);
-    box.scrollTo({ top: start + dy * ease(x), behavior: 'instant' });
+    clock += Math.min(now - last, 50);
+    last = now;
+    const x = Math.min(1, clock / ms);
+    box.scrollTo({ top: start + dist * ease(x), behavior: 'instant' });
     if (x < 1) requestAnimationFrame(frame); else resolve(box.scrollTop - start);
   };
   requestAnimationFrame(frame);
@@ -380,6 +388,8 @@ class BrowserSession:
     pending_ease: float = EASE_SECONDS
     # Each timeline step's speed: above 1, its footage plays as a time-lapse.
     timeline_speeds: list[float] = field(default_factory=list)
+    # Each timeline step's narration length when it is a glide, else None.
+    timeline_glides: list[float | None] = field(default_factory=list)
     # A sticky caption on screen: (annotation id, label), redrawn when the
     # camera moves so it stays inside the frame.
     sticky_caption: tuple[str, str] | None = None
@@ -1282,8 +1292,11 @@ class BrowserSession:
                         )
                     glide_started_at = time.monotonic() - self.t0
                     await self.page.evaluate(_GLIDE_SCROLL_JS, [action.dy, glide_ms, anchor])
-                    # The glide is the footage: the step holds for all of it.
-                    annotation_duration = max(annotation_duration, glide_ms / 1000)
+                    # The glide is the footage: the step holds for all of it,
+                    # stalls included (the render cuts those).
+                    annotation_duration = max(
+                        annotation_duration, time.monotonic() - self.t0 - glide_started_at
+                    )
                 else:
                     await self.page.mouse.wheel(0, action.dy)
             elif action_type == "wait":
@@ -1396,6 +1409,7 @@ class BrowserSession:
             self.timeline_pages.append(self.page.url)
             self.timeline_floors.append(QUIET_FLOOR if action.quiet else SEGMENT_FLOOR)
             self.timeline_speeds.append(action.speed)
+            self.timeline_glides.append(duration if glide else None)
         if hold_duration:
             elapsed = time.monotonic() - (self.t0 + offset)
             padding_applied = elapsed < hold_duration
@@ -1477,7 +1491,7 @@ class BrowserSession:
             return elapsed
         segments, _ = plan_segments(
             self.timeline, max(elapsed, 0.001), self.timeline_floors,
-            not self.offscreen_first, self.timeline_speeds,
+            not self.offscreen_first, self.timeline_speeds, None, self.timeline_glides,
         )
         cards = CARD_DURATION * (
             bool(self.render_config.title.strip())
@@ -1507,6 +1521,7 @@ class BrowserSession:
                 video, self.timeline, final, self.output_size,
                 self.render_config, self.camera, self.timeline_pages,
                 self.timeline_floors, not self.offscreen_first, self.timeline_speeds,
+                self.timeline_glides,
             )
             write_storyboard(self.directory, final, result.timeline)
         else:

@@ -2521,6 +2521,7 @@ async def rerender(
     render_pages: list[str] = []
     render_floors: list[float] = []
     render_speeds: list[float] = []
+    render_glides: list[float | None] = []
     lead_in = not (session["steps"] and session["steps"][0].get("offscreen"))
     steps = session["steps"]
     for index, step in enumerate(steps):
@@ -2556,6 +2557,9 @@ async def rerender(
         render_pages.append(step.get("url") or "")
         render_floors.append(QUIET_FLOOR if step.get("quiet") else SEGMENT_FLOOR)
         render_speeds.append(float(step.get("speed") or 1.0))
+        # A glide is the one scroll that stores a hold: its own length.
+        is_glide = step.get("action_type") == "scroll" and float(step.get("annotation_seconds") or 0.0) > 0
+        render_glides.append(duration if is_glide else None)
     if segmented_render_enabled():
         output_width = session.get("output_width")
         output_height = session.get("output_height")
@@ -2567,7 +2571,7 @@ async def rerender(
         result = await asyncio.to_thread(
             segmented_render, source_video, render_steps, video_path, output_size,
             render_config, Camera.load(output_dir), render_pages,
-            render_floors, lead_in, render_speeds,
+            render_floors, lead_in, render_speeds, render_glides,
         )
         await asyncio.to_thread(write_storyboard, output_dir, video_path, getattr(result, "timeline", []) or [])
         warnings = result.warnings

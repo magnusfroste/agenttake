@@ -521,6 +521,9 @@ class Segment:
     step_index: int | None = None
     # A time-lapse: the source plays this many times faster.
     speed: float = 1.0
+    # Stretches of the source, in seconds from its start, left out: where a
+    # glide's screen stood still because the browser stalled.
+    drop: tuple[tuple[float, float], ...] = ()
 
 
 # Footage a time-lapse keeps after the screen stops changing, so the result
@@ -560,6 +563,33 @@ def active_seconds(video_path: Path, start: float, end: float) -> float:
     return length
 
 
+# A glide's screen never stands still on purpose: a still stretch this long
+# inside one is the browser stalling (a busy two-core host, 2026-10-24: 4.4 s
+# with no frame painted in the middle of a page glide), and it is cut.
+GLIDE_STALL_SECONDS = 0.3
+
+
+def frozen_spans(video_path: Path, start: float, end: float) -> list[tuple[float, float]]:
+    """Still stretches of at least GLIDE_STALL_SECONDS inside [start, end],
+    in seconds from start. One still at the end of the window is not a stall
+    — the glide is done — and is not returned. Empty when ffmpeg fails."""
+    length = max(0.0, end - start)
+    if length <= GLIDE_STALL_SECONDS:
+        return []
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-ss", f"{start:.3f}", "-t", f"{length:.3f}",
+         "-i", str(video_path), "-an",
+         "-vf", f"scale=480:-2,freezedetect=n={FREEZE_NOISE}:d={GLIDE_STALL_SECONDS}",
+         "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return []
+    starts = [float(m) for m in re.findall(r"freeze_start: ([0-9.]+)", result.stderr)]
+    ends = [float(m) for m in re.findall(r"freeze_end: ([0-9.]+)", result.stderr)]
+    return [(a, b) for a, b in zip(starts, ends) if b < length - 0.05]
+
+
 def plan_segments(
     steps: Sequence[tuple[float, Path | None, float]],
     video_duration: float,
@@ -567,6 +597,8 @@ def plan_segments(
     lead_in: bool = True,
     speeds: Sequence[float] | None = None,
     activity: Callable[[float, float], float] | None = None,
+    glides: Sequence[float | None] | None = None,
+    stalls: Callable[[float, float], list[tuple[float, float]]] | None = None,
 ) -> tuple[list[Segment], list[dict]]:
     """The windows of the recording a segmented render keeps, in order.
 
@@ -586,6 +618,12 @@ def plan_segments(
     Without it a time-lapse ran to the next step — including every minute the
     director spent thinking — and a 12-second wait for two chat answers came
     out as 95 s of a still screen at 4× (2026-10-10).
+
+    ``glides`` gives each step its narration's length when it is a glide (a
+    scroll with ms), else None. A glide keeps its whole move, and with
+    ``stalls(start, end)`` the stretches where the screen stood still are
+    left out, so a browser that stalled mid-glide does not show as a frozen
+    page; its line still plays in full, over a held last frame if need be.
     """
     ordered = sorted(
         (offset, index, clip, max(0.0, duration))
@@ -609,6 +647,15 @@ def plan_segments(
             if floors is not None and step_index < len(floors) else SEGMENT_FLOOR
         )
         speed = speeds[step_index] if speeds is not None and step_index < len(speeds) else 1.0
+        glide_line = glides[step_index] if glides is not None and step_index < len(glides) else None
+        if glide_line is not None:
+            # narration_duration is the step's hold: the glide's whole length.
+            window = min(available, narration_duration + SEGMENT_TAIL_PAD)
+            drop = tuple(stalls(offset, offset + window)) if stalls is not None else ()
+            played = window - sum(end - start for start, end in drop)
+            keep = max(played, glide_line + SEGMENT_TAIL_PAD if glide_line else 0.0, QUIET_FLOOR)
+            segments.append(Segment(f"{index:04d}", offset, window, keep, clip, step_index, drop=drop))
+            continue
         if speed and speed > 1.0:
             # A time-lapse keeps all of the step's footage, sped up; it lasts
             # at least as long as its line.
@@ -648,6 +695,7 @@ def segmented_render(
     floors: Sequence[float] | None = None,
     lead_in: bool = True,
     speeds: Sequence[float] | None = None,
+    glides: Sequence[float | None] | None = None,
 ) -> SegmentedRenderResult:
     """Render kept step windows from the original continuous recording.
 
@@ -663,6 +711,7 @@ def segmented_render(
     segments, warnings = plan_segments(
         steps, video_duration, floors, lead_in, speeds,
         (lambda start, end: active_seconds(video_path, start, end)) if lapsing else None,
+        glides, lambda start, end: frozen_spans(video_path, start, end),
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
@@ -690,6 +739,7 @@ def segmented_render(
                     output_size,
                     camera,
                     segment.speed,
+                    segment.drop,
                 )
             )
             if segment.clip is not None:
@@ -964,6 +1014,7 @@ def _render_video_segment(
     output_size: tuple[int, int] | None = None,
     camera: "Camera | None" = None,
     speed: float = 1.0,
+    drop: Sequence[tuple[float, float]] = (),
 ) -> Path:
     # -t is an input option here. After -i it capped the output instead, and
     # cut off the frozen frames tpad adds when narration outlasts the footage
@@ -979,6 +1030,11 @@ def _render_video_segment(
     # 4× segment with a camera move played at 1× under its "4×" badge
     # (take 11, 2026-10-10).
     filters = [f"setpts=PTS/{speed:.4f}", "fps=25"] if speed > 1.0 else []
+    if drop:
+        # A glide's stalls leave the footage; the frames after one follow on.
+        skip = "+".join(f"between(t,{start:.3f},{end:.3f})" for start, end in drop)
+        filters = [f"select='not({skip})'", "setpts=N/(25*TB)"]
+        played = source_duration - sum(end - start for start, end in drop)
     extension = output_duration - played
     if extension > 0.01:
         filters.append(f"tpad=stop_mode=clone:stop_duration={extension:.3f}")
