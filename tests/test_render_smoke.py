@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -354,3 +355,30 @@ def test_a_glide_segment_cuts_its_stalls(tmp_path):
     assert start == pytest.approx(2.0, abs=0.1) and end == pytest.approx(4.0, abs=0.1)
     out = render._render_video_segment(source, 0.0, 6.0, 4.0, tmp_path / "seg.mp4", drop=spans)
     assert render.probe_duration(out) == pytest.approx(4.0, abs=0.12)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_a_document_glide_is_a_pan_down_the_full_page_image(tmp_path):
+    # A "page" 400 CSS px wide and 1200 high at density 1, top half red and
+    # bottom half blue; a 300 px viewport glides 900 px from the top.
+    image = tmp_path / "glide-1000.jpg"
+    _run_ffmpeg("-f", "lavfi", "-i", "color=c=red:size=400x600", "-f", "lavfi", "-i", "color=c=blue:size=400x600",
+                "-filter_complex", "[0:v][1:v]vstack", "-frames:v", "1", str(image))
+    (tmp_path / render.GLIDES_FILE).write_text(json.dumps([{
+        "offset": 1.0, "image": image.name, "start": 0, "distance": 900,
+        "view_height": 300, "ms": 2000, "scale": 1.0,
+    }]))
+    glides = render.load_glides(tmp_path)
+    out = render._render_glide_pan(image, glides[1.0], 2.5, tmp_path / "pan.mp4", (400, 300))
+    assert render.probe_duration(out) == pytest.approx(2.5, abs=0.1)
+
+    def colour(at):
+        data = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-ss", str(at), "-i", str(out), "-frames:v", "1",
+             "-vf", "scale=1:1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+            capture_output=True, check=True).stdout
+        return tuple(data[:3])
+
+    first, last = colour(0.0), colour(2.3)
+    assert first[0] > 150 and first[2] < 100  # starts on the red top
+    assert last[2] > 150 and last[0] < 100  # ends on the blue bottom

@@ -24,6 +24,7 @@ from playwright.async_api import (
 
 from .render import (
     CARD_DURATION,
+    GLIDES_FILE,
     QUIET_FLOOR,
     SEGMENT_FLOOR,
     mux_narration,
@@ -276,7 +277,8 @@ _POINTER_PARK_JS = """([x, y]) => {
 # middle of the screen would scroll; the document. behavior "instant" keeps
 # a site's CSS smooth scrolling from adding its own animation on top. A
 # stall makes the glide longer, never jumpy; the render cuts the stall.
-# Resolves with the distance moved.
+# Resolves with [distance moved, whether it moved the document, where it
+# started, the viewport's height].
 GLIDE_SCROLL_MAX_MS = 20000
 _GLIDE_SCROLL_JS = """([dy, ms, anchor]) => new Promise((resolve) => {
   const scrolls = (el) => {
@@ -315,7 +317,9 @@ _GLIDE_SCROLL_JS = """([dy, ms, anchor]) => new Promise((resolve) => {
     last = now;
     const x = Math.min(1, clock / ms);
     box.scrollTo({ top: start + dist * ease(x), behavior: 'instant' });
-    if (x < 1) requestAnimationFrame(frame); else resolve(box.scrollTop - start);
+    if (x < 1) requestAnimationFrame(frame);
+    else resolve([box.scrollTop - start, box === (document.scrollingElement || document.documentElement),
+                  start, box.clientHeight]);
   };
   requestAnimationFrame(frame);
 })"""
@@ -546,6 +550,32 @@ class BrowserSession:
             capture_output=True,
         )
         return result.returncode == 0 and output.is_file()
+
+    async def _capture_glide(
+        self, offset: float, start: float, distance: float, view_height: float, ms: int
+    ) -> None:
+        """Keep the whole page as one image, for the render to glide over.
+
+        Painted live, a glide down a page with a large hero image came out as
+        a staircase on the two-core host: Chrome painted about one frame a
+        second while it scrolled (take 6, 2026-10-25). After the live glide
+        every section has loaded and animated in; the render pans over this
+        image at 25 fps instead, and the live footage is not used. Inner
+        panels and dialogs are not on it, and keep their live footage.
+        """
+        image = self.directory / f"glide-{int(offset * 1000)}.jpg"
+        try:
+            scale = await self.page.evaluate("devicePixelRatio")
+            await self.page.screenshot(path=str(image), type="jpeg", quality=90, full_page=True)
+        except PlaywrightError:
+            return
+        record = self.directory / GLIDES_FILE
+        glides = json.loads(record.read_text()) if record.is_file() else []
+        glides.append({
+            "offset": round(offset, 3), "image": image.name, "start": start,
+            "distance": distance, "view_height": view_height, "ms": ms, "scale": scale,
+        })
+        record.write_text(json.dumps(glides))
 
     async def capture_screenshot(self) -> Path:
         screenshot = self.directory / f"screenshot-{int(time.time() * 1000)}.jpg"
@@ -1291,12 +1321,18 @@ class BrowserSession:
                             timeout=5000
                         )
                     glide_started_at = time.monotonic() - self.t0
-                    await self.page.evaluate(_GLIDE_SCROLL_JS, [action.dy, glide_ms, anchor])
+                    moved, on_document, glide_from, view_height = await self.page.evaluate(
+                        _GLIDE_SCROLL_JS, [action.dy, glide_ms, anchor]
+                    )
                     # The glide is the footage: the step holds for all of it,
                     # stalls included (the render cuts those).
                     annotation_duration = max(
                         annotation_duration, time.monotonic() - self.t0 - glide_started_at
                     )
+                    if on_document and moved:
+                        await self._capture_glide(
+                            glide_started_at, glide_from, moved, view_height, glide_ms
+                        )
                 else:
                     await self.page.mouse.wheel(0, action.dy)
             elif action_type == "wait":

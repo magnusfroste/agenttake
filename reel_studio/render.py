@@ -563,6 +563,58 @@ def active_seconds(video_path: Path, start: float, end: float) -> float:
     return length
 
 
+# Where a session keeps its document glides: for each, the step's offset, a
+# full-page image and how far down it the glide went (BrowserSession.
+# _capture_glide). The render pans over the image instead of the footage.
+GLIDES_FILE = "glides.json"
+# The pan holds on its last frame a moment, like a glide's tail.
+PAN_TAIL = 0.4
+
+
+def load_glides(directory: Path) -> dict[float, dict]:
+    """The document glides recorded in directory, keyed by step offset."""
+    record = directory / GLIDES_FILE
+    try:
+        glides = json.loads(record.read_text()) if record.is_file() else []
+    except (OSError, ValueError):
+        return {}
+    return {
+        round(float(glide["offset"]), 3): glide for glide in glides
+        if (directory / str(glide.get("image", ""))).is_file()
+    }
+
+
+def _render_glide_pan(
+    image: Path,
+    glide: dict,
+    output_duration: float,
+    output_path: Path,
+    output_size: tuple[int, int] | None,
+) -> Path:
+    """The glide as a pan down the full-page image: the viewport's window
+    moves from where the glide started by its distance, eased in and out
+    over its ms, then holds."""
+    # The image is at the capture density; the glide was measured in CSS px.
+    scale = float(glide.get("scale") or 1.0)
+    view = round(float(glide["view_height"]) * scale / 2) * 2
+    top = float(glide["start"]) * scale
+    distance = float(glide["distance"]) * scale
+    seconds = max(0.1, float(glide["ms"]) / 1000)
+    x = f"min(t/{seconds:.3f},1)"
+    ease = f"if(lt({x},0.5),2*{x}*{x},1-pow(-2*{x}+2,2)/2)"
+    filters = [f"crop=iw:{view}:0:'{top:.1f}+{distance:.1f}*{ease}'"]
+    if output_size is not None:
+        filters.append(f"scale={output_size[0]}:{output_size[1]}")
+    filters.append("format=yuv420p")
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-y", "-loop", "1", "-framerate", "25",
+         "-t", f"{output_duration:.3f}", "-i", str(image), "-vf", ",".join(filters),
+         "-an", "-c:v", "libx264", "-preset", "veryfast", "-r", "25", str(output_path)],
+        check=True,
+    )
+    return output_path
+
+
 # A glide's screen never stands still on purpose: a still stretch this long
 # inside one is the browser stalling (a busy two-core host, 2026-10-24: 4.4 s
 # with no frame painted in the middle of a page glide), and it is cut.
@@ -713,6 +765,20 @@ def segmented_render(
         (lambda start, end: active_seconds(video_path, start, end)) if lapsing else None,
         glides, lambda start, end: frozen_spans(video_path, start, end),
     )
+    pans = load_glides(video_path.parent) if glides is not None else {}
+    if pans:
+        # A panned glide plays its whole move at the pace it was asked for,
+        # and at least as long as its line.
+        for position, segment in enumerate(segments):
+            pan = pans.get(round(segment.offset, 3))
+            if pan is None or segment.step_index is None:
+                continue
+            line = glides[segment.step_index] or 0.0
+            segments[position] = Segment(
+                segment.name, segment.offset, segment.source_duration,
+                max(float(pan["ms"]) / 1000 + PAN_TAIL, line + SEGMENT_TAIL_PAD if line else 0.0),
+                segment.clip, segment.step_index,
+            )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=".segments-", dir=output_path.parent
@@ -729,6 +795,16 @@ def segmented_render(
                 if pages is not None and segment.step_index is not None
                 and segment.step_index < len(pages) else None
             )
+            pan = pans.get(round(segment.offset, 3)) if segment.step_index is not None else None
+            if pan is not None:
+                segment_paths.append(_render_glide_pan(
+                    video_path.parent / pan["image"], pan, segment.output_duration,
+                    temporary_path / f"segment-{segment.name}.mp4", output_size,
+                ))
+                if segment.clip is not None:
+                    audio_clips.append((cumulative, segment.clip))
+                cumulative += segment.output_duration
+                continue
             segment_paths.append(
                 _render_video_segment(
                     video_path,
