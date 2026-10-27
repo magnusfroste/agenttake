@@ -101,6 +101,21 @@ def test_a_beat_spoken_twice_is_repeated():
     assert result["repeated"] == [{"beat": 0, "label": "hook", "line": BEATS[0]["line"], "steps": [0, 1]}]
 
 
+def test_a_beat_recorded_again_and_moved_into_place_is_in_order():
+    from reel_studio.review import compare_beats
+
+    # The chat line went wrong: it is hidden, recorded again at the end and
+    # moved to where it belongs (edit_step hidden, then position).
+    steps = [_step_row(0, BEATS[0]["line"]),
+             _step_row(1, BEATS[1]["line"], offscreen=True),
+             _step_row(2, BEATS[2]["line"]),
+             {**_step_row(3, BEATS[1]["line"]), "position": 1}]
+    steps[0]["position"], steps[1]["position"], steps[2]["position"] = 0, 2, 3
+    result = compare_beats(BEATS, steps)
+    assert result["in_order"] == 3
+    assert not result["missing"] and not result["out_of_order"] and not result["repeated"]
+
+
 def test_review_flags_a_skipped_beat_and_it_cannot_be_excellent(mods):
     server, store = mods
     _new_session(store, "s-skipped", beats=BEATS)

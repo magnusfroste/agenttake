@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .render import FONT_PATH, STORYBOARD_DIR, storyboard_still_at
+from .store import play_order
 
 
 # Beats -------------------------------------------------------------------
@@ -26,9 +27,11 @@ def normalize_line(text: str | None) -> str:
 
 
 def recorded_lines(steps: Sequence[dict]) -> list[tuple[int, str]]:
-    """The narrated steps that reach the video, in order: (step idx, line)."""
+    """The narrated steps that reach the video, in the order it plays them
+    (a beat recorded again at the end and moved into place counts where it
+    plays): (step idx, line)."""
     lines = []
-    for step in steps:
+    for step in play_order(list(steps)):
         line = normalize_line(step.get("narration_text"))
         if line and step.get("ok", True) and not step.get("offscreen"):
             lines.append((int(step.get("idx", 0)), line))

@@ -272,10 +272,14 @@ Camera: `begin_shot(framing=wide|medium|close, focus_text|focus_ref, move_second
 before the step it is for, checked with `preview_shot` (a still of the exact frame);
 `verify_shot` after. Step flags, inside the action: `quiet` (silent on purpose),
 `offscreen` (done but cut — signing in), `speed` 2-16 (a labelled time-lapse).
+A long render makes `finish` answer with a `job_id`; `finish_status(job_id)` reports
+its progress and, when done, the video URL.
 After `finish`: `storyboard` shows the film part by part; `edit_step` hides a step,
-sets a hold or a speed; `update_step_narration` rewrites a line; `rerender` applies
-them without recording again. Before sharing, `set_watch_page` gives the watch page a
-title, a description and the moment its link-preview image is taken from.
+sets a hold or a speed, or gives it a `position` in the video (a beat recorded again
+at the end of the session plays where it belongs, with its camera and glide);
+`update_step_narration` rewrites a line; `rerender` applies them without recording
+again. Before sharing, `set_watch_page` gives the watch page a title, a description
+and the moment its link-preview image is taken from.
 `subtitles=true` (start_session or rerender) burns the narration in, for feeds that play muted.
 Secrets: type a password as `{{{{secret:NAME}}}}` and AgentTake types its own
 `REEL_SECRET_NAME` and masks the field; `start_session` lists the names it has.
@@ -301,7 +305,10 @@ Use `click_and_wait` (or `click` with `wait_for_url`, `wait_for_text`, and
 The director can declare and verify shot intent with `begin_shot` and `verify_shot`.
 Observed refs are semantic (for example `button:new-contact`) rather than
 position-only indexes. Use `select_option` for native/custom dropdowns and
-`press_key` for keyboard-driven controls.
+`press_key` for keyboard-driven controls (with no `ref` the key goes to the page —
+Escape closes a menu). `click` with `text` and no `ref` clicks the visible element
+showing that text. A `scroll` reports `scrolled`: the pixels that moved and which
+element. An offscreen step may wait up to 600000 ms for slow text.
 Pass the script as `start_session(beats=[{{"line": ..., "label": ...}}])`, one entry
 per narrated line in order: `review_session` (and `finish`'s review) flags a planned
 line that was not recorded or was recorded out of order, a near-empty frame under a
@@ -1245,12 +1252,12 @@ def docs_page(base_url: str = "/") -> str:
       <code>{{"ok": false, "error": {{"type", "message"}}}}</code> and a
       current image when possible. Re-observe when <code>refs_stale</code> is true.</p>
       <p><strong>Actions:</strong>
-      <code>goto{{url}}</code>, <code>click{{ref}}</code>,
+      <code>goto{{url}}</code>, <code>click{{ref}}</code> or <code>click{{text}}</code>,
       <code>click_and_wait{{ref,target_text?,wait_for_url?,wait_for_text?,settle_ms?}}</code>,
       <code>type{{ref,text}}</code>, <code>select_option{{ref,text}}</code>,
-      <code>press_key{{ref,text}}</code>, <code>set_zoom{{text}}</code>,
+      <code>press_key{{ref?,text}}</code>, <code>set_zoom{{text}}</code>,
       <code>annotate{{ref,text,style,ms,dim}}</code>,
-      <code>scroll{{dy}}</code>,
+      <code>scroll{{dy,ms?,ref?}}</code>,
       <code>scroll_to_text{{text}}</code>,
       <code>hover{{ref}}</code>, <code>highlight{{ref}}</code>, and
       <code>wait{{ms}}</code>. Refs come from <code>observe</code>. Narration
@@ -1259,7 +1266,12 @@ def docs_page(base_url: str = "/") -> str:
       through scroll, resize, and layout changes and remains visible for the
       longer of its own duration and the narration duration. Use
       <code>target_text</code> when a parent navigation label and its child
-      module have similar names.</p></div>
+      module have similar names. A <code>click</code> with <code>text</code> and no
+      ref clicks the visible element showing that text; a <code>press_key</code>
+      with no ref sends the key to the page. A <code>scroll</code> answers with
+      <code>scrolled: {{"pixels", "requested", "element"}}</code> — what actually
+      moved — and a warning when nothing did. <code>wait_timeout_ms</code> is up
+      to 60000, or 600000 on an <code>offscreen</code> step.</p></div>
     <div class="tool card"><h3><code>assert_visible(session_id, text)</code></h3>
       <p>Check whether visible text is present without recording a storyboard
       step or changing the rendered video.</p>
@@ -1345,8 +1357,22 @@ def docs_page(base_url: str = "/") -> str:
     <code>/api/bug_reports</code> feed.</p>
     <div class="tool card"><h3><code>finish(session_id)</code></h3>
       <p>Stop recording, mix narration, and render the final MP4.</p>
-      <p><strong>Returns:</strong> <code>{{"video_path", "video_url"}}</code>.
-      The URL is present when <code>REEL_PUBLIC_BASE_URL</code> is configured.</p></div>
+      <p><strong>Returns:</strong> <code>{{"ok", "status": "done", "video_path", "video_url", "review"}}</code>.
+      The URL is present when <code>REEL_PUBLIC_BASE_URL</code> is configured.
+      A render still running after about a minute answers
+      <code>{{"status": "rendering", "job_id"}}</code> instead; calling finish
+      again joins the same job.</p></div>
+    <div class="tool card"><h3><code>finish_status(job_id)</code></h3>
+      <p>Follow a finish that answered with a job id: <code>rendering</code>
+      (with its stage, seconds so far and parts rendered), <code>done</code>
+      (with the video URL and the review, as finish gives them) or
+      <code>failed</code> (with the error).</p></div>
+    <div class="tool card"><h3><code>edit_step(session_id, index, hidden?, hold_seconds?, speed?, position?)</code></h3>
+      <p>Change one beat of a finished video, then <code>rerender</code>:
+      leave it out, hold it longer, play it as a time-lapse, or give it another
+      <code>position</code> in the video (0 is first). A beat recorded again at the
+      end of a session plays where it belongs, with its camera moves and its
+      glide; the answer lists the whole play order.</p></div>
     <div class="tool card"><h3><code>prune(max_clips?, keep_raw_clips?)</code></h3>
       <p>Run best-effort storage cleanup. <code>max_clips</code> keeps the
       newest finished sessions and removes older session directories and
@@ -1558,6 +1584,8 @@ def idle_session_ids(live: dict, now: float, timeout: float) -> list[str]:
 async def reap_idle_sessions(now: float | None = None) -> list[str]:
     reaped = []
     for session_id in idle_session_ids(sessions, time.monotonic() if now is None else now, idle_timeout_seconds()):
+        if _finishing(session_id):
+            continue  # rendering: no tool call is expected
         session = sessions.pop(session_id, None)
         if session is None:
             continue
@@ -1614,9 +1642,17 @@ The screen records from start_session until finish, so plan first and record onc
 4. Use act_batch for each beat (up to 20 steps): one round trip, not one per click.
    An action that starts something slow (a model answering, a build) gets
    wait_for_text with wait_timeout_ms up to 60000; if it still times out, the
-   click already happened — wait for the result, do not press it again.
+   click already happened — wait for the result, do not press it again. An
+   answer that takes minutes (a live agent at work) is waited for offscreen:
+   with offscreen=true, wait_timeout_ms goes up to 600000.
+   A scroll reports scrolled: the pixels that actually moved and which element
+   moved. 0 means nothing moved — never narrate or report a glide that did not
+   happen; pass ref to pick the list, or scroll the page first.
 5. observe once per page and reuse its refs; observe(detail="refs") when you only
    need refs. Observe again after the URL changes or an action reports stale_refs.
+   Something with no ref (a dashboard card) is clicked by its text: {"type":
+   "click", "text": "Nordbrygg weekly report"}. A key for the page (Escape to
+   close a menu) is press_key with text and no ref.
 6. Narrate every step a viewer sees. Steps without narration are silent. Where the
    video will autoplay muted (LinkedIn, X), also put the key line on screen with a
    caption step. A caption with sticky=true stays until the next caption or page:
@@ -1686,11 +1722,18 @@ The screen records from start_session until finish, so plan first and record onc
    - Edit after finish instead of recording again: edit_step(hidden=true) drops
      a stray step, hold_seconds lets a result breathe, speed turns a wait into
      a time-lapse — then rerender.
+   - One bad beat never costs a new take. Record it again at the end of the
+     session (going back to its page offscreen), finish, then edit_step(hidden=
+     true) on the flawed one and edit_step(index=<new step>, position=<n>) to
+     play the new one where it belongs; its camera moves and glide go with it.
+     storyboard after rerender shows the order.
 8. Keep secrets unreadable: start_session(mask=[CSS selectors]) blurs matching
    elements on every page from the first frame; the mask action blurs one element.
 9. Several controls can share a name (a "Sign In" tab and a "Sign In" button):
    observe marks them same_name, and the one that submits a form submits_form.
-10. Run review_session and re-record what it flags. Then call finish once. Narration
+10. Run review_session and re-record what it flags. Then call finish once. A render
+   longer than about a minute answers with status rendering and a job_id: follow
+   it with finish_status every 30 s or so, never a second finish. Narration
    wording is fixed after finish: update_step_narration for each line, then rerender.
    finish reviews the film too, and looks at the picture under every line: a
    page that had not loaded (blank_frame) or a menu, listbox or popover left
@@ -2030,6 +2073,14 @@ def _unknown_session(session_id: str) -> dict:
     }
 
 
+def _finishing_error(session_id: str) -> dict:
+    return {
+        "ok": False,
+        "error": {"type": "session_finishing", "message": f"{session_id} has stopped recording and is rendering"},
+        "hint": "finish_status(job_id) follows the render; edit_step and rerender change the finished video.",
+    }
+
+
 # Steps a viewer sees happen. Without narration they play in silence; the
 # finished take on 2026-10-07 was 44 seconds with one narrated step.
 SILENT_WARNING_TYPES = {"goto", "click", "click_and_wait", "type", "select_option", "press_key", "scroll_to_text"}
@@ -2107,6 +2158,8 @@ async def act(session_id: str, action: ActionParam, narration: str = "") -> Call
     """
     if session_id not in sessions:
         return feedback_result(_unknown_session(session_id))
+    if _finishing(session_id):
+        return feedback_result(_finishing_error(session_id))
     payload, screenshot = await _run_action(session_id, action, narration)
     return feedback_result(payload, screenshot)
 
@@ -2142,6 +2195,8 @@ async def act_batch(
     """
     if session_id not in sessions:
         return feedback_result(_unknown_session(session_id))
+    if _finishing(session_id):
+        return feedback_result(_finishing_error(session_id))
     if not steps:
         return feedback_result(
             {"ok": False, "error": {"type": "invalid_batch", "message": "steps must be a non-empty list"}}
@@ -2466,12 +2521,14 @@ async def edit_step(
     hidden: Annotated[bool | None, Field(description="true leaves the step out of the video; false brings it back.")] = None,
     hold_seconds: Annotated[float | None, Field(description="Hold the step at least this long (0-20 s): a still beat after a result.")] = None,
     speed: Annotated[float | None, Field(description="1 plays it as recorded; 2-16 shows all its footage until the next step as a labelled time-lapse.")] = None,
+    position: Annotated[int | None, Field(description="The step's place in the video, 0 first: it plays there and the steps from there on move down one. A beat recorded at the end of the session moves to where it belongs; its camera moves and glide go with it.")] = None,
 ) -> dict:
     """Edit one beat of a finished video without recording it again.
 
-    Leave a stray step out, hold a result a little longer, or turn a wait
-    into a time-lapse — then call rerender to cut the video again. Use
-    storyboard to find the step and to see the result.
+    Leave a stray step out, hold a result a little longer, turn a wait into
+    a time-lapse, or move a beat recorded late to where it belongs — then
+    call rerender to cut the video again. Use storyboard to find the step
+    and to see the result.
     """
     session, error = _editable_session(session_id)
     if error:
@@ -2480,11 +2537,21 @@ async def edit_step(
         return {"ok": False, "error": {"type": "invalid_edit", "message": "hold_seconds is 0-20"}}
     if speed is not None and not 1 <= speed <= 16:
         return {"ok": False, "error": {"type": "invalid_edit", "message": "speed is 1-16"}}
+    if position is not None and not 0 <= position < len(session["steps"]):
+        return {"ok": False, "error": {"type": "invalid_edit",
+                                       "message": f"position is 0-{len(session['steps']) - 1}"}}
     step = store.edit_step(session_id, index, hidden, hold_seconds, speed)
     if step is None:
         return {"ok": False, "error": {"type": "unknown_step", "message": f"No step {index}"}}
-    return {"ok": True, "step": {k: step.get(k) for k in ("idx", "action_type", "offscreen", "annotation_seconds", "speed")},
-            "hint": "Call rerender(session_id) to cut the video with this edit; storyboard shows the result."}
+    result = {"ok": True, "step": {k: step.get(k) for k in ("idx", "action_type", "offscreen", "annotation_seconds", "speed")},
+              "hint": "Call rerender(session_id) to cut the video with this edit; storyboard shows the result."}
+    if position is not None:
+        order = store.move_step(session_id, index, position) or []
+        result["step"]["position"] = order.index(index)
+        # The whole play order, by step index, so the next move can be
+        # counted from it.
+        result["order"] = order
+    return result
 
 
 @mcp.tool()
@@ -2689,8 +2756,12 @@ async def rerender(
     render_floors: list[float] = []
     render_speeds: list[float] = []
     render_glides: list[float | None] = []
+    render_order: list[int] = []
     lead_in = not (session["steps"] and session["steps"][0].get("offscreen"))
     steps = session["steps"]
+    # Where each step plays (edit_step position); the steps themselves stay in
+    # recording order, which is what the storyboard's part numbers count.
+    places = {step["idx"]: place for place, step in enumerate(store.play_order(steps))}
     for index, step in enumerate(steps):
         offset = step.get("offset_seconds")
         if offset is None:
@@ -2727,6 +2798,8 @@ async def rerender(
         # A glide is the one scroll that stores a hold: its own length.
         is_glide = step.get("action_type") == "scroll" and float(step.get("annotation_seconds") or 0.0) > 0
         render_glides.append(duration if is_glide else None)
+        render_order.append(places[step["idx"]])
+    reordered = render_order != sorted(render_order)
     if segmented_render_enabled():
         output_width = session.get("output_width")
         output_height = session.get("output_height")
@@ -2739,6 +2812,7 @@ async def rerender(
             segmented_render, source_video, render_steps, video_path, output_size,
             render_config, Camera.load(output_dir), render_pages,
             render_floors, lead_in, render_speeds, render_glides,
+            order=render_order,
         )
         await asyncio.to_thread(write_storyboard, output_dir, video_path, getattr(result, "timeline", []) or [])
         warnings = result.warnings
@@ -2756,6 +2830,8 @@ async def rerender(
             render_config, Camera.load(output_dir),
         )
         duration = await asyncio.to_thread(probe_duration, video_path)
+        if reordered:
+            warnings = ["Steps play in recording order: moving a step needs the segmented render (REEL_SEGMENTED)."]
     store.update_session_duration(session_id, duration)
     if subtitles is not None:
         store.update_session_subtitles(session_id, subtitles)
@@ -3047,9 +3123,107 @@ async def review_session(session_id: str) -> dict:
     return result
 
 
+# A render can outlast what an MCP client waits for a reply: five-minute
+# renders timed out, and directors called finish again while the first was
+# still running (2026-10-25). finish waits this long, then answers with a job
+# id that finish_status follows; a second finish joins the running job.
+FINISH_WAIT_SECONDS = 55.0
+
+
+class FinishJob:
+    """A finish running in the background, kept until the process ends."""
+
+    def __init__(self, session_id: str, directory: Path | None, planned_parts: int) -> None:
+        self.session_id = session_id
+        self.directory = directory
+        self.planned_parts = planned_parts
+        self.started = time.monotonic()
+        self.stage = "rendering"
+        self.task: asyncio.Task | None = None
+
+    def running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    def progress(self) -> dict:
+        report = {
+            "status": "rendering",
+            "job_id": self.session_id,
+            "stage": self.stage,
+            "elapsed_seconds": round(time.monotonic() - self.started, 1),
+        }
+        if self.stage == "rendering" and self.directory is not None:
+            # The segmented render writes one file per part into a temporary
+            # folder beside the video: counting them is the render's progress.
+            report["parts_rendered"] = sum(
+                1 for _ in self.directory.glob(".segments-*/segment-*.mp4")
+            )
+            if self.planned_parts:
+                report["parts_planned"] = self.planned_parts
+        return report
+
+
+finish_jobs: dict[str, FinishJob] = {}
+
+
+def _finishing(session_id: str) -> bool:
+    job = finish_jobs.get(session_id)
+    return job is not None and job.running()
+
+
+async def _await_finish(job: FinishJob) -> dict:
+    """The finish's result when it is done within FINISH_WAIT_SECONDS, else
+    where it has got to and how to follow it."""
+    assert job.task is not None
+    try:
+        return await asyncio.wait_for(asyncio.shield(job.task), FINISH_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        return {
+            "ok": True,
+            **job.progress(),
+            "hint": "The video is still rendering. Call finish_status(job_id) about every 30 s "
+            "until status is done; it then gives the video URL and the review. Do not call "
+            "finish again: it would only report this same job.",
+        }
+
+
+@mcp.tool()
+async def finish_status(
+    job_id: Annotated[str, Field(description="The job_id finish answered with (the session id).")],
+) -> dict:
+    """Follow a finish that was still rendering when it answered.
+
+    status is rendering (with the stage, seconds so far and parts rendered),
+    done (with video_url and the review, as finish gives them), or failed
+    (with the error).
+    """
+    job = finish_jobs.get(job_id)
+    if job is None:
+        stored = store.get_session(job_id)
+        if stored is not None and stored.get("status") == "finished":
+            # Rendered before this process started: the stored result.
+            return {"ok": True, "status": "done", "job_id": job_id,
+                    "video_path": stored.get("video_path"),
+                    "video_url": public_video_url(job_id) or stored.get("video_url")}
+        return {"ok": False, "error": {"type": "unknown_job", "message": f"No finish job: {job_id}"},
+                "hint": "finish(session_id) starts one; its job_id is the session id."}
+    if job.running():
+        return {"ok": True, **job.progress()}
+    assert job.task is not None
+    result = job.task.result()
+    return {"job_id": job_id, **result}
+
+
 @mcp.tool()
 async def finish(session_id: str) -> dict:
-    """Stop recording and render the final MP4."""
+    """Stop recording and render the final MP4.
+
+    A render that takes longer than about a minute answers with status
+    rendering and a job_id: follow it with finish_status, and do not call
+    finish again.
+    """
+    job = finish_jobs.get(session_id)
+    if job is not None and job.running():
+        return await _await_finish(job)
     session = sessions.get(session_id)
     if session is None:
         stored = store.get_session(session_id)
@@ -3103,17 +3277,40 @@ async def finish(session_id: str) -> dict:
             "shot; an earlier shot is not checked against the page on screen now. "
             "begin_shot with the same shot_id replaces a shot.",
         }
+    directory = getattr(session, "directory", None)
+    job = FinishJob(
+        session_id, Path(directory) if directory else None,
+        len(getattr(session, "timeline", None) or []),
+    )
+    job.task = asyncio.create_task(_run_finish(job, session))
+    finish_jobs[session_id] = job
+    return await _await_finish(job)
+
+
+async def _run_finish(job: FinishJob, session: Any) -> dict:
+    """Render, publish and review a session: finish's work, run as a job."""
+    try:
+        return await _render_and_publish(job, session)
+    except Exception as exc:  # a job's failure is reported, never lost
+        return {"ok": False, "status": "failed",
+                "error": {"type": "finish_failed", "message": str(exc)}}
+
+
+async def _render_and_publish(job: FinishJob, session: Any) -> dict:
+    session_id = job.session_id
     try:
         video_path = await session.finish()
         duration = await asyncio.to_thread(probe_duration, video_path)
     except FileNotFoundError as exc:
         return {
             "ok": False,
+            "status": "failed",
             "error": {"type": "recording_missing", "message": str(exc)},
         }
     except Exception as exc:
         return {
             "ok": False,
+            "status": "failed",
             "error": {"type": "finish_failed", "message": str(exc)},
         }
     public_base_url = os.environ.get("REEL_PUBLIC_BASE_URL", "").rstrip("/")
@@ -3128,10 +3325,12 @@ async def finish(session_id: str) -> dict:
         video_url,
         duration,
     )
+    job.stage = "subtitles"
     try:
         await asyncio.to_thread(apply_subtitles, session_id)
     except Exception as exc:  # the video stands without them
         print(f"[agenttake] subtitles for {session_id} failed: {exc}", flush=True)
+    job.stage = "review"
     # A finished MP4 is not automatically an editorially safe deliverable.
     # Run the durable review while the session metadata is still available and
     # return the report alongside the artifact so callers cannot silently skip
@@ -3142,7 +3341,8 @@ async def finish(session_id: str) -> dict:
     except Exception:
         pass
     sessions.pop(session_id, None)
-    return {"video_path": str(video_path), "video_url": video_url, "review": review}
+    return {"ok": True, "status": "done", "video_path": str(video_path), "video_url": video_url,
+            "review": review}
 
 
 @mcp.tool()

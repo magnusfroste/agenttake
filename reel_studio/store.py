@@ -141,6 +141,8 @@ def init_schema() -> None:
             # JSON counts of the menus, listboxes and popovers on screen after
             # the step; NULL where nobody looked (an error, an older take).
             connection.execute("ALTER TABLE steps ADD COLUMN open_overlays TEXT")
+        if "position" not in columns:
+            connection.execute("ALTER TABLE steps ADD COLUMN position INTEGER")
         session_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
@@ -423,6 +425,40 @@ def edit_step(
             "SELECT * FROM steps WHERE session_id = ? AND idx = ?", (session_id, index)
         ).fetchone()
     return dict(updated)
+
+
+def play_order(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Steps in the order the video plays them: as recorded, unless
+    move_step has given them places."""
+    return sorted(
+        steps,
+        key=lambda step: (step["position"] if step.get("position") is not None else step["idx"], step["idx"]),
+    )
+
+
+def move_step(session_id: str, index: int, position: int) -> list[int] | None:
+    """Give a step another place in the video: it plays at ``position`` in the
+    play order (0 is first), and the steps from there on move down one.
+
+    Every step's place is written, so the order is whole and later moves
+    count from it. Returns the step indices in their new order, or None
+    when there is no such step.
+    """
+    init_schema()
+    with _lock, _connect() as connection:
+        rows = connection.execute(
+            "SELECT idx, position FROM steps WHERE session_id = ?", (session_id,)
+        ).fetchall()
+        order = [step["idx"] for step in play_order([dict(row) for row in rows])]
+        if index not in order:
+            return None
+        order.remove(index)
+        order.insert(max(0, min(position, len(order))), index)
+        connection.executemany(
+            "UPDATE steps SET position = ? WHERE session_id = ? AND idx = ?",
+            [(place, session_id, idx) for place, idx in enumerate(order)],
+        )
+    return order
 
 
 def update_session_voice(session_id: str, voice: str, provider: str) -> None:
