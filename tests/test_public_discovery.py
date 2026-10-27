@@ -20,7 +20,7 @@ def test_page_shell_contains_discovery_metadata():
     assert 'property="og:image"' in page
     assert 'name="twitter:card"' in page
     assert 'rel="canonical" href="https://example.test/test"' in page
-    assert 'rel="icon" href="/favicon.svg"' in page
+    assert 'rel="icon" href="/favicon.svg?v=' in page
 
 
 def test_llms_and_sitemap_builders():

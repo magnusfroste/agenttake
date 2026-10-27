@@ -189,7 +189,7 @@ def page_shell(
     canonical_path: str = "/",
     base_url: str = "",
     structured_data: str = "",
-    og_image_path: str = "/og.png",
+    og_image_path: str | None = None,
     share_title: str | None = None,
 ) -> str:
     """Wrap public page content in the shared landing/docs layout.
@@ -204,6 +204,10 @@ def page_shell(
     canonical_url = html.escape(
         f"{base_url.rstrip('/')}{canonical_path}", quote=True
     )
+    # The brand assets carry their version in the URL: Cloudflare keeps them
+    # four hours, and LinkedIn longer, so a new mark under the old URL showed
+    # the old one (2026-10-27).
+    og_image_path = og_image_path or f"/og.png?v={ASSET_VERSION}"
     og_image = html.escape(f"{base_url.rstrip('/')}{og_image_path}", quote=True)
     return f"""<!doctype html>
 <html lang="en">
@@ -213,8 +217,8 @@ def page_shell(
   <title>{escaped_title} · AgentTake</title>
   <meta name="description" content="{escaped_description}">
   <link rel="canonical" href="{canonical_url}">
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="alternate icon" href="/favicon.png" type="image/png">
+  <link rel="icon" href="/favicon.svg?v={ASSET_VERSION}" type="image/svg+xml">
+  <link rel="alternate icon" href="/favicon.png?v={ASSET_VERSION}" type="image/png">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="AgentTake">
   <meta property="og:title" content="{escaped_share_title}">
