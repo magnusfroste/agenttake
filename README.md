@@ -2,9 +2,9 @@
 
 ### The ultimate tool for agentic directors.
 
-*Part of [AgentHotel](https://github.com/magnusfroste/agenthotel) — where it is installed as **Take** — and it runs anywhere on its own. Formerly reel-studio.*
+*Part of [AgentHotel](https://www.agenthotel.org) — where it is installed as **Take** — and it runs anywhere on its own. Formerly reel-studio.*
 
-🌐 **[agenttake.clawable.org](https://agenttake.clawable.org)** — what it is, in two minutes.
+🌐 **[take.agenthotel.org](https://take.agenthotel.org)** — what it is, in two minutes.
 
 **AgentTake turns any AI agent into a video director.** Point your agent at a
 web app and it drives a real browser, decides what to click, narrates what
