@@ -46,6 +46,7 @@ from .annotations import (
     validate_annotation,
 )
 from .refs import semantic_ref
+from .review import OPEN_OVERLAYS_JS
 from .schema import resolve_secret, secret_names, Action, mask_stylesheet
 from .tts import synthesize
 
@@ -1587,6 +1588,13 @@ class BrowserSession:
                 chrome_restored = await ensure_fullscreen(self.page.context, self.page)
         except PlaywrightError:
             pass  # mid-navigation: the next step checks again
+        # What the line plays over: a menu left open from an earlier step is
+        # in every frame of it (FlowWink film, 2026-10-25). review_session
+        # reads the counts.
+        try:
+            open_overlays = await self.page.evaluate(OPEN_OVERLAYS_JS)
+        except PlaywrightError:
+            open_overlays = None
         screenshot = await self.capture_screenshot()
         result = {
             "ok": True,
@@ -1603,6 +1611,8 @@ class BrowserSession:
             "refs_stale": self.refs_stale,
             "screenshot_path": str(screenshot),
         }
+        if open_overlays is not None:
+            result["open_overlays"] = open_overlays
         if settled_by:
             result["settled_by"] = settled_by
         if action_completed_at is not None:

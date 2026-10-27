@@ -1,6 +1,7 @@
 """Durable SQLite metadata for recording sessions and storyboard steps."""
 
 from datetime import datetime, timezone
+import json
 import os
 import sqlite3
 import threading
@@ -136,6 +137,10 @@ def init_schema() -> None:
             connection.execute("ALTER TABLE steps ADD COLUMN narration_clip TEXT")
         if "speed" not in columns:
             connection.execute("ALTER TABLE steps ADD COLUMN speed REAL NOT NULL DEFAULT 1")
+        if "open_overlays" not in columns:
+            # JSON counts of the menus, listboxes and popovers on screen after
+            # the step; NULL where nobody looked (an error, an older take).
+            connection.execute("ALTER TABLE steps ADD COLUMN open_overlays TEXT")
         if "position" not in columns:
             connection.execute("ALTER TABLE steps ADD COLUMN position INTEGER")
         session_columns = {
@@ -166,6 +171,9 @@ def init_schema() -> None:
             ("poster_at", "REAL"),
             # Narration burned into the picture, for feeds that play muted.
             ("subtitles", "INTEGER NOT NULL DEFAULT 0"),
+            # The director's planned beats, JSON [{"line", "label"}]: what
+            # review_session holds the recorded narration against.
+            ("beats", "TEXT"),
         ):
             if column not in session_columns:
                 connection.execute(
@@ -219,6 +227,7 @@ def create_session(
     transitions: str = "smooth",
     title_background: str = "auto",
     closing_qr: bool = True,
+    beats: list[dict] | None = None,
 ) -> None:
     init_schema()
     with _lock, _connect() as connection:
@@ -227,13 +236,15 @@ def create_session(
             INSERT INTO sessions
                 (id, start_url, status, voice, provider, width, height,
                  output_width, output_height, title, subtitle, accent, cta_url,
-                 cta_text, music, created_at, output_dir, transitions, title_background, closing_qr)
-            VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cta_text, music, created_at, output_dir, transitions, title_background, closing_qr,
+                 beats)
+            VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id, _safe_persisted_url(start_url), voice, provider, width, height,
                 output_width, output_height, title, subtitle, accent, cta_url,
                 cta_text, music, _now(), output_dir, transitions, title_background, int(closing_qr),
+                json.dumps(beats) if beats else None,
             ),
         )
 
@@ -256,6 +267,7 @@ def append_step(
     annotation_seconds: float = 0.0,
     narration_clip: str | None = None,
     speed: float = 1.0,
+    open_overlays: dict[str, int] | None = None,
 ) -> None:
     init_schema()
     with _lock, _connect() as connection:
@@ -268,8 +280,9 @@ def append_step(
             INSERT INTO steps
                 (session_id, idx, action_type, target, url, title, narration_text,
                  voice, narration_duration, offset_seconds, screenshot_path, ok,
-                 error_type, created_at, quiet, offscreen, annotation_seconds, narration_clip, speed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 error_type, created_at, quiet, offscreen, annotation_seconds, narration_clip, speed,
+                 open_overlays)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -291,6 +304,7 @@ def append_step(
                 float(annotation_seconds or 0.0),
                 narration_clip,
                 float(speed or 1.0),
+                json.dumps(open_overlays) if open_overlays is not None else None,
             ),
         )
 
@@ -537,7 +551,7 @@ def list_sessions(limit: int = 20) -> list[dict[str, Any]]:
             """,
             (limit,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [{**dict(row), "beats": _from_json(row["beats"], [])} for row in rows]
 
 
 def list_finished_sessions() -> list[dict[str, Any]]:
@@ -760,9 +774,19 @@ def get_session(session_id: str) -> dict[str, Any] | None:
             (session_id,),
         ).fetchall()
     result = dict(session)
-    result["steps"] = [dict(step) for step in steps]
+    result["beats"] = _from_json(result.get("beats"), [])
+    result["steps"] = [
+        {**dict(step), "open_overlays": _from_json(step["open_overlays"], None)} for step in steps
+    ]
     result["shots"] = [dict(shot) for shot in shots]
     return result
+
+
+def _from_json(value: str | None, default: Any) -> Any:
+    try:
+        return json.loads(value) if value else default
+    except ValueError:
+        return default
 
 
 def get_status(session_id: str) -> dict[str, Any] | None:

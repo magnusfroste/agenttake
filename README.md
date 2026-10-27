@@ -37,7 +37,10 @@ filmed and cut it with AgentTake.
   goes still.
 - 👀 **The director sees** — `preview_shot` shows the exact frame before a beat
   is recorded; `storyboard` shows the finished film as a contact sheet, part by
-  part.
+  part, and `contact_sheet` the whole video as one picture, a frame every 2 s.
+- ✅ **A review that knows the script** — the beats the director planned go in
+  with `start_session(beats=...)`; the review flags a beat skipped or recorded
+  out of order, a page that had not loaded under a line, and a menu left open.
 - 🔁 **Edit without a reshoot** — hide a step, hold a result, speed up a wait,
   or rewrite a line, then `rerender`: no re-recording the browser.
 - 📐 **Any format** — 16:9 for X and YouTube, or 4:5 from a site's phone
@@ -149,11 +152,37 @@ Then ask your agent to read the `director` prompt and make a video.
 ## How a take works
 
 The `director` MCP prompt walks an agent through the loop: explore the site
-first and write the script; `start_session` once; one `act_batch` per beat,
+first and write the script; `start_session` once, with the script as
+`beats=[{"line": ..., "label": ...}]`; one `act_batch` per beat,
 with narration on every visible step and a caption on every line; a
 `begin_shot` before each camera move, checked with `preview_shot`;
 `review_session`; `finish` once. After that, `storyboard` shows the film part
-by part, and `edit_step` plus `rerender` fix a beat without recording it again.
+by part, `contact_sheet` the whole of it in one picture, and `edit_step` plus
+`rerender` fix a beat without recording it again.
+
+### What the review checks
+
+`review_session` (and the review `finish` returns) scores the take and lists
+findings. Besides leaked secrets, silent steps and a static camera:
+
+- **Beats** — with `start_session(beats=[{"line": "<exact narration>", "label":
+  "..."}])`, every planned line must be recorded, in order. A missing beat
+  (`beat_missing`) or one recorded out of order (`beat_out_of_order`) is
+  high-severity; a planned line spoken twice is `beat_repeated`. Lines are
+  compared ignoring case and punctuation. `get_status` lists the beats still
+  to come while recording.
+- **A blank picture under a line** — after `finish`, the storyboard still of
+  every narrated step is measured for detail (edges running both ways, cell by
+  cell, leaving out the bottom fifth where captions and subtitles are drawn).
+  Under 4% of the picture with any detail is `blank_frame`: a dashboard that had
+  not loaded, a page still showing its spinner.
+- **A menu left open** — every step records the menus (`[role=menu]`),
+  listboxes (`[role=listbox]`) and Radix popovers on screen. One that an
+  earlier step opened and that is still open under a later line is
+  `overlay_left_open`; what a page has when it arrives (a nav built as a menu)
+  is not counted.
+
+None of these can score `excellent`.
 
 ---
 
@@ -165,7 +194,7 @@ by part, and `edit_step` plus `rerender` fix a beat without recording it again.
 |---|---|
 | **Session** | `start_session`, `get_status`, `finish`, `finish_status`, `list_sessions`, `get_session`, `delete_session`, `prune` |
 | **Directing** | `observe`, `act`, `act_batch`, `assert_visible`, `begin_shot`, `preview_shot`, `verify_shot`, `review_session` |
-| **After finish** | `storyboard`, `edit_step`, `update_step_narration`, `rerender`, `set_watch_page` |
+| **After finish** | `storyboard`, `contact_sheet`, `edit_step`, `update_step_narration`, `rerender`, `set_watch_page` |
 | **Voices** | `list_voices` |
 | **Roadmap** | `submit_backlog`, `list_backlog`, `update_backlog` |
 
