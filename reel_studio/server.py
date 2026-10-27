@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 import uvicorn
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -43,6 +43,7 @@ from .render import (
     SEGMENT_FLOOR,
 )
 from .camera import MAX_OUTPUT_SCALE, MAX_ZOOM, Camera
+from . import review as checks
 from .schema import secret_names, ACTION_CONTRACT, ACTION_TYPES, FRAMINGS, Action, action_json_schema, mask_stylesheet
 from .tts import (
     TTSProviderError,
@@ -301,6 +302,12 @@ The director can declare and verify shot intent with `begin_shot` and `verify_sh
 Observed refs are semantic (for example `button:new-contact`) rather than
 position-only indexes. Use `select_option` for native/custom dropdowns and
 `press_key` for keyboard-driven controls.
+Pass the script as `start_session(beats=[{{"line": ..., "label": ...}}])`, one entry
+per narrated line in order: `review_session` (and `finish`'s review) flags a planned
+line that was not recorded or was recorded out of order, a near-empty frame under a
+line, and a menu or popover left open from an earlier step; `get_status` lists the
+beats still to come. `contact_sheet(session_id, every_seconds=2)` returns the URL of
+the finished video as one tiled picture.
 Use `review_session` before finishing to scan for leaked secrets or focus defects.
 Edit finished narration with `update_step_narration`, then use `rerender`.
 Storage retention uses `REEL_MAX_CLIPS` and `REEL_KEEP_RAW_CLIPS`; call the
@@ -1205,7 +1212,7 @@ def docs_page(base_url: str = "/") -> str:
     </section>
     <p class="endpoint">MCP endpoint: <code>{endpoint}</code></p>
     <h2>Tools</h2>
-    <div class="tool card"><h3><code>start_session(start_url, width, height, voice, provider?, output_size?, title?, subtitle?, accent?, cta_url?, cta_text?, music?)</code></h3>
+    <div class="tool card"><h3><code>start_session(start_url, width, height, voice, provider?, output_size?, title?, subtitle?, accent?, cta_url?, cta_text?, music?, beats?)</code></h3>
       <p>Launch headed Chromium and begin recording.</p>
       <p><strong>Returns:</strong> <code>{{"session_id"}}</code>. Width defaults to
       1920, height to 1080, and voice to <code>en-US-JennyNeural</code>. The
@@ -1218,7 +1225,12 @@ def docs_page(base_url: str = "/") -> str:
       <code>cta_url</code>/<code>cta_text</code> add server-rendered three-second
       intro/outro cards; <code>accent</code> controls their hex background.
       Set <code>music</code> to <code>subtle</code> for a quiet generated music
-      bed; it defaults to <code>none</code>.</p></div>
+      bed; it defaults to <code>none</code>.</p>
+      <p><code>beats</code> is the script, in order:
+      <code>[{{"line": "&lt;the exact narration&gt;", "label": "&lt;a short name&gt;"}}]</code>,
+      one entry per narrated line. <code>review_session</code> and
+      <code>finish</code> check every planned line was recorded, in order, and
+      <code>get_status</code> lists the beats still to come.</p></div>
     <div class="tool card"><h3><code>observe(session_id)</code></h3>
       <p>Capture the current screen and discover interactive elements.</p>
       <p><strong>Returns:</strong> <code>{{"screenshot_path", "url", "title",
@@ -1280,7 +1292,19 @@ def docs_page(base_url: str = "/") -> str:
     <div class="tool card"><h3><code>review_session(session_id)</code></h3>
       <p>Analyze storyboard steps and session metadata for security issues
       (accidental tokens, credentials, and URL secrets), focus/narration alignment,
-      and ending quality before finishing or publishing.</p></div>
+      and ending quality before finishing or publishing.</p>
+      <p>With <code>beats</code> planned at <code>start_session</code>, every
+      planned line must be recorded, in order: a missing or out-of-order beat is
+      a high-severity finding (<code>beat_missing</code>,
+      <code>beat_out_of_order</code>). After <code>finish</code>, the frame under
+      each narrated line is measured for detail, so a page that had not loaded is
+      flagged (<code>blank_frame</code>), and a menu, listbox or popover opened by
+      one step and still open under a later line is <code>overlay_left_open</code>.
+      None of these can be <code>excellent</code>.</p></div>
+    <div class="tool card"><h3><code>contact_sheet(session_id, every_seconds=2)</code></h3>
+      <p>The finished video as one picture: a frame every few seconds, six to a
+      row, each stamped with its time — the whole film at a glance.</p>
+      <p><strong>Returns:</strong> <code>{{"ok": true, "url": "...", "every_seconds", "tiles", "rows"}}</code></p></div>
     <div class="tool card"><h3><code>set_watch_page(session_id, title?, description?, poster_at_seconds?)</code></h3>
       <p>Set what a finished video's public watch page and its link previews on
       LinkedIn, X or Slack show: the title, a description, and the moment of the
@@ -1579,6 +1603,11 @@ The screen records from start_session until finish, so plan first and record onc
 1. Before start_session: find your way around the site with your own browser
    tools, and write the script: the beats, and one or two sentences of narration
    per beat. Note what you need on the way: sign-in, cookie banner, inputs.
+   Hand the script over as start_session(beats=[{"line": <the exact narration>,
+   "label": <a short name>}, ...]), one entry per narrated line, in order. The
+   review holds the take against it: a planned line not recorded, or recorded
+   out of order, is a high-severity finding, and get_status lists the beats
+   still to come. Speak each line exactly as planned.
 2. One session at a time. Every session you start ends with finish, even a
    failed probe; discard probes with delete_session(confirm=True, force=True).
 3. """ + ACTION_CONTRACT + """
@@ -1663,6 +1692,13 @@ The screen records from start_session until finish, so plan first and record onc
    observe marks them same_name, and the one that submits a form submits_form.
 10. Run review_session and re-record what it flags. Then call finish once. Narration
    wording is fixed after finish: update_step_narration for each line, then rerender.
+   finish reviews the film too, and looks at the picture under every line: a
+   page that had not loaded (blank_frame) or a menu, listbox or popover left
+   open from an earlier step (overlay_left_open) keeps it from "excellent".
+   Wait for a page's content (wait_for_text) before its line, and close a menu
+   (press_key Escape) before the next line. Then contact_sheet(session_id)
+   gives the URL of the whole film as one picture, a frame every 2 s: look at
+   it before you share the video.
 11. Craft. The first three seconds decide whether anyone watches: open on the
    claim or the result, not on a login or a logo. Tell it as problem, what the
    product does about it, proof on screen, then one call to action. Narrate what
@@ -1753,6 +1789,11 @@ async def list_voices(
     }
 
 
+class Beat(BaseModel):
+    line: str = Field(description="The narration for this beat, exactly as you will pass it to act or act_batch.")
+    label: str = Field(default="", description="A short name for the beat, used in findings.")
+
+
 @mcp.tool()
 async def start_session(
     start_url: str, width: int = 1920, height: int = 1080,
@@ -1798,6 +1839,13 @@ async def start_session(
                           "scheme, and sites that keep the choice in localStorage \"theme\" "
                           "(next-themes) start in it. No theme menu to click on each site."),
     ] = None,
+    beats: Annotated[
+        list[Beat] | None,
+        Field(description="Your script, in order: [{\"line\": <the exact narration>, \"label\": "
+                          "<a short name>}]. review_session and finish hold the take against it: "
+                          "a planned line that was not recorded, or was recorded out of order, "
+                          "is a high-severity finding. get_status says which are still to come."),
+    ] = None,
 ) -> dict:
     """Launch a headed browser and begin recording.
 
@@ -1813,6 +1861,9 @@ async def start_session(
 
     mask blurs matching elements on every page from the first frame; the
     mask action does the same for one element mid-recording.
+
+    beats is the script you wrote before starting, one entry per narrated
+    line: the review checks every one of them reached the video, in order.
 
     One session at a time: every session you start must end with finish, or
     it keeps recording until it has been idle for REEL_IDLE_TIMEOUT_SECONDS.
@@ -1838,6 +1889,10 @@ async def start_session(
         mask_stylesheet(mask)
     except ValueError as exc:
         return {"ok": False, "error": {"type": "invalid_mask", "message": str(exc)}}
+    try:
+        planned_beats = plan_beats(beats)
+    except ValueError as exc:
+        return {"ok": False, "error": {"type": "invalid_beats", "message": str(exc)}}
     # Speak one word in the chosen voice before anything records. A take
     # whose voice failed mid-way cost an agent 18 minutes for 71 seconds and
     # came back with lines missing (2026-10-10); failing here costs nothing.
@@ -1885,10 +1940,13 @@ async def start_session(
         render_config.transitions,
         render_config.title_background,
         render_config.closing_qr,
+        planned_beats,
     )
     if subtitles:
         store.update_session_subtitles(session.session_id, True)
     result: dict = {"session_id": session.session_id}
+    if planned_beats:
+        result["beats"] = len(planned_beats)
     secrets = secret_names()
     if secrets:
         # Names only: type {{secret:NAME}} and AgentTake types the value.
@@ -1901,6 +1959,25 @@ async def start_session(
             "each one costs a browser and a video encoder."
         )
     return result
+
+
+def plan_beats(beats: list | None) -> list[dict]:
+    """The beats as stored: each a non-empty line, no line planned twice."""
+    planned: list[dict] = []
+    seen: set[str] = set()
+    for number, beat in enumerate(beats or [], start=1):
+        try:
+            parsed = beat if isinstance(beat, Beat) else Beat.model_validate(beat)
+        except ValidationError as exc:
+            raise ValueError(f"beat {number}: {exc.errors()[0]['msg']}") from None
+        line = parsed.line.strip()
+        if not checks.normalize_line(line):
+            raise ValueError(f"beat {number} has no line: give the exact narration it plans")
+        if checks.normalize_line(line) in seen:
+            raise ValueError(f"beat {number} repeats an earlier line: {line!r}")
+        seen.add(checks.normalize_line(line))
+        planned.append({"line": line, "label": parsed.label.strip()})
+    return planned
 
 
 def observe_timeout_seconds() -> float:
@@ -2015,6 +2092,7 @@ async def _run_action(
         payload.get("annotation_duration") or 0.0,
         payload.get("narration_clip"),
         parsed_action.speed,
+        payload.get("open_overlays"),
     )
     return payload, screenshot
 
@@ -2136,14 +2214,28 @@ async def assert_visible(session_id: str, text: str) -> dict:
 
 @mcp.tool()
 async def get_status(session_id: str) -> dict:
-    """Return recording progress and an estimated final video length."""
+    """Return recording progress and an estimated final video length.
+
+    With beats planned at start_session, also which are recorded and which
+    are still to come.
+    """
     _touch(session_id)
     session = sessions.get(session_id)
     if session is not None:
-        return session.status()
-    status = store.get_status(session_id)
-    if status is None:
-        raise KeyError(f"Unknown session_id: {session_id}")
+        status = session.status()
+    else:
+        status = store.get_status(session_id)
+        if status is None:
+            raise KeyError(f"Unknown session_id: {session_id}")
+    stored = store.get_session(session_id)
+    if stored and stored.get("beats"):
+        comparison = checks.compare_beats(stored["beats"], stored.get("steps", []))
+        status["beats"] = {
+            "planned": comparison["planned"],
+            "recorded_in_order": comparison["in_order"],
+            "to_come": [beat["label"] for beat in comparison["missing"]],
+            "out_of_order": [beat["label"] for beat in comparison["out_of_order"]],
+        }
     return status
 
 
@@ -2319,6 +2411,52 @@ def _contact_sheet(directory: Path, parts: list[dict]) -> Path | None:
         path.unlink(missing_ok=True)
     listing.unlink(missing_ok=True)
     return sheet if sheet.is_file() else None
+
+
+CONTACT_SHEET_NAME = "contact-sheet.jpg"
+
+
+@mcp.tool()
+async def contact_sheet(
+    session_id: str,
+    every_seconds: Annotated[
+        float,
+        Field(description="One frame every this many seconds (default 2, at least 0.5). A long "
+                          "film is spaced out to at most 96 frames; the reply says the interval used."),
+    ] = 2,
+) -> dict:
+    """The whole finished video as one picture: a frame every few seconds,
+    six to a row, each stamped with its time.
+
+    Returns the image's URL. Look at it before you share the film: a blank
+    page under a line, a menu left open, a beat that never happened all show
+    at a glance — storyboard has one still per part and can miss what
+    happens inside a part.
+    """
+    session = store.get_session(session_id)
+    if session is None:
+        return _unknown_session(session_id)
+    video_path_value = session.get("video_path")
+    if not video_path_value or not Path(video_path_value).is_file():
+        return {"ok": False, "error": {"type": "not_finished", "message": "Finish the session first"}}
+    video = Path(video_path_value)
+    # The file's own length: the stored one can fall short of it (80.1 s
+    # stored, 83 s in the file, for the last Nordbrygg take), and a sheet one
+    # row short drops the film's last frames.
+    try:
+        duration = await asyncio.to_thread(probe_duration, video)
+    except Exception:
+        duration = float(session.get("duration_seconds") or 0.0)
+    frames_dir = video.parent / STORYBOARD_DIR
+    frames_dir.mkdir(exist_ok=True)
+    sheet = frames_dir / CONTACT_SHEET_NAME
+    layout = await asyncio.to_thread(checks.write_contact_sheet, video, sheet, duration, every_seconds)
+    if layout is None:
+        return {"ok": False, "error": {"type": "contact_sheet_failed", "message": "ffmpeg could not tile the video"}}
+    base = os.environ.get("REEL_PUBLIC_BASE_URL", "").rstrip("/")
+    # The version keeps a viewer from showing the sheet of an earlier render.
+    url = f"{base}/videos/{session_id}/{STORYBOARD_DIR}/{CONTACT_SHEET_NAME}?v={int(sheet.stat().st_mtime)}"
+    return {"ok": True, "url": url, "path": str(sheet), "duration": round(duration, 2), **layout}
 
 
 @mcp.tool()
@@ -2713,9 +2851,18 @@ def _extract_review_frames(session_id: str, video_path: Path, duration: float | 
     return frames
 
 
+BLOCKS_EXCELLENT = {"beat_missing", "beat_out_of_order", "blank_frame", "overlay_left_open"}
+
+
 @mcp.tool()
 async def review_session(session_id: str) -> dict:
-    """Analyze a recording or finished session for secrets, alignment, pacing, and review frames."""
+    """Analyze a recording or finished session for secrets, alignment, pacing, and review frames.
+
+    With beats planned at start_session, every planned line must be recorded,
+    in order. After finish, the frame under each narrated line is checked for
+    a page that had not loaded (step_frames, with their paths); a menu or
+    popover left open from an earlier step under a line is flagged too.
+    """
     session = store.get_session(session_id)
     if session is None:
         return {
@@ -2821,6 +2968,17 @@ async def review_session(session_id: str) -> dict:
             "message": "The camera never moves: push in on the key detail of a beat with begin_shot(framing='close', focus_ref=...), then back to wide",
         })
 
+    # 2d. The script. Takes of the Nordbrygg film skipped beats and scored
+    # 95-100 (2026-10-25): nothing knew what was planned.
+    beats = session.get("beats") or []
+    comparison = checks.compare_beats(beats, steps) if beats else None
+    if comparison is not None:
+        findings.extend(checks.beat_findings(comparison))
+
+    # 2e. A menu or popover opened by one step and still open under a later
+    # step's line.
+    findings.extend(checks.overlay_findings(steps))
+
     # 3. Ending Quality & Structure
     if not steps:
         findings.append({
@@ -2841,6 +2999,22 @@ async def review_session(session_id: str) -> dict:
                 "message": "Video finishes abruptly on a mechanical action without a closing hold or wrap-up narration",
             })
             
+    video_path_value = session.get("video_path")
+    video_path = Path(video_path_value) if isinstance(video_path_value, str) and video_path_value else None
+    review_frames = (
+        _extract_review_frames(session_id, video_path, session.get("duration_seconds"))
+        if video_path is not None else []
+    )
+    # 4. The picture under every line: a page that had not loaded plays as a
+    # blank screen with a voice over it.
+    step_frames: list[dict] = []
+    if video_path is not None and video_path.is_file():
+        step_frames = await asyncio.to_thread(
+            checks.step_frames, video_path, read_storyboard(video_path.parent), steps,
+            video_path.parent / "review_frames",
+        )
+        findings.extend(checks.blank_frame_findings(step_frames))
+
     # Pedagogical pacing score
     score = 100
     for f in findings:
@@ -2851,23 +3025,26 @@ async def review_session(session_id: str) -> dict:
         elif f["severity"] == "low":
             score -= 5
     score = max(0, score)
-    video_path_value = session.get("video_path")
-    video_path = Path(video_path_value) if isinstance(video_path_value, str) and video_path_value else None
-    review_frames = (
-        _extract_review_frames(session_id, video_path, session.get("duration_seconds"))
-        if video_path is not None else []
-    )
-    
-    return {
+    quality_status = "excellent" if score >= 85 else ("acceptable" if score >= 60 else "needs_revision")
+    if quality_status == "excellent" and any(f["category"] in BLOCKS_EXCELLENT for f in findings):
+        # A film missing a beat, or with a blank screen or a stray menu on
+        # screen, is not excellent whatever else it gets right.
+        quality_status = "acceptable"
+
+    result = {
         "ok": True,
         "session_id": session_id,
         "director_score": score,
-        "quality_status": "excellent" if score >= 85 else ("acceptable" if score >= 60 else "needs_revision"),
+        "quality_status": quality_status,
         "step_count": len(steps),
         "total_narration_words": total_narration_words,
         "review_frames": review_frames,
+        "step_frames": step_frames,
         "findings": findings,
     }
+    if comparison is not None:
+        result["beats"] = comparison
+    return result
 
 
 @mcp.tool()
@@ -3075,7 +3252,7 @@ async def storyboard_still(request: Request) -> Response:
     """A still from a finished video's storyboard (public, like the video)."""
     session_id = request.path_params["session_id"]
     name = request.path_params["name"]
-    if not re.fullmatch(r"[0-9a-f]+", session_id) or not re.fullmatch(r"(part-\d{3}|sheet)\.jpg", name):
+    if not re.fullmatch(r"[0-9a-f]+", session_id) or not re.fullmatch(r"(part-\d{3}|sheet|contact-sheet)\.jpg", name):
         return JSONResponse({"detail": "Not found"}, status_code=404)
     path = output_root() / session_id / STORYBOARD_DIR / name
     if not path.is_file():

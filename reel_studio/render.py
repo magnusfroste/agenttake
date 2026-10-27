@@ -1046,6 +1046,12 @@ STORYBOARD_FILE = "storyboard.json"
 STORYBOARD_DIR = "storyboard"
 
 
+def storyboard_still_at(part: dict) -> float:
+    """Where a part's still is taken: a little past its middle, after a
+    camera move has landed."""
+    return part["start"] + min(part["duration"] * 0.6, max(part["duration"] - 0.15, 0.0))
+
+
 def write_storyboard(directory: Path, video: Path, timeline: Sequence[dict]) -> list[dict]:
     """Save the finished video's timeline and one still per part.
 
@@ -1059,7 +1065,7 @@ def write_storyboard(directory: Path, video: Path, timeline: Sequence[dict]) -> 
         old.unlink(missing_ok=True)
     entries = []
     for number, part in enumerate(timeline):
-        at = part["start"] + min(part["duration"] * 0.6, max(part["duration"] - 0.15, 0.0))
+        at = storyboard_still_at(part)
         name: str | None = f"part-{number:03d}.jpg"
         try:
             subprocess.run(
