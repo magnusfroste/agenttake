@@ -651,6 +651,7 @@ def plan_segments(
     activity: Callable[[float, float], float] | None = None,
     glides: Sequence[float | None] | None = None,
     stalls: Callable[[float, float], list[tuple[float, float]]] | None = None,
+    order: Sequence[float] | None = None,
 ) -> tuple[list[Segment], list[dict]]:
     """The windows of the recording a segmented render keeps, in order.
 
@@ -676,6 +677,13 @@ def plan_segments(
     ``stalls(start, end)`` the stretches where the screen stood still are
     left out, so a browser that stalled mid-glide does not show as a frozen
     page; its line still plays in full, over a held last frame if need be.
+
+    ``order`` gives each step its place in the video, in the order of
+    ``steps``: a beat recorded at the end of a session plays where it
+    belongs (edit_step position). Each step's footage is still the window
+    after it in the recording, so its camera keys and its glide go with it;
+    only the order the windows are played in changes. The lead-in stays
+    first.
     """
     ordered = sorted(
         (offset, index, clip, max(0.0, duration))
@@ -733,6 +741,13 @@ def plan_segments(
             f"{index:04d}", offset, min(available, keep_duration), keep_duration, clip,
             step_index,
         ))
+    if order is not None:
+        def place(segment: Segment) -> float:
+            if segment.step_index is None:
+                return float("-inf")
+            return order[segment.step_index] if segment.step_index < len(order) else float("inf")
+
+        segments.sort(key=place)
     return segments, warnings
 
 
@@ -748,12 +763,14 @@ def segmented_render(
     lead_in: bool = True,
     speeds: Sequence[float] | None = None,
     glides: Sequence[float | None] | None = None,
+    order: Sequence[float] | None = None,
 ) -> SegmentedRenderResult:
     """Render kept step windows from the original continuous recording.
 
     ``pages`` is the URL each step ended on, in the order of ``steps``; with
     transitions "smooth" it tells a page change (a hard cut) from a jump on
-    the same page (a dissolve).
+    the same page (a dissolve). ``order`` plays the steps in another order
+    than they were recorded in (see plan_segments).
     """
     config = config or RenderConfig()
     if camera is not None:
@@ -763,7 +780,7 @@ def segmented_render(
     segments, warnings = plan_segments(
         steps, video_duration, floors, lead_in, speeds,
         (lambda start, end: active_seconds(video_path, start, end)) if lapsing else None,
-        glides, lambda start, end: frozen_spans(video_path, start, end),
+        glides, lambda start, end: frozen_spans(video_path, start, end), order,
     )
     pans = load_glides(video_path.parent) if glides is not None else {}
     if pans:

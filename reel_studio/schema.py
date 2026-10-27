@@ -2,7 +2,11 @@ import os
 import re
 from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+VISIBLE_WAIT_MAX_MS = 60000
+OFFSCREEN_WAIT_MAX_MS = 600000
 
 
 class Action(BaseModel):
@@ -25,7 +29,10 @@ class Action(BaseModel):
     # How long wait_for_url / wait_for_text may take. 8 s was a fixed limit,
     # and a real model answering a test message takes 15-25 s: the step failed
     # with the click already sent, and the agent pressed the button twice.
-    wait_timeout_ms: int = Field(default=8000, ge=1000, le=60000)
+    # An offscreen step may wait up to ten minutes: a live agent's answer
+    # took about four (2026-10-25), and offscreen footage is cut anyway. A
+    # visible step keeps the one-minute cap.
+    wait_timeout_ms: int = Field(default=8000, ge=1000, le=OFFSCREEN_WAIT_MAX_MS)
     # caption only: stay on screen until the next caption or a new page,
     # instead of disappearing after ms — for a beat that outlasts its line.
     sticky: bool = False
@@ -41,6 +48,15 @@ class Action(BaseModel):
     speed: float = Field(default=1.0, ge=1.0, le=16.0)
     narration_timing: Literal["before_action", "after_action", "after_settle"] = "after_settle"
 
+    @model_validator(mode="after")
+    def _visible_waits_are_short(self) -> "Action":
+        if self.wait_timeout_ms > VISIBLE_WAIT_MAX_MS and not self.offscreen:
+            raise ValueError(
+                f"wait_timeout_ms above {VISIBLE_WAIT_MAX_MS} needs offscreen=true: "
+                "a wait that long is done offscreen and cut from the video"
+            )
+        return self
+
 
 # The action contract, stated once for everything an agent sees: the tool's
 # input schema, the hint on an invalid action, and the director prompt.
@@ -53,14 +69,14 @@ ACTION_TYPES: tuple[str, ...] = get_args(Action.model_fields["type"].annotation)
 
 ACTION_FIELDS: dict[str, str] = {
     "goto": "url",
-    "click": "ref",
+    "click": "ref, or text and no ref (clicks the visible element showing that text: a card with no ref of its own)",
     "click_and_wait": "ref, plus wait_for_url or wait_for_text",
     "hover": "ref",
     "highlight": "ref",
     "type": "ref, text (the verb is type, not fill)",
-    "press_key": "ref, text (a key such as Enter or Escape)",
+    "press_key": "text (a key such as Enter or Escape), ref optional (without one the key goes to the page: Escape closes a menu)",
     "select_option": "ref, text (the option label)",
-    "scroll": "dy (pixels; negative scrolls up), ms (optional: glide there over ms, up to 20000 — a slow scroll to film, held in the video for its whole length, with its line spoken over the move; it moves an open dialog's list before the page behind it, and ref picks the list to move; a dy past the end stops there, so dy 99999 tours a page down to its footer)",
+    "scroll": "dy (pixels; negative scrolls up), ms (optional: glide there over ms, up to 20000 — a slow scroll to film, held in the video for its whole length, with its line spoken over the move; it moves an open dialog's list before the page behind it, and ref picks the list to move; a dy past the end stops there, so dy 99999 tours a page down to its footer; the result's scrolled says how many pixels moved and which element)",
     "scroll_to_text": "text",
     "wait": "ms",
     "caption": "text, ms, sticky (true: stays until the next caption or page)",
@@ -75,7 +91,7 @@ ACTION_CONTRACT = (
     + "; ".join(f"{verb}: {ACTION_FIELDS[verb]}" for verb in ACTION_TYPES)
     + ". Optional on any step: target_text (pick the exact element inside ref), "
     "wait_for_url, wait_for_text, wait_timeout_ms (default 8000, up to 60000 for a "
-    "slow answer), settle_ms, narration_timing, quiet (true: silent on purpose, part of "
+    "slow answer; up to 600000 on an offscreen step), settle_ms, narration_timing, quiet (true: silent on purpose, part of "
     "the previous beat; review does not flag it), offscreen (true: done but cut "
     "from the video — signing in, a cookie banner; no narration), speed (2-16: show "
     "the step's footage until the next step as a time-lapse instead of cutting it). "
@@ -121,7 +137,7 @@ def action_json_schema() -> dict[str, Any]:
             "type": {"type": "string", "enum": list(ACTION_TYPES)},
             "url": {"type": "string"},
             "ref": {"type": "string", "description": "A ref from the latest observe"},
-            "text": {"type": "string"},
+            "text": {"type": "string", "description": "What to type, the key to press, the option, the caption; on click with no ref, the visible text to click"},
             "dy": {"type": "integer"},
             "ms": {"type": "integer", "minimum": 0},
             "spotlight": {"type": "boolean"},
@@ -131,7 +147,10 @@ def action_json_schema() -> dict[str, Any]:
             "wait_for_url": {"type": "string"},
             "wait_for_text": {"type": "string"},
             "settle_ms": {"type": "integer", "minimum": 0, "maximum": 10000},
-            "wait_timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 60000},
+            "wait_timeout_ms": {
+                "type": "integer", "minimum": 1000, "maximum": OFFSCREEN_WAIT_MAX_MS,
+                "description": f"Up to {VISIBLE_WAIT_MAX_MS}; up to {OFFSCREEN_WAIT_MAX_MS} with offscreen=true",
+            },
             "sticky": {"type": "boolean"},
             "quiet": {"type": "boolean"},
             "offscreen": {"type": "boolean"},
