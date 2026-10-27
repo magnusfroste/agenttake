@@ -163,7 +163,7 @@ by part, and `edit_step` plus `rerender` fix a beat without recording it again.
 
 | | |
 |---|---|
-| **Session** | `start_session`, `get_status`, `finish`, `list_sessions`, `get_session`, `delete_session`, `prune` |
+| **Session** | `start_session`, `get_status`, `finish`, `finish_status`, `list_sessions`, `get_session`, `delete_session`, `prune` |
 | **Directing** | `observe`, `act`, `act_batch`, `assert_visible`, `begin_shot`, `preview_shot`, `verify_shot`, `review_session` |
 | **After finish** | `storyboard`, `edit_step`, `update_step_narration`, `rerender`, `set_watch_page` |
 | **Voices** | `list_voices` |
@@ -177,6 +177,25 @@ and `unmask`. Any step can carry `narration`, `narration_timing`,
 `target_text`, `wait_for_url`, `wait_for_text`, `wait_timeout_ms`, `settle_ms`,
 and the flags `quiet` (silent on purpose), `offscreen` (done but cut from the
 video — signing in, a cookie banner) and `speed` (2–16, a labelled time-lapse).
+`click` with `text` and no `ref` clicks the visible element showing that text (a
+card with no ref of its own); `press_key` with no `ref` sends the key to the page
+(Escape closes a menu). A `scroll` answers with `scrolled` — the pixels that
+actually moved and which element — and a warning when nothing did.
+`wait_timeout_ms` goes up to 60000, or 600000 on an `offscreen` step (a live
+agent's answer that takes minutes).
+
+### Fixing a beat without a new take
+
+One flawed beat never costs a whole re-record. Record it again at the end of the
+same session, `finish`, then `edit_step(hidden=true)` on the flawed step and
+`edit_step(index=<the new step>, position=<n>)` to play the new one where it
+belongs, and `rerender`. A step keeps its own footage, so its camera moves and its
+glide go with it; `storyboard` shows the new order.
+
+`finish` waits about a minute for the render. A longer one answers with
+`status: "rendering"` and a `job_id`; `finish_status(job_id)` reports the stage
+and parts rendered, then the video URL and review. Calling `finish` again joins
+the same job rather than starting a second render.
 
 ### Recording
 

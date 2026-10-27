@@ -278,9 +278,21 @@ _POINTER_PARK_JS = """([x, y]) => {
 # a site's CSS smooth scrolling from adding its own animation on top. A
 # stall makes the glide longer, never jumpy; the render cuts the stall.
 # Resolves with [distance moved, whether it moved the document, where it
-# started, the viewport's height].
+# started, the viewport's height, the name of what moved].
 GLIDE_SCROLL_MAX_MS = 20000
+# What a scroll moved, named so a director can tell the page from a list in
+# a dialog: "document", or a tag with its id, two classes and its label.
+_DESCRIBE_SCROLLER_JS = """(el) => {
+    if (el === (document.scrollingElement || document.documentElement)) return 'document';
+    let name = el.tagName.toLowerCase();
+    if (el.id) name += '#' + el.id;
+    const classes = [...el.classList].slice(0, 2);
+    if (classes.length) name += '.' + classes.join('.');
+    const label = el.getAttribute('aria-label') || el.getAttribute('role');
+    return label ? `${name} (${label})` : name;
+  }"""
 _GLIDE_SCROLL_JS = """([dy, ms, anchor]) => new Promise((resolve) => {
+  const describe = """ + _DESCRIBE_SCROLLER_JS + """;
   const scrolls = (el) => {
     const s = getComputedStyle(el).overflowY;
     return (s === 'auto' || s === 'scroll' || s === 'overlay') && el.scrollHeight > el.clientHeight + 1;
@@ -319,10 +331,45 @@ _GLIDE_SCROLL_JS = """([dy, ms, anchor]) => new Promise((resolve) => {
     box.scrollTo({ top: start + dist * ease(x), behavior: 'instant' });
     if (x < 1) requestAnimationFrame(frame);
     else resolve([box.scrollTop - start, box === (document.scrollingElement || document.documentElement),
-                  start, box.clientHeight]);
+                  start, box.clientHeight, describe(box)]);
   };
   requestAnimationFrame(frame);
 })"""
+
+# A wheel scroll has no say in what it moves, so what moved is measured: every
+# scrollable box's position is marked before the wheel and compared after the
+# settle, and the one that moved furthest is reported. A director wrote up a
+# glide that never happened (2026-10-25); a step now says what it did.
+_SCROLL_MARK_JS = """() => {
+  const doc = document.scrollingElement || document.documentElement;
+  const boxes = [...document.querySelectorAll('*')].filter((el) => el.scrollHeight > el.clientHeight + 1);
+  window.__reelScrollMarks = [doc, ...boxes].map((el) => [el, el.scrollTop]);
+}"""
+_SCROLL_MOVED_JS = """() => {
+  const describe = """ + _DESCRIBE_SCROLLER_JS + """;
+  const marks = window.__reelScrollMarks || [];
+  delete window.__reelScrollMarks;
+  let best = null;
+  for (const [el, top] of marks) {
+    const moved = el.scrollTop - top;
+    if (el.isConnected && (!best || Math.abs(moved) > Math.abs(best[1]))) best = [el, moved];
+  }
+  return best && best[1] ? [Math.round(best[1]), describe(best[0])] : [0, null];
+}"""
+
+
+def scroll_report(requested: int, moved: int, element: str | None, glide: bool = False) -> dict:
+    """What a scroll step tells its director: the pixels that actually moved
+    and what moved, with a warning when nothing did."""
+    report: dict = {"scrolled": {"pixels": moved, "requested": requested, "element": element}}
+    if requested and not moved:
+        report["warning"] = (
+            f"Nothing scrolled: 0 of {requested} px"
+            + (" — the video holds a still page for this glide" if glide else "")
+            + ". Already at the end, or the wrong box: pass ref to pick the list to move."
+        )
+    return report
+
 
 def color_scheme_script(scheme: str) -> str:
     """Seeds a site's own theme choice before its scripts run.
@@ -778,6 +825,25 @@ class BrowserSession:
                 best = (rank, candidate)
         return best[1] if best else None
 
+    async def _text_click_target(self, text: str) -> Locator | None:
+        """What a click by text lands on: the visible element whose text is
+        exactly it, else one containing it, raised to the button or link it
+        sits in. A card with an onclick of its own takes the click from the
+        text inside it."""
+        target = await self._visible_text_target(text, exact=True) or await self._visible_text_target(text)
+        if target is None:
+            return None
+        control = target.locator(
+            "xpath=ancestor-or-self::*[self::a or self::button or @role='button' "
+            "or @role='link' or @role='tab' or @role='menuitem' or @role='option'][1]"
+        ).first
+        try:
+            if await control.count() and await control.is_visible():
+                return control
+        except PlaywrightError:
+            pass
+        return target
+
     async def _action_target(
         self, action: Action, actionable: bool = False
     ) -> Locator | None:
@@ -1094,6 +1160,8 @@ class BrowserSession:
         live_annotation_id: str | None = None
         annotation_duration = 0.0
         glide_started_at: float | None = None
+        # What a scroll moved: (pixels, the element's name).
+        scrolled: tuple[int, str | None] | None = None
         settled_by: dict[str, str] = {}
         # Where the pointer was left by a click, to move it off a link.
         pointer: tuple[float, float] | None = None
@@ -1229,24 +1297,46 @@ class BrowserSession:
                         "follow_target": True,
                     },
                 )
+            elif action_type == "press_key" and not action.ref:
+                # No element to aim at: the key goes to the page, as a person
+                # pressing Escape to close a menu would send it (2026-10-25:
+                # the director could not close one without a ref).
+                key = (action.text or "").strip()
+                if not key:
+                    return await self.error_result(
+                        "invalid_action", "press_key requires text"
+                    )
+                await self.page.keyboard.press(key)
             elif action_type in {"click", "click_and_wait", "type", "select_option", "press_key", "hover", "highlight", "mask", "unmask"}:
-                if not action.ref or action.ref not in self.refs:
-                    return await self.error_result(
-                        "unknown_ref", f"Unknown element ref: {action.ref}"
-                    )
-                target = self.page.locator(self.refs[action.ref])
-                if await target.count() == 0:
-                    return await self.error_result(
-                        "unknown_ref", f"Element ref no longer matches: {action.ref}"
-                    )
-                target = target.first
-                if action.target_text:
-                    target = await self._action_target(action, actionable=True)
+                if (action_type in {"click", "click_and_wait"} and not action.ref
+                        and (action.text or "").strip()):
+                    # A dashboard's session card had no ref, and the director
+                    # could not open it (2026-10-25): click what shows the text.
+                    target = await self._text_click_target(action.text or "")
                     if target is None:
                         return await self.error_result(
-                            "target_text_not_found",
-                            f"Exact visible target text not found: {action.target_text}",
+                            "text_not_found",
+                            f"No visible element shows the text: {action.text}",
                         )
+                else:
+                    if not action.ref or action.ref not in self.refs:
+                        return await self.error_result(
+                            "unknown_ref", f"Unknown element ref: {action.ref}"
+                            + (" (click also takes text and no ref)" if action_type in {"click", "click_and_wait"} else "")
+                        )
+                    target = self.page.locator(self.refs[action.ref])
+                    if await target.count() == 0:
+                        return await self.error_result(
+                            "unknown_ref", f"Element ref no longer matches: {action.ref}"
+                        )
+                    target = target.first
+                    if action.target_text:
+                        target = await self._action_target(action, actionable=True)
+                        if target is None:
+                            return await self.error_result(
+                                "target_text_not_found",
+                                f"Exact visible target text not found: {action.target_text}",
+                            )
                 await target.wait_for(state="visible", timeout=5000)
                 await target.scroll_into_view_if_needed(timeout=5000)
                 # A quiet or offscreen step is not watched: a pan to it — to
@@ -1342,9 +1432,10 @@ class BrowserSession:
                             timeout=5000
                         )
                     glide_started_at = time.monotonic() - self.t0
-                    moved, on_document, glide_from, view_height = await self.page.evaluate(
+                    moved, on_document, glide_from, view_height, mover = await self.page.evaluate(
                         _GLIDE_SCROLL_JS, [action.dy, glide_ms, anchor]
                     )
+                    scrolled = (round(moved), mover)
                     # The glide is the footage: the step holds for all of it,
                     # stalls included (the render cuts those).
                     annotation_duration = max(
@@ -1355,6 +1446,7 @@ class BrowserSession:
                             glide_started_at, glide_from, moved, view_height, glide_ms
                         )
                 else:
+                    await self.page.evaluate(_SCROLL_MARK_JS)
                     await self.page.mouse.wheel(0, action.dy)
             elif action_type == "wait":
                 await self.page.wait_for_timeout(action.ms)
@@ -1410,9 +1502,15 @@ class BrowserSession:
                         f"{action.wait_timeout_ms} ms: {action.wait_for_text}. "
                         "The action itself already ran — do not repeat it; wait "
                         "for the text with a wait step, and set wait_timeout_ms "
-                        "(up to 60000) for slow answers.",
+                        "(up to 60000, or 600000 on an offscreen step) for slow answers.",
                     )
             await self.page.wait_for_timeout(action.settle_ms)
+            if action_type == "scroll" and scrolled is None:
+                try:
+                    moved, mover = await self.page.evaluate(_SCROLL_MOVED_JS)
+                    scrolled = (int(moved), mover)
+                except PlaywrightError:
+                    pass
             if pointer is not None:
                 await self._park_pointer(*pointer)
             action_completed_at = time.monotonic() - self.t0
@@ -1511,6 +1609,8 @@ class BrowserSession:
             result["settled_at_seconds"] = round(action_completed_at, 3)
         if action_type == "scroll_to_text":
             result.update({"box": action_box, "in_viewport": action_in_viewport})
+        if scrolled is not None:
+            result.update(scroll_report(action.dy, *scrolled, glide=glide))
         if live_annotation_id:
             result["annotation_id"] = live_annotation_id
         if live_annotation_id or glide:
