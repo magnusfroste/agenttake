@@ -173,3 +173,11 @@ def test_public_video_url_follows_the_current_address(monkeypatch):
     assert server.public_video_url("abc") == "https://take.example.com/videos/abc/video.mp4"
     monkeypatch.delenv("REEL_PUBLIC_BASE_URL")
     assert server.public_video_url("abc") is None
+
+
+def test_the_brand_mark_is_the_at_monogram_and_its_files_are_versioned():
+    from reel_studio import server
+
+    assert ">AT</text>" in server.FAVICON_SVG
+    assert server.ASSET_VERSION in server.favicon_png_path().name
+    assert server.ASSET_VERSION in server.og_image_path().name

@@ -171,10 +171,14 @@ PAGE_STYLES = """
 """
 
 
+# The AT monogram (AgentTake, formerly reel-studio): the tab icon, its PNG
+# fallback and the badge on the share image are one mark. The PNG was still an
+# "R" for Reel until 2026-10-27.
+BRAND_BLUE = "#2563eb"
 FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-<rect width="32" height="32" rx="7" fill="#1f2a44"/>
-<path fill="#edf1f7" d="M7 9h18v14H7zM9 7h5l-2 5H7zm8 0h5l-2 5h-5zm-5 15h8v2h-8z"/>
-<circle cx="11" cy="16" r="2" fill="#1f2a44"/><circle cx="21" cy="16" r="2" fill="#1f2a44"/>
+<rect width="32" height="32" rx="7" fill="#2563eb"/>
+<text x="16" y="21.5" text-anchor="middle" font-family="DejaVu Sans, Arial, Helvetica, sans-serif"
+ font-size="15" font-weight="700" letter-spacing="-0.5" fill="#ffffff">AT</text>
 </svg>"""
 
 
@@ -407,22 +411,37 @@ def _drawtext_escape(text: str) -> str:
     )
 
 
+# Part of the cached files' names: a new design gets new files. Generated
+# once and kept, the favicon PNG stayed the old "R" for three weeks after the
+# rename.
+ASSET_VERSION = "at1"
+
+
+def _bold_font() -> str:
+    bold = FONT_PATH.replace("DejaVuSans.ttf", "DejaVuSans-Bold.ttf")
+    return bold if Path(bold).is_file() else FONT_PATH
+
+
 def _generate_png_asset(path: Path, width: int, height: int) -> None:
     if not Path(FONT_PATH).is_file():
         raise RuntimeError(f"Asset font is missing: {FONT_PATH}")
+    bold = _bold_font()
     if width == 32:
         filters = (
-            f"drawtext=fontfile={FONT_PATH}:text='R':fontcolor=white:"
-            "fontsize=22:x=(w-text_w)/2:y=(h-text_h)/2"
+            f"drawtext=fontfile={bold}:text='AT':fontcolor=white:"
+            "fontsize=15:x=(w-text_w)/2:y=(h-text_h)/2"
         )
-        source = f"color=c=#1f2a44:s={width}x{height}:r=1:d=1"
+        source = f"color=c={BRAND_BLUE}:s={width}x{height}:r=1:d=1"
     else:
         filters = ",".join(
             [
-                f"drawtext=fontfile={FONT_PATH}:text='AgentTake':"
-                "fontcolor=white:fontsize=92:x=80:y=170",
+                f"drawbox=x=80:y=118:w=150:h=150:color={BRAND_BLUE}:t=fill",
+                f"drawtext=fontfile={bold}:text='AT':fontcolor=white:"
+                "fontsize=78:x=80+(150-text_w)/2:y=118+(150-text_h)/2",
+                f"drawtext=fontfile={bold}:text='AgentTake':"
+                "fontcolor=white:fontsize=96:x=268:y=140",
                 f"drawtext=fontfile={FONT_PATH}:text='The ultimate tool for agentic directors':"
-                "fontcolor=#b9c8ff:fontsize=38:x=84:y=300",
+                "fontcolor=#b9c8ff:fontsize=38:x=84:y=330",
                 f"drawtext=fontfile={FONT_PATH}:text='narrated browser tutorials, directed by AI agents':"
                 "fontcolor=#9eb1ff:fontsize=24:x=86:y=535",
             ]
@@ -440,14 +459,14 @@ def _generate_png_asset(path: Path, width: int, height: int) -> None:
 
 
 def favicon_png_path() -> Path:
-    path = _asset_cache_dir() / "favicon.png"
+    path = _asset_cache_dir() / f"favicon-{ASSET_VERSION}.png"
     if not path.is_file():
         _generate_png_asset(path, 32, 32)
     return path
 
 
 def og_image_path() -> Path:
-    path = _asset_cache_dir() / "og.png"
+    path = _asset_cache_dir() / f"og-{ASSET_VERSION}.png"
     if not path.is_file():
         _generate_png_asset(path, 1200, 630)
     return path
