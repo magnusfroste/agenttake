@@ -132,9 +132,11 @@ def test_every_visible_step_clears_the_pointer_before_its_footage_starts():
 
 
 def test_a_consent_click_and_a_hover_note_where_the_pointer_went():
-    # The pointer the consent banner's "Accept All" left behind is the one
-    # that sat on TechTarget's ad.
-    assert "self._note_pointer(button)" in inspect.getsource(BrowserSession.dismiss_consent)
+    # The pointer a consent banner's button left behind is the one that sat
+    # on TechTarget's ad. The click is in _click_labelled, which
+    # dismiss_consent uses for both its refuse and its notice buttons.
+    assert "self._note_pointer(button)" in inspect.getsource(BrowserSession._click_labelled)
+    assert "self._click_labelled(" in inspect.getsource(BrowserSession.dismiss_consent)
     assert "self._note_pointer(target, held=True)" in inspect.getsource(BrowserSession.act)
 
 
