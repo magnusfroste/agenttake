@@ -179,6 +179,17 @@ the reason; `shoot_beat` retakes one, and `apply_retakes` puts it in place
 after `finish`. The handbook is [docs/storyboard.md](docs/storyboard.md), also
 served as the `director_guide` tool and the `storyboard` prompt.
 
+A Hermes agent learns the whole job, from research to a downloaded MP4, from
+the [film-director skill](skills/film-director/SKILL.md):
+
+```bash
+hermes skills install magnusfroste/agenttake/skills/film-director
+```
+
+It researches every claim to a source, scouts offscreen, plans until the
+checklist is clean, shoots, retakes at most twice per beat, and looks at the
+contact sheet before it calls a film done.
+
 ### What the review checks
 
 `review_session` (and the review `finish` returns) scores the take and lists
