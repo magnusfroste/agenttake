@@ -16,7 +16,9 @@ storyboarded take was one: its own review found nothing.
 - **The page had loaded.** No blank white or grey frame, no spinner, no
   skeleton placeholders under a narrated line.
 - **Nothing left open.** No cookie banner, theme or language menu, dropdown,
-  modal, chat widget bubble or browser dialog in frame.
+  modal, chat widget bubble or browser dialog in frame, and no link address
+  in the bottom-left corner (Chrome's status bubble: the pointer on a link
+  or an ad).
 - **The picture is what the line names.** Read each line and look at the
   frames under it: a line about memory over a section about models, or over
   a footer, is a flaw even though both frames are clean.
@@ -30,7 +32,7 @@ storyboarded take was one: its own review found nothing.
 | shot | what the sheet must show |
 |---|---|
 | `source` | The headline readable, wide, with no paywall overlay covering it. |
-| `highlight` | The marker on the quoted words with the source label, above the subtitle band, and a line that reports the source rather than argues past it. |
+| `highlight` | The marker on the quoted words with the source label, above the subtitle band, the whole quote in frame, and a line that reports the source rather than argues past it. |
 | `card` | The text whole, not cut at the edge, with no stray `\n`; a sourced card shows its source. |
 | `image` | The image itself, not a broken-image icon; the lower third above the subtitles. |
 | `page_tour` | Consecutive frames at different scroll positions. Two identical frames across the whole beat mean the glide never moved. |

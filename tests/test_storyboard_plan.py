@@ -74,6 +74,20 @@ def test_a_claim_without_a_source_must_be_fixed():
     assert (4, "missing_source") not in fixes
 
 
+def test_a_hidden_content_gate_is_not_a_paywall():
+    # TechTarget ships its gate's form on every article, hidden and off; the
+    # article reads in full (2026-10-28).
+    gate = """<article><p>The whole story.</p></article>
+    <form id="content_gate_signup" class="js-form-email-validate" name="signup" style="display: none">
+      <h3>Continue Reading</h3><p class="email-check">Already a subscriber? Sign in with your email above.</p>
+    </form><script>window.gateEnabled = 'False';</script>"""
+    assert boards.looks_paywalled(gate) is False
+    # Shown, the same prompt still is one.
+    assert boards.looks_paywalled(gate.replace(' style="display: none"', "")) is True
+    assert boards.looks_paywalled('<script type="application/ld+json">{"isAccessibleForFree": false}</script>')
+    assert boards.looks_paywalled("<div style='display:none'>x</div><p>Subscribe to continue reading</p>")
+
+
 def test_unreachable_forbidden_and_paywalled_urls_are_flagged():
     dead, locked, walled, guarded = (f"https://{name}.example/" for name in ("dead", "locked", "walled", "guarded"))
     probe = answers({
@@ -208,6 +222,8 @@ def test_highlight_recipe_marks_the_words_above_the_subtitles():
     # It stays on the article the source beat opened.
     assert acts(ops) == [("act", "scroll_to_text"), ("shot", None), ("act", "annotate")]
     assert ops[1]["lift"] is True and ops[1]["zoom"] >= 1.5
+    # Never closer than the whole quote (TechTarget's standfirst, 2026-10-28).
+    assert ops[1]["fit"] is True
     mark = ops[2]["action"]
     assert mark["target_text"] == "the fastest-growing blind spot" and "ref" not in mark
     assert mark["style"] == "marker" and mark["text"] == "Source: news.example"
@@ -322,6 +338,7 @@ class StandInSession:
         self.refs_stale = False
         self.missing = set(missing)
         self.calls: list[tuple] = []
+        self.fits: list[bool] = []
 
     def touch(self):
         pass
@@ -336,8 +353,10 @@ class StandInSession:
                 return {"ok": False, "error": {"type": "text_not_found", "message": f"Visible text not found: {text}"}}, None
         return {"ok": True, "url": action.url or "https://page.example", "narration_duration": 1.0 if narration else 0}, None
 
-    async def set_shot(self, framing, zoom=None, focus_ref=None, focus_text=None, move_seconds=None, lift=False):
+    async def set_shot(self, framing, zoom=None, focus_ref=None, focus_text=None, move_seconds=None, lift=False,
+                       fit=False):
         self.calls.append(("shot", zoom, focus_text, lift))
+        self.fits.append(fit)
         return {"camera_zoom": zoom}
 
     async def observe(self, detail="full"):
@@ -422,6 +441,8 @@ def test_shoot_reports_each_beat_and_a_retake_goes_where_it_belongs(server, tmp_
     assert retake["ok"] and retake["retake"] is True
     assert session.calls[0] == ("act", "goto", True, "")
     assert session.calls[-1] == ("act", "annotate", False, good_plan()[1]["line"])
+    # The highlight's close shot reaches the camera with fit.
+    assert session.fits[-1] is True
 
     video = tmp_path / "video.mp4"
     video.write_bytes(b"\0")

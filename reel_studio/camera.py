@@ -188,6 +188,24 @@ class Camera:
             return x0 - view_w * AIM_PAD + view_w / 2, cy
         return (x0 + x1) / 2, cy
 
+    def fit_zoom(self, box: dict, zoom: float, lift: float = 0.0) -> float:
+        """The deepest zoom, up to ``zoom``, at which a box is seen whole.
+
+        A highlighted standfirst at 1.8x lost its last words off the right
+        edge at 1280x720: a quote that wraps is as wide as its column, and
+        _anchor shows a box too wide for the frame from its start
+        (TechTarget, 2026-10-28). ``lift`` is the share of the frame the
+        focus is raised by (set_shot's lift): the box's middle then sits
+        that much above the frame's, and has that much less room above it.
+        """
+        zoom = max(zoom, 1.0)
+        usable = 1 - 2 * AIM_PAD
+        if box.get("width", 0) > 0:
+            zoom = min(zoom, self.width * usable / box["width"])
+        if box.get("height", 0) > 0:
+            zoom = min(zoom, self.height * (usable - 2 * lift) / box["height"])
+        return max(zoom, 1.0)
+
     def needs_follow(self, box: dict | None) -> tuple[float, float] | None:
         """The centre to pan to so a target is inside the view, if needed."""
         if not box:
