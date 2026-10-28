@@ -81,7 +81,7 @@ ACTION_FIELDS: dict[str, str] = {
     "wait": "ms",
     "caption": "text, ms, sticky (true: stays until the next caption or page)",
     "set_zoom": "text (a level from 0.5 to 2.0, e.g. \"1.25\")",
-    "annotate": "ref, text, style (marker | callout | underline)",
+    "annotate": "ref, text, style (marker | callout | underline); or target_text and no ref (marks those words on the page: a quote in an article)",
     "mask": "ref (blurs that element on screen until unmask or a page load)",
     "unmask": "ref",
 }

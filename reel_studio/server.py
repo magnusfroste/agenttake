@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import urllib.parse
 from urllib.parse import urlparse
+import uuid
 
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.transport_security import TransportSecuritySettings
@@ -44,6 +45,7 @@ from .render import (
 )
 from .camera import MAX_OUTPUT_SCALE, MAX_ZOOM, Camera
 from . import review as checks
+from . import storyboard as boards
 from .schema import secret_names, ACTION_CONTRACT, ACTION_TYPES, FRAMINGS, Action, action_json_schema, mask_stylesheet
 from .tts import (
     TTSProviderError,
@@ -266,6 +268,11 @@ Endpoint: {base}/mcp
 Authentication: `Authorization: Bearer <REEL_API_TOKEN>`
 
 Core loop: `start_session` → `observe` → `act` with optional narration → `finish`.
+Or a storyboard: `director_guide` (the shot menu and a 60-second template), then
+`plan_storyboard(beats=[{{"shot": ..., "line": ..., "source": ...}}])` checks it without
+recording (sources, URLs, secrets, length), `shoot_storyboard(session_id, plan_id)`
+shoots each beat with a tested recipe, `shoot_beat` retakes one, and after `finish`
+`apply_retakes` puts retakes in place before `rerender`.
 Core tools include `start_session`, `observe`, `act`, `act_batch`, `finish`,
 `get_status`, `get_session`, and `list_sessions`.
 Camera: `begin_shot(framing=wide|medium|close, focus_text|focus_ref, move_seconds)`
@@ -1628,6 +1635,12 @@ def _touch(session_id: str) -> None:
 DIRECTOR_PROMPT = """You are directing a narrated screen recording with AgentTake.
 The screen records from start_session until finish, so plan first and record once.
 
+A documentary-style film — a source on screen, a quote marked, text cards, a
+product tour, a sign-in, live proof, a call to action — is best written as a
+storyboard: director_guide has the shot menu and a 60-second template;
+plan_storyboard checks the beats, shoot_storyboard records them with tested
+recipes. What follows is the hand-directed way, act by act.
+
 1. Before start_session: find your way around the site with your own browser
    tools, and write the script: the beats, and one or two sentences of narration
    per beat. Note what you need on the way: sign-in, cookie banner, inputs.
@@ -2249,6 +2262,340 @@ async def act_batch(
         "steps": results,
     }
     return feedback_result(summary, screenshot)
+
+
+# ---------------------------------------------------------------------------
+# Storyboards: the director writes beats, AgentTake shoots them with recipes
+# (see storyboard.py and docs/storyboard.md).
+
+def shoot_budget_seconds() -> float:
+    """How long one shoot_storyboard call records before it answers: a film's
+    worth of beats in one call would outlast an agent's tool timeout."""
+    try:
+        return max(30.0, float(os.environ.get("REEL_SHOOT_BUDGET_SECONDS", "240")))
+    except ValueError:
+        return 240.0
+
+
+def _beat_state(beat: dict) -> dict:
+    return beat.setdefault("state", {"status": "planned", "attempts": []})
+
+
+def _attach_storyboard(plan_id: str, session_id: str, beats: list[dict]) -> None:
+    """Shoot this plan in this session, and let the review hold the take
+    against its lines."""
+    store.attach_storyboard(plan_id, session_id)
+    store.update_session_beats(session_id, [
+        {"line": beat["line"], "label": beat["label"]} for beat in beats if beat.get("line")
+    ])
+
+
+def _beat_identity(beat: dict) -> tuple:
+    return tuple(beat.get(key) for key in (
+        "shot", "line", "url", "text", "wait_for_text", "input_text", "background", "caption", "zoom",
+        "username", "password_secret", "timeout",
+    ))
+
+
+@mcp.tool()
+async def plan_storyboard(
+    beats: Annotated[
+        list[dict[str, Any]],
+        Field(description="The film, in order: one beat per narrated line, each {shot, line, source?, "
+                          "plus the shot's fields}. director_guide has the shot menu and a 60-second template.",
+              json_schema_extra={"items": boards.beats_json_schema()}),
+    ],
+    session_id: Annotated[
+        str, Field(description="Attach the plan to this recording session. Optional: a plan can be checked "
+                               "before any session exists and attached by shoot_storyboard(plan_id=...).")
+    ] = "",
+    plan_id: Annotated[
+        str, Field(description="Revise this plan instead of starting a new one. Beats already shot keep "
+                               "their takes while they are unchanged.")
+    ] = "",
+    target_seconds: Annotated[int, Field(description="The film's intended length; above it by 10 s is flagged.")] = 60,
+) -> dict:
+    """Check a storyboard before anything is recorded.
+
+    Nothing is recorded and no browser is opened. The checklist lists what to
+    fix first (severity fix: a claim without a source, a URL that does not
+    answer or answers 401/403, a secret AgentTake does not have, a missing
+    field) and what to weigh (severity warn: a plan longer than the film, a
+    paywall, a long quote). shoot_storyboard refuses a plan with fix items:
+    correct the beats and call plan_storyboard again with the same plan_id.
+    """
+    if session_id and store.get_session(session_id) is None:
+        return _unknown_session(session_id)
+    existing = None
+    if plan_id:
+        existing = store.get_storyboard(plan_id)
+        if existing is None:
+            return {"ok": False, "error": {"type": "unknown_plan", "message": f"No storyboard {plan_id}"},
+                    "hint": "Leave plan_id out to start a new plan."}
+    checked = await boards.check_storyboard(beats, target_seconds=target_seconds)
+    planned = checked["beats"]
+    old = (existing or {}).get("beats") or []
+    for position, beat in enumerate(planned):
+        state = {"status": "planned", "attempts": []}
+        if position < len(old) and old[position].get("state", {}).get("attempts"):
+            state = old[position]["state"]
+            if _beat_identity(old[position]) != _beat_identity(beat):
+                # Shot before as something else: shoot_beat takes it again.
+                state["status"] = "changed"
+        beat["state"] = state
+    plan_id = plan_id or uuid.uuid4().hex[:12]
+    store.save_storyboard(plan_id, planned, checked["checklist"], target_seconds, session_id or None)
+    attached = session_id or (existing or {}).get("session_id")
+    if attached:
+        _attach_storyboard(plan_id, attached, planned)
+    fixes = sum(1 for item in checked["checklist"] if item["severity"] == "fix")
+    return {
+        "ok": True,
+        "plan_id": plan_id,
+        "ready": checked["ready"],
+        "beats": len(planned),
+        "estimated_seconds": checked["estimated_seconds"],
+        "checklist": checked["checklist"],
+        "next": (
+            f"Fix the {fix_count_words(fixes)} marked fix, then plan_storyboard(beats, plan_id={plan_id!r}) again."
+            if fixes else
+            f"start_session(start_url=<the first beat's url>, ...), then shoot_storyboard(session_id, plan_id={plan_id!r})."
+            if not attached else
+            "shoot_storyboard(session_id)."
+        ),
+    }
+
+
+def fix_count_words(count: int) -> str:
+    return "item" if count == 1 else f"{count} items"
+
+
+async def _shoot_beat(session_id: str, plan: dict, beat: dict, retake: bool) -> dict:
+    live = sessions[session_id]
+    before = store.next_step_index(session_id)
+    started = time.monotonic()
+    outcome = await boards.run_ops(live, session_id, boards.recipe(beat, retake=retake), _run_action)
+    after = store.next_step_index(session_id)
+    recorded = [step for step in (store.get_session(session_id) or {}).get("steps", [])
+                if before <= step["idx"] < after]
+    visible = [step["idx"] for step in recorded if step.get("ok") and not step.get("offscreen")]
+    state = _beat_state(beat)
+    state["attempts"].append({
+        "steps": [step["idx"] for step in recorded], "visible": visible, "retake": retake,
+        "ok": outcome["ok"], **({"reason": outcome["reason"]} if not outcome["ok"] else {}),
+    })
+    state["status"] = "ok" if outcome["ok"] else "failed"
+    state.pop("placed", None)
+    store.update_storyboard_beats(plan["plan_id"], plan["beats"])
+    report: dict = {"beat": beat["number"], "label": beat["label"], "shot": beat["shot"],
+                    "ok": outcome["ok"], "steps": visible, "seconds": round(time.monotonic() - started, 1)}
+    if not outcome["ok"]:
+        report["reason"] = outcome["reason"]
+    if retake:
+        report["retake"] = True
+    if outcome.get("notes"):
+        report["notes"] = outcome["notes"]
+    return report
+
+
+def _live_plan(session_id: str, plan_id: str = "") -> tuple[dict | None, dict | None]:
+    if session_id not in sessions:
+        return None, _unknown_session(session_id)
+    if _finishing(session_id):
+        return None, _finishing_error(session_id)
+    plan = store.get_storyboard(plan_id) if plan_id else store.session_storyboard(session_id)
+    if plan is None:
+        return None, {
+            "ok": False,
+            "error": {"type": "no_storyboard",
+                      "message": f"No storyboard {plan_id}" if plan_id else f"{session_id} has no storyboard"},
+            "hint": "plan_storyboard(beats) checks one and gives its plan_id.",
+        }
+    if plan.get("session_id") != session_id:
+        _attach_storyboard(plan["plan_id"], session_id, plan["beats"])
+    fixes = [item for item in plan["checklist"] if item["severity"] == "fix"]
+    if fixes:
+        return None, {
+            "ok": False,
+            "error": {"type": "storyboard_not_ready", "message": f"{len(fixes)} checklist item(s) to fix first"},
+            "checklist": fixes,
+            "hint": f"Correct the beats and plan_storyboard(beats, plan_id={plan['plan_id']!r}) again.",
+        }
+    return plan, None
+
+
+def _shoot_next_hint(plan: dict) -> str:
+    states = [(beat, _beat_state(beat)) for beat in plan["beats"]]
+    if any(state["status"] == "planned" for _, state in states):
+        return "Call shoot_storyboard(session_id) again: it continues with the next beat."
+    redo = [beat["number"] for beat, state in states if state["status"] in ("failed", "changed")]
+    if redo:
+        return (f"Retake beat{'s' if len(redo) > 1 else ''} {', '.join(map(str, redo))} with "
+                "shoot_beat(session_id, beat=<n>) — fix it with plan_storyboard(plan_id=...) first if the "
+                "reason calls for it. Then review_session and finish; after finish, apply_retakes(session_id) "
+                "puts every retake where its beat belongs, then rerender(session_id).")
+    if any(len(state["attempts"]) > 1 for _, state in states):
+        return ("Every beat is shot. review_session, then finish; after finish, apply_retakes(session_id) "
+                "puts the retakes in place, then rerender(session_id).")
+    return "Every beat is shot. review_session, then finish."
+
+
+@mcp.tool()
+async def shoot_storyboard(
+    session_id: str,
+    plan_id: Annotated[str, Field(description="The plan to shoot; omit when plan_storyboard attached it to this session.")] = "",
+) -> dict:
+    """Shoot the storyboard's beats, in order, each with its tested recipe.
+
+    Beats not shot yet are recorded one after another, every narrated step
+    waiting for its text first. A call records for a few minutes at most and
+    then answers: call again and it carries on with the next beat. A beat that
+    fails is reported with its reason and the shoot goes on (a failed login
+    stops it: what follows needs the sign-in). Retake a beat with shoot_beat.
+    """
+    plan, error = _live_plan(session_id, plan_id)
+    if error:
+        return error
+    assert plan is not None
+    sessions[session_id].touch()
+    budget = shoot_budget_seconds()
+    started = time.monotonic()
+    shot: list[dict] = []
+    stopped = None
+    for beat in plan["beats"]:
+        if _beat_state(beat)["status"] != "planned":
+            continue
+        # At least one beat per call, however slow.
+        if shot and time.monotonic() - started > budget:
+            stopped = "time"
+            break
+        report = await _shoot_beat(session_id, plan, beat, retake=False)
+        shot.append(report)
+        if not report["ok"] and beat["shot"] == "login":
+            stopped = "login"
+            break
+    states = [_beat_state(beat) for beat in plan["beats"]]
+    result: dict = {
+        "ok": all(report["ok"] for report in shot) and stopped != "login",
+        "plan_id": plan["plan_id"],
+        "beats": shot,
+        "done": sum(1 for state in states if state["status"] == "ok"),
+        "failed": [beat["number"] for beat in plan["beats"] if _beat_state(beat)["status"] == "failed"],
+        "to_come": [beat["number"] for beat in plan["beats"] if _beat_state(beat)["status"] == "planned"],
+        "next": _shoot_next_hint(plan),
+    }
+    if stopped == "login":
+        result["next"] = ("The sign-in failed, so the beats after it were not shot. Fix it (the secret, "
+                          "wait_for_text) and shoot_beat(session_id, beat=<the login beat>), then "
+                          "shoot_storyboard(session_id) for the rest.")
+    return result
+
+
+@mcp.tool()
+async def shoot_beat(
+    session_id: str,
+    beat: Annotated[int, Field(description="The beat's number, 1 first, as plan_storyboard and shoot_storyboard report it.")],
+) -> dict:
+    """Shoot one beat again: a retake, recorded at the end of the session.
+
+    For a beat that failed, or one that shot but should look better. The
+    recipe opens the beat's page itself. After finish, apply_retakes(session_id)
+    hides the earlier take and plays this one where the beat belongs; then
+    rerender. The next beat not shot yet is shot here as itself, not a retake.
+    """
+    plan, error = _live_plan(session_id)
+    if error:
+        return error
+    assert plan is not None
+    sessions[session_id].touch()
+    beats = plan["beats"]
+    if not 1 <= beat <= len(beats):
+        return {"ok": False, "error": {"type": "unknown_beat", "message": f"beat is 1-{len(beats)}"}}
+    target = beats[beat - 1]
+    if _beat_state(target)["status"] == "planned":
+        if any(_beat_state(other)["status"] == "planned" for other in beats[:beat - 1]):
+            return {"ok": False,
+                    "error": {"type": "beat_not_reached", "message": f"beat {beat} has not been shot yet"},
+                    "hint": "shoot_storyboard shoots the beats in order; shoot_beat retakes one already shot."}
+        report = await _shoot_beat(session_id, plan, target, retake=False)
+    else:
+        report = await _shoot_beat(session_id, plan, target, retake=True)
+    return {**report, "next": _shoot_next_hint(plan)}
+
+
+@mcp.tool()
+async def apply_retakes(session_id: str) -> dict:
+    """After finish: put every retake where its beat belongs.
+
+    For each beat shot more than once, the earlier takes are left out of the
+    video and the last one plays in their place. Then call rerender(session_id)
+    to cut the video in that order; storyboard shows it.
+    """
+    session, error = _editable_session(session_id)
+    if error:
+        return error
+    assert session is not None
+    plan = store.session_storyboard(session_id)
+    if plan is None:
+        return {"ok": False, "error": {"type": "no_storyboard", "message": f"{session_id} has no storyboard"}}
+    placed: list[dict] = []
+    skipped: list[dict] = []
+    beats = plan["beats"]
+    for position, beat in enumerate(beats):
+        state = _beat_state(beat)
+        attempts = state["attempts"]
+        if len(attempts) < 2 or state.get("placed"):
+            continue
+        last = attempts[-1]
+        if not last["ok"] or not last["visible"]:
+            skipped.append({"beat": beat["number"], "reason": last.get("reason") or "the retake shows nothing"})
+            continue
+        earlier = [idx for attempt in attempts[:-1] for idx in attempt["visible"]]
+        for idx in earlier:
+            store.edit_step(session_id, idx, hidden=True)
+        anchor = earlier[0] if earlier else next(
+            (b["state"]["attempts"][-1]["visible"][0] for b in beats[position + 1:]
+             if b.get("state", {}).get("attempts") and b["state"]["attempts"][-1]["visible"]
+             and not b["state"]["attempts"][-1].get("retake")),
+            None,
+        )
+        if anchor is not None:
+            steps = (store.get_session(session_id) or {}).get("steps", [])
+            at = [step["idx"] for step in store.play_order(steps)].index(anchor)
+            for offset, idx in enumerate(last["visible"]):
+                store.move_step(session_id, idx, at + offset)
+        state["placed"] = True
+        placed.append({"beat": beat["number"], "hidden": earlier, "plays": last["visible"],
+                       "moved": anchor is not None})
+    store.update_storyboard_beats(plan["plan_id"], beats)
+    result: dict = {"ok": True, "placed": placed}
+    if skipped:
+        result["skipped"] = skipped
+    result["hint"] = ("rerender(session_id) cuts the video in this order; storyboard shows it."
+                      if placed else "No retakes to place.")
+    return result
+
+
+def director_guide_text() -> str:
+    """docs/storyboard.md: in the checkout, or next to the app in the image."""
+    for candidate in (Path(__file__).resolve().parent.parent / "docs" / "storyboard.md",
+                      Path.cwd() / "docs" / "storyboard.md"):
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    return "The director handbook (docs/storyboard.md) is not installed with this AgentTake."
+
+
+@mcp.tool()
+async def director_guide() -> str:
+    """The director handbook for storyboards: the shot menu, a 60-second story
+    template and the rules (a source for every claim, headlines and short
+    quotes only, never a synthetic real person). Read it before plan_storyboard."""
+    return director_guide_text()
+
+
+@mcp.prompt(name="storyboard", description="How to write a storyboard AgentTake shoots: the shot menu, a 60-second template, the rules")
+def storyboard_prompt() -> str:
+    return director_guide_text()
 
 
 @mcp.tool()

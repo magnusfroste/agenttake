@@ -33,6 +33,8 @@ RUN mkdir -p reel_studio && touch reel_studio/__init__.py \
 COPY README.md ./
 COPY reel_studio ./reel_studio
 COPY examples ./examples
+# The director handbook, served by the director_guide tool.
+COPY docs ./docs
 RUN python3 -m pip install --break-system-packages --no-deps .
 
 VOLUME ["/data"]
