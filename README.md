@@ -201,8 +201,8 @@ None of these can score `excellent`.
 `act` and `act_batch` publish the full action contract (every verb and its
 fields) in their input schema, inline with no `$ref`. Verbs: `goto`, `click`,
 `click_and_wait`, `type`, `select_option`, `press_key`, `hover`, `highlight`,
-`scroll`, `scroll_to_text`, `wait`, `caption`, `annotate`, `set_zoom`, `mask`
-and `unmask`. Any step can carry `narration`, `narration_timing`,
+`scroll`, `scroll_to_text`, `wait`, `caption`, `annotate`, `set_zoom`, `mask`,
+`unmask` and `card`. Any step can carry `narration`, `narration_timing`,
 `target_text`, `wait_for_url`, `wait_for_text`, `wait_timeout_ms`, `settle_ms`,
 and the flags `quiet` (silent on purpose), `offscreen` (done but cut from the
 video — signing in, a cookie banner) and `speed` (2–16, a labelled time-lapse).
@@ -212,6 +212,22 @@ card with no ref of its own); `press_key` with no `ref` sends the key to the pag
 actually moved and which element — and a warning when nothing did.
 `wait_timeout_ms` goes up to 60000, or 600000 on an `offscreen` step (a live
 agent's answer that takes minutes).
+
+A `card` step cuts a full-screen text card into the film where it is recorded —
+mid-film, like the title and closing cards — with the step's narration spoken
+over it:
+
+```json
+{"type": "card", "text": "Shadow AI is a question many CISOs struggle with —\nyou're not alone", "background": "brand"}
+```
+
+`background` is `brand` (the session's accent colour, the default), `blur` (the
+last frame before the card, blurred and dimmed) or a hex colour (dark text on a
+light one). The card lasts its line plus a short tail, at least 2.5 s, and with
+`transitions` `smooth` dissolves in and out. It is a step like any other: the
+beat list counts its line, `edit_step` hides it, holds it or moves it with
+`position`, and `rerender` keeps it (it is stored in `cards.json` beside the
+recording, the way glides are in `glides.json`).
 
 ### Fixing a beat without a new take
 
@@ -274,7 +290,8 @@ refuses to publish until every shot is verified.
   new one; `cuts` cuts everywhere.
 - **Cards** — `title`/`subtitle` add an intro card, `cta_url`/`cta_text` a
   closing card with a QR code of the link (`closing_qr`); `title_background`
-  `auto` builds them on blurred stills from the video. `accent` sets the
+  `auto` builds them on blurred stills from the video. A `card` step adds one
+  mid-film. `accent` sets the
   colour; `music="subtle"` adds a quiet generated bed.
 - **Storyboard** — every render records where each part landed and a still of
   it; the watch page shows the storyboard, and clicking a step plays from there.
@@ -283,7 +300,9 @@ refuses to publish until every shot is verified.
   audio.
 - **Subtitles** — `subtitles=true` on `start_session` (or `rerender`) burns the
   narration into the picture, timed to each step, so the story reads in feeds
-  that autoplay muted, like LinkedIn.
+  that autoplay muted, like LinkedIn. `subtitle_style` sets the box behind the
+  text: `soft` (the default, about 40% black), `box` (about 75%) or `solid`
+  (opaque) for light, busy pages; `rerender(subtitle_style=...)` changes it.
 - **Sharing** — a shared watch link previews as the video, not as
   agenttake: a 1200x630 poster made from a frame of the film (any aspect
   ratio, fitted over a blurred copy of itself). `set_watch_page` gives the page

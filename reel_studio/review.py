@@ -209,6 +209,9 @@ def step_frames(video: Path, parts: Sequence[dict], steps: Sequence[dict], out_d
     stills = video.parent / STORYBOARD_DIR
     frames = []
     for step, part in narrated_step_parts(parts, steps):
+        if step.get("action_type") == "card":
+            # A text card is meant to be plain: not a page that had not loaded.
+            continue
         still = stills / part["frame"] if part.get("frame") else None
         if still is not None and still.is_file():
             path, at = still, storyboard_still_at(part)

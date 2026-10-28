@@ -171,6 +171,8 @@ def init_schema() -> None:
             ("poster_at", "REAL"),
             # Narration burned into the picture, for feeds that play muted.
             ("subtitles", "INTEGER NOT NULL DEFAULT 0"),
+            # How dark the box behind them is: soft, box or solid.
+            ("subtitle_style", "TEXT NOT NULL DEFAULT 'soft'"),
             # The director's planned beats, JSON [{"line", "label"}]: what
             # review_session holds the recorded narration against.
             ("beats", "TEXT"),
@@ -474,6 +476,12 @@ def update_session_subtitles(session_id: str, on: bool) -> None:
     init_schema()
     with _lock, _connect() as connection:
         connection.execute("UPDATE sessions SET subtitles = ? WHERE id = ?", (int(bool(on)), session_id))
+
+
+def update_session_subtitle_style(session_id: str, style: str) -> None:
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.execute("UPDATE sessions SET subtitle_style = ? WHERE id = ?", (style, session_id))
 
 
 def update_watch_page(

@@ -280,7 +280,10 @@ at the end of the session plays where it belongs, with its camera and glide);
 `update_step_narration` rewrites a line; `rerender` applies them without recording
 again. Before sharing, `set_watch_page` gives the watch page a title, a description
 and the moment its link-preview image is taken from.
-`subtitles=true` (start_session or rerender) burns the narration in, for feeds that play muted.
+`subtitles=true` (start_session or rerender) burns the narration in, for feeds that play muted;
+`subtitle_style` (`soft`, `box` or `solid`) sets how dark the box behind it is.
+A `card` step (`{{"type": "card", "text": ..., "background": "brand" | "blur" | "#rrggbb"}}`)
+cuts a full-screen text card into the film mid-way, with its narration spoken over it.
 Secrets: type a password as `{{{{secret:NAME}}}}` and AgentTake types its own
 `REEL_SECRET_NAME` and masks the field; `start_session` lists the names it has.
 `start_session(mask=[...])` blurs CSS selectors from the first frame.
@@ -518,7 +521,7 @@ def apply_subtitles(session_id: str) -> bool:
         return False
     video = Path(session["video_path"])
     cues = subtitle_cues(read_storyboard(video.parent), narrations_by_part(session))
-    return burn_subtitles(video, cues)
+    return burn_subtitles(video, cues, session.get("subtitle_style") or "soft")
 
 
 def public_video_url(session_id: str) -> str | None:
@@ -1166,6 +1169,14 @@ def step_hold_seconds(step: dict, narration_duration: float) -> float:
     return max(narration_duration, float(step.get("annotation_seconds") or 0.0))
 
 
+SubtitleStyle = Literal["soft", "box", "solid"]
+SUBTITLE_STYLE_HELP = (
+    "The box behind the subtitles: soft (default, about 40% black), box (about 75% black) "
+    "or solid (opaque black). On light, busy pages white text over soft is hard to read: "
+    "use box or solid there."
+)
+
+
 def _title_background(value: str) -> str:
     value = (value or "").strip()
     if value.lower() in {"solid", "auto"}:
@@ -1259,7 +1270,10 @@ def docs_page(base_url: str = "/") -> str:
       <code>annotate{{ref,text,style,ms,dim}}</code>,
       <code>scroll{{dy,ms?,ref?}}</code>,
       <code>scroll_to_text{{text}}</code>,
-      <code>hover{{ref}}</code>, <code>highlight{{ref}}</code>, and
+      <code>hover{{ref}}</code>, <code>highlight{{ref}}</code>,
+      <code>card{{text,background?}}</code> (a full-screen text card cut into
+      the film mid-way, its narration spoken over it; background
+      <code>brand</code>, <code>blur</code> or a hex colour), and
       <code>wait{{ms}}</code>. Refs come from <code>observe</code>. Narration
       defaults to <code>after_settle</code>; use <code>before_action</code> only
       for deliberate pre-action narration. An annotation follows its target
@@ -1679,6 +1693,17 @@ The screen records from start_session until finish, so plan first and record onc
    Joins between steps are chosen for you (transitions="smooth": a cut on a
    new page, a short dissolve where a cut would jump). transitions="cuts"
    makes every join a hard cut, for a brisker, more technical feel.
+   A card step cuts a full-screen text card into the film mid-way, to turn a
+   chapter (from the research to the product): {"type": "card", "text":
+   "Shadow AI keeps CISOs up at night.\\nYou're not alone.", "background":
+   "brand"}, narrated like any step — the line is spoken over the card. brand
+   is the accent colour, blur the frame before the card blurred, or a hex
+   colour. It lasts its line plus a short tail (at least 2.5 s) and dissolves
+   in and out; edit_step moves or hides it like any beat. One or two short
+   lines; a card that repeats what the screen shows is wasted.
+   subtitles=true reads well on dark pages; on light, busy pages pass
+   subtitle_style="box" (75% black) or "solid" (opaque), at start_session or
+   later with rerender(subtitle_style=...).
 7. begin_shot before a beat and verify_shot after it; the description goes in
    intent. finish refuses to publish while a shot is unverified. begin_shot is
    also the camera, moved in post with the text kept sharp:
@@ -1870,6 +1895,10 @@ async def start_session(
         bool,
         Field(description="Burn the narration into the picture as subtitles (default false). For LinkedIn and other feeds that autoplay muted: the story still reads without sound. Can also be switched on later with rerender(subtitles=true)."),
     ] = False,
+    subtitle_style: Annotated[
+        SubtitleStyle,
+        Field(description=SUBTITLE_STYLE_HELP),
+    ] = "soft",
     mask: Annotated[
         list[str] | None,
         Field(description="CSS selectors blurred on every page from the first frame, e.g. "
@@ -1987,6 +2016,8 @@ async def start_session(
     )
     if subtitles:
         store.update_session_subtitles(session.session_id, True)
+    if subtitle_style != "soft":
+        store.update_session_subtitle_style(session.session_id, subtitle_style)
     result: dict = {"session_id": session.session_id}
     if planned_beats:
         result["beats"] = len(planned_beats)
@@ -2706,6 +2737,10 @@ async def rerender(
         bool | None,
         Field(description="true burns the narration into the picture as subtitles, false takes them out. Omit to keep what the video has."),
     ] = None,
+    subtitle_style: Annotated[
+        SubtitleStyle | None,
+        Field(description=SUBTITLE_STYLE_HELP + " Omit to keep the style the session has."),
+    ] = None,
 ) -> dict:
     """Rebuild narration audio and mux it onto an existing finished video.
 
@@ -2835,6 +2870,8 @@ async def rerender(
     store.update_session_duration(session_id, duration)
     if subtitles is not None:
         store.update_session_subtitles(session_id, subtitles)
+    if subtitle_style is not None:
+        store.update_session_subtitle_style(session_id, subtitle_style)
     try:
         subtitled = await asyncio.to_thread(apply_subtitles, session_id)
     except Exception as exc:

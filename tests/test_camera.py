@@ -167,6 +167,7 @@ def test_the_length_estimate_is_the_render_plan_not_the_clock():
         timeline=[(10.0, None, 2.0), (400.0, None, 3.0)],
         render_config=RenderConfig(title="T", cta_url="https://example.com"),
         timeline_floors=[1.0, 1.0], timeline_speeds=[1.0, 1.0], timeline_glides=[None, None],
+        timeline_cards=[False, False],
         offscreen_first=False,
     )
     estimate = BrowserSession.estimated_length(fake, 800.0)
