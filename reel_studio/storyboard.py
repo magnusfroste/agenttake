@@ -660,7 +660,8 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
                 "wide" if zoom <= 1.0 else "medium", zoom, None, op.get("focus_text"),
                 op.get("move_seconds"), lift=op.get("lift", False),
             )
-            if result.get("camera_note"):
+            # A shot with no focus pushes in on the centre on purpose.
+            if result.get("camera_note") and op.get("focus_text"):
                 notes.append(result["camera_note"])
             continue
         action = dict(op["action"])

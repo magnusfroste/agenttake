@@ -84,8 +84,10 @@ def annotation_script() -> str:
     const rect = target?.getBoundingClientRect?.() || spec.box;
     if (!rect) return;
     const z = zoomFactor();
+    // A DOMRect has left/top; a box passed in (words marked by their text,
+    // with no element to follow) has x/y.
     const {x, y, width, height} = {
-      x: rect.left / z, y: rect.top / z,
+      x: (rect.left ?? rect.x) / z, y: (rect.top ?? rect.y) / z,
       width: rect.width / z, height: rect.height / z,
     };
     Object.assign(box.style, {
