@@ -300,6 +300,17 @@ def test_a_card_uses_the_render_card_where_agenttake_has_one(monkeypatch):
     assert ops[-1]["narration"] == "Blocking does not work."
 
 
+def test_a_consent_banner_is_never_accepted():
+    """A banner is refused, hidden or acknowledged, never agreed to."""
+    agreeing = ("accept", "agree", "allow", "godkänn", "acceptera", "akzeptieren", "consent")
+    for label in boards.CONSENT_REFUSE + boards.CONSENT_NOTICE:
+        lowered = label.lower()
+        if any(word in lowered for word in ("not ", "without", "sans ")):
+            continue
+        assert not any(word in lowered for word in agreeing), label
+    assert ".fc-consent-root" in boards.CONSENT_MANAGERS
+
+
 def test_form_fields_are_told_apart():
     login = [
         {"ref": "input:search", "tag": "input", "type": "search", "hints": "search"},
@@ -356,7 +367,8 @@ class StandInSession:
     async def form_fields(self):
         return {"username": "input:email", "password": "input:password"}
 
-    async def dismiss_consent(self, labels):
+    async def dismiss_consent(self, refuse, managers=(), notice=()):
+        self.consent_asked = (refuse, managers, notice)
         return None
 
 
@@ -404,6 +416,8 @@ def test_shoot_reports_each_beat_and_a_retake_goes_where_it_belongs(server, tmp_
     assert "text_not_found" in shot["beats"][1]["reason"]
     assert shot["failed"] == [2] and shot["to_come"] == []
     assert "shoot_beat" in shot["next"]
+    # A consent banner is refused, hidden or acknowledged: never accepted.
+    assert session.consent_asked == (boards.CONSENT_REFUSE, boards.CONSENT_MANAGERS, boards.CONSENT_NOTICE)
     # The plan's lines are what the review holds the take against.
     assert [beat["line"] for beat in store.get_session("s-film")["beats"]] == [b["line"] for b in good_plan()]
 

@@ -299,6 +299,29 @@ GLIDE_SCROLL_MAX_MS = 20000
 # above the band burned-in subtitles take.
 SUBTITLE_LIFT = 0.17
 
+# Hides the consent managers among the given selectors that are on screen, and
+# lets the page scroll again; returns the first one hidden, or null. A manager's
+# root is often an empty box around fixed children, so a child counts too. The
+# hiding is inline and important: Google's dialog wins over a stylesheet rule.
+_HIDE_CONSENT_JS = """(selectors) => {
+    const boxed = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const shown = (el) => getComputedStyle(el).display !== 'none'
+        && (boxed(el) || Array.from(el.querySelectorAll('*')).slice(0, 80).some(boxed));
+    let first = null;
+    for (const sel of selectors) {
+        let els = [];
+        try { els = Array.from(document.querySelectorAll(sel)).filter(shown); } catch (e) { continue; }
+        for (const el of els) el.style.setProperty('display', 'none', 'important');
+        if (els.length && !first) first = sel;
+    }
+    if (!first) return null;
+    for (const el of [document.documentElement, document.body]) {
+        el.style.setProperty('overflow', 'auto', 'important');
+        el.style.setProperty('position', 'static', 'important');
+    }
+    return first;
+}"""
+
 # What form_fields needs to know about an input to tell what it is for.
 _DESCRIBE_FIELD_JS = """(el) => ({
     tag: el.tagName.toLowerCase(),
@@ -1223,14 +1246,38 @@ class BrowserSession:
         raw.unlink(missing_ok=True)
         return out, {k: round(frame[k]) for k in ("x", "y", "w", "h")} | {"zoom": round(frame["zoom"], 2)}
 
-    async def dismiss_consent(self, labels: Sequence[str]) -> str | None:
-        """Click a cookie banner's accept button, if one is on screen.
+    async def dismiss_consent(
+        self, refuse: Sequence[str], managers: Sequence[str] = (), notice: Sequence[str] = ()
+    ) -> str | None:
+        """Get a cookie banner out of the picture without agreeing to anything.
 
-        Buttons only, matched by their whole label, in the page and in its
-        frames (consent managers often live in an iframe). Not a recorded
-        step: it is done between steps, in footage the render cuts. Returns
-        the label clicked, or None.
+        First a button that refuses or keeps only what is necessary. Failing
+        that, a known consent manager on screen is hidden: The Register's
+        Google dialog offers only "Consent" and "Manage options", and covered
+        the source for the first 20 s of a film. Hiding it agrees to nothing.
+        Last, a button that only acknowledges a notice ("Got it"). Never an
+        accept button. Not a recorded step: it is done between steps, in
+        footage the render cuts. Returns what was done, or None.
         """
+        clicked = await self._click_labelled(refuse)
+        if clicked:
+            return clicked
+        if managers:
+            try:
+                hidden = await self.page.evaluate(_HIDE_CONSENT_JS, list(managers))
+            except PlaywrightError:
+                hidden = None
+            if hidden:
+                await self.page.wait_for_timeout(300)
+                return f"hid {hidden}"
+        return await self._click_labelled(notice)
+
+    async def _click_labelled(self, labels: Sequence[str]) -> str | None:
+        """Click the first visible button whose whole label is one of these,
+        in the page or in its frames (consent managers often live in an
+        iframe). Returns the label clicked, or None."""
+        if not labels:
+            return None
         pattern = re.compile(
             "^\\s*(?:" + "|".join(re.escape(label) for label in labels) + ")\\s*$", re.IGNORECASE
         )

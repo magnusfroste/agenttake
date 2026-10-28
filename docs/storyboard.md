@@ -80,9 +80,11 @@ Six movements, about ten beats, about 150 words.
 2. **Problem, with a source** (5–20 s) — `source`, then a `highlight` of the
    sentence that proves it.
 3. **The turn** (20–25 s) — a `card`: "What if …?", "There is another way."
-4. **The solution** (25–40 s) — one `page_tour` of the product's site, then
-   a `system` shot for each section a line names (its heading as
-   `wait_for_text`), so the picture is what the voice is talking about.
+4. **The solution** (25–40 s) — a `system` shot of the product's hero, then
+   one for each section a line names (its heading as `wait_for_text`), so
+   the picture is what the voice is talking about. A `page_tour` sweeps
+   past every section and the next shots show them again: keep it for a
+   film where the page as a whole is the point.
 5. **Proof, in the system** (40–55 s) — `login`, then `system` and a
    `live_answer`: the product doing it, live.
 6. **Call to action** (55–60 s) — `cta`.
@@ -115,7 +117,8 @@ from the beat's source):
 - **A source's beat says what the source says.** Under a `source` or a
   marked quote the viewer reads the source's name, so the line reports the
   source; your own argument ("and that means…") goes on the next beat, a
-  `card` or the product.
+  `card` or the product. Under a `highlight` the line says what the marked
+  words say.
 - **Headlines and short quotes only.** Show a headline and one sentence, not
   an article: a quote of a dozen words, marked, is fair use; a page read out
   is not. Paywalled pages: the headline only.
@@ -144,3 +147,13 @@ needs the sign-in).
    plays the retake where the beat belongs; then `rerender(session_id)`.
 
 A beat that shot fine but could look better can be retaken the same way.
+
+### After finish
+
+`shoot_beat` only works before `finish`. A flaw you find on the contact
+sheet afterwards is mended in the edit when the footage is right
+(`edit_step`: `hidden`, `hold_seconds`, `position`; `update_step_narration`;
+then `rerender`), or in a fresh take when it is not. A fresh take is a new
+session shot from the same beats. Unchanged lines reuse their voice clips,
+so it costs minutes, not quota. Delete the flawed session once the new
+take passes.
