@@ -98,7 +98,7 @@ def test_annotation_script_tracks_target_layout_changes():
 def test_annotation_script_compensates_for_document_zoom():
     script = annotation_script()
     assert "getComputedStyle(document.documentElement).zoom" in script
-    assert "rect.left / z" in script
+    assert "(rect.left ?? rect.x) / z" in script
     assert "rect.width / z" in script
 
     # The overlay coordinates are assigned in the zoomed document's coordinate

@@ -10,7 +10,8 @@ from pathlib import Path
 import subprocess
 import time
 import uuid
-from typing import cast
+import re
+from typing import Sequence, cast
 
 from playwright.async_api import (
     Browser,
@@ -284,6 +285,45 @@ _POINTER_PARK_JS = """([x, y]) => {
 # Resolves with [distance moved, whether it moved the document, where it
 # started, the viewport's height, the name of what moved].
 GLIDE_SCROLL_MAX_MS = 20000
+
+# How far set_shot(lift=True) moves the frame's centre below its focus, as a
+# share of the frame's height: the focus sits at about a third of the frame,
+# above the band burned-in subtitles take.
+SUBTITLE_LIFT = 0.17
+
+# What form_fields needs to know about an input to tell what it is for.
+_DESCRIBE_FIELD_JS = """(el) => ({
+    tag: el.tagName.toLowerCase(),
+    type: (el.getAttribute('type') || '').toLowerCase(),
+    hints: [el.name, el.id, el.getAttribute('autocomplete'), el.getAttribute('placeholder'),
+            el.getAttribute('aria-label')].filter(Boolean).join(' ').toLowerCase(),
+    disabled: !!el.disabled || el.readOnly === true,
+})"""
+
+_USERNAME_HINT = re.compile(r"user|e-?mail|login|e-?post|account|användar")
+_MESSAGE_HINT = re.compile(r"message|ask|chat|prompt|question|send|skriv|fråga|meddelande")
+
+
+def pick_form_fields(fields: list[dict]) -> dict[str, str]:
+    """The username, password and message fields among described inputs, in
+    page order: {"username": ref, "password": ref, "message": ref}, each only
+    when found."""
+    usable = [f for f in fields if not f.get("disabled") and f.get("type") not in ("hidden", "submit", "button", "checkbox", "radio")]
+    found: dict[str, str] = {}
+    password_at = next((i for i, f in enumerate(usable) if f.get("type") == "password"), None)
+    if password_at is not None:
+        found["password"] = usable[password_at]["ref"]
+        before = [f for f in usable[:password_at] if f.get("tag") == "input"]
+        named = [f for f in before if f.get("type") == "email" or _USERNAME_HINT.search(f.get("hints", ""))]
+        if named or before:
+            found["username"] = (named or before)[-1]["ref"]
+    texts = [f for f in usable if f.get("tag") == "textarea" or f.get("type") in ("", "text", "search")]
+    message = ([f for f in texts if f.get("tag") == "textarea" and _MESSAGE_HINT.search(f.get("hints", ""))]
+               or [f for f in texts if f.get("tag") == "textarea"]
+               or [f for f in texts if _MESSAGE_HINT.search(f.get("hints", ""))])
+    if message and password_at is None:
+        found["message"] = message[0]["ref"]
+    return found
 # What a scroll moved, named so a director can tell the page from a list in
 # a dialog: "document", or a tag with its id, two classes and its label.
 _DESCRIBE_SCROLLER_JS = """(el) => {
@@ -908,11 +948,15 @@ class BrowserSession:
         focus_ref: str | None = None,
         focus_text: str | None = None,
         move_seconds: float | None = None,
+        lift: bool = False,
     ) -> dict:
         """Aim the camera for the next step: framing, or an explicit zoom, on a focus.
 
         The move starts with the next recorded step, so the push-in lands
-        while that step's narration names the thing it frames.
+        while that step's narration names the thing it frames. ``lift`` puts
+        the focus in the upper part of the frame instead of its middle, clear
+        of the band burned-in subtitles take: a highlighted quote under the
+        subtitle of the line that reads it cannot be read.
         """
         level = zoom if zoom is not None else FRAMING_ZOOM.get(framing, 1.0)
         level = max(1.0, level)
@@ -944,6 +988,8 @@ class BrowserSession:
                 cx, cy = self.camera.aim(box, level, lead=box_is_text)
             else:
                 cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            if lift:
+                cy += self.height / level * SUBTITLE_LIFT
         self.pending_shot = (level, cx, cy)
         self.pending_ease = EASE_SECONDS if move_seconds is None else min(max(move_seconds, 0.2), 3.0)
         result: dict = {"camera_zoom": level}
@@ -1131,6 +1177,44 @@ class BrowserSession:
         raw.unlink(missing_ok=True)
         return out, {k: round(frame[k]) for k in ("x", "y", "w", "h")} | {"zoom": round(frame["zoom"], 2)}
 
+    async def dismiss_consent(self, labels: Sequence[str]) -> str | None:
+        """Click a cookie banner's accept button, if one is on screen.
+
+        Buttons only, matched by their whole label, in the page and in its
+        frames (consent managers often live in an iframe). Not a recorded
+        step: it is done between steps, in footage the render cuts. Returns
+        the label clicked, or None.
+        """
+        pattern = re.compile(
+            "^\\s*(?:" + "|".join(re.escape(label) for label in labels) + ")\\s*$", re.IGNORECASE
+        )
+        for frame in self.page.frames:
+            try:
+                button = frame.get_by_role("button", name=pattern).first
+                if await button.count() and await button.is_visible():
+                    label = (await button.inner_text()).strip()
+                    await button.click(timeout=3000)
+                    await self.page.wait_for_timeout(600)
+                    return label or "button"
+            except PlaywrightError:
+                continue
+        return None
+
+    async def form_fields(self) -> dict[str, str]:
+        """The refs of a sign-in form's username and password fields and of a
+        chat's message box, from the latest observe: what a storyboard's
+        login and live_answer shots type into."""
+        described = []
+        for ref, selector in self.refs.items():
+            if ref.split(":", 1)[0] not in ("input", "textarea", "textbox"):
+                continue
+            try:
+                about = await self.page.locator(selector).first.evaluate(_DESCRIBE_FIELD_JS)
+            except PlaywrightError:
+                continue
+            described.append({"ref": ref, **about})
+        return pick_form_fields(described)
+
     async def assert_visible(self, text: str) -> dict:
         target = await self._visible_text_target(text)
         if target is None:
@@ -1277,30 +1361,37 @@ class BrowserSession:
                     level,
                 )
             elif action_type == "annotate":
-                if not action.ref or action.ref not in self.refs:
+                # Words on a page, a quote in an article, have no ref: with
+                # target_text and no ref the mark goes round those words.
+                by_text = not action.ref and bool((action.target_text or "").strip())
+                if not by_text and (not action.ref or action.ref not in self.refs):
                     return await self.error_result(
                         "unknown_ref", f"Unknown element ref: {action.ref}"
+                        + " (annotate also takes target_text and no ref)"
                     )
                 normalized = validate_annotation(
                     action.style, action.text or "", action.ms or 2500
                 )
-                target = await self._action_target(action)
+                target = (await self._visible_text_target(action.target_text or "") if by_text
+                          else await self._action_target(action))
                 if target is None:
                     return await self.error_result(
                         "target_text_not_found",
-                        f"Exact visible target text not found: {action.target_text}",
+                        f"Exact visible target text not found: {action.target_text}"
+                        if not by_text else f"Visible text not found: {action.target_text}",
                     )
                 await target.wait_for(state="visible", timeout=5000)
                 await target.scroll_into_view_if_needed(timeout=5000)
                 if not (action.quiet or action.offscreen):
                     await self._follow(target)
-                box = await target.bounding_box()
+                box = (await self._text_box(target, action.target_text or "") if by_text
+                       else await target.bounding_box())
                 if not box:
                     return await self.error_result(
-                        "focus_target_not_visible", f"Target has no viewport box: {action.ref}"
+                        "focus_target_not_visible", f"Target has no viewport box: {action.ref or action.target_text}"
                     )
                 self.annotation_counter += 1
-                live_annotation_id = annotation_id(action.ref, self.annotation_counter)
+                live_annotation_id = annotation_id(action.ref or "text", self.annotation_counter)
                 annotation_duration = cast(float, normalized["duration_ms"]) / 1000
                 visual_duration_ms = max(
                     cast(int, normalized["duration_ms"]), int(round(duration * 1000))
@@ -1318,11 +1409,13 @@ class BrowserSession:
                         "duration_ms": visual_duration_ms,
                         "dim": action.dim,
                         "box": box,
-                        "selector": (
+                        # Marked by text, the box is the words' own, not
+                        # their paragraph's: it stays where it was drawn.
+                        "selector": None if by_text else (
                             f"[data-video-director-annotation-target="
                             f"{live_annotation_id!r}]"
                         ),
-                        "follow_target": True,
+                        "follow_target": not by_text,
                     },
                 )
             elif action_type == "press_key" and not action.ref:

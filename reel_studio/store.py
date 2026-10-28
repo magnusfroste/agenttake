@@ -99,6 +99,17 @@ def init_schema() -> None:
             );
             CREATE INDEX IF NOT EXISTS shots_session_idx
                 ON shots (session_id, shot_idx);
+            CREATE TABLE IF NOT EXISTS storyboards (
+                plan_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                beats TEXT NOT NULL,
+                checklist TEXT NOT NULL,
+                target_seconds INTEGER NOT NULL DEFAULT 60,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS storyboards_session_idx
+                ON storyboards (session_id);
             CREATE TABLE IF NOT EXISTS backlog (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -812,3 +823,93 @@ def get_status(session_id: str) -> dict[str, Any] | None:
         "status": session["status"],
         "stale": session["status"] == "active",
     }
+
+
+def save_storyboard(
+    plan_id: str, beats: list[dict], checklist: list[dict], target_seconds: int = 60,
+    session_id: str | None = None,
+) -> None:
+    """A storyboard plan_storyboard checked: its beats (each with the state
+    shooting gives it) and the checklist."""
+    init_schema()
+    now = _now()
+    with _lock, _connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO storyboards (plan_id, session_id, beats, checklist, target_seconds, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(plan_id) DO UPDATE SET
+                session_id = COALESCE(excluded.session_id, storyboards.session_id),
+                beats = excluded.beats, checklist = excluded.checklist,
+                target_seconds = excluded.target_seconds, updated_at = excluded.updated_at
+            """,
+            (plan_id, session_id, json.dumps(beats), json.dumps(checklist), target_seconds, now, now),
+        )
+
+
+def _storyboard(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    result = dict(row)
+    result["beats"] = _from_json(result["beats"], [])
+    result["checklist"] = _from_json(result["checklist"], [])
+    return result
+
+
+def get_storyboard(plan_id: str) -> dict[str, Any] | None:
+    init_schema()
+    with _lock, _connect() as connection:
+        row = connection.execute("SELECT * FROM storyboards WHERE plan_id = ?", (plan_id,)).fetchone()
+    return _storyboard(row)
+
+
+def session_storyboard(session_id: str) -> dict[str, Any] | None:
+    """The storyboard a session shoots: the last one attached to it."""
+    init_schema()
+    with _lock, _connect() as connection:
+        row = connection.execute(
+            "SELECT * FROM storyboards WHERE session_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    return _storyboard(row)
+
+
+def attach_storyboard(plan_id: str, session_id: str) -> None:
+    init_schema()
+    with _lock, _connect() as connection:
+        # One storyboard per session: an earlier one lets go of it.
+        connection.execute(
+            "UPDATE storyboards SET session_id = NULL WHERE session_id = ? AND plan_id != ?",
+            (session_id, plan_id),
+        )
+        connection.execute(
+            "UPDATE storyboards SET session_id = ?, updated_at = ? WHERE plan_id = ?",
+            (session_id, _now(), plan_id),
+        )
+
+
+def update_storyboard_beats(plan_id: str, beats: list[dict]) -> None:
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.execute(
+            "UPDATE storyboards SET beats = ?, updated_at = ? WHERE plan_id = ?",
+            (json.dumps(beats), _now(), plan_id),
+        )
+
+
+def update_session_beats(session_id: str, beats: list[dict]) -> None:
+    """The planned lines review_session holds the take against."""
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.execute(
+            "UPDATE sessions SET beats = ? WHERE id = ?",
+            (json.dumps(beats) if beats else None, session_id),
+        )
+
+
+def next_step_index(session_id: str) -> int:
+    init_schema()
+    with _lock, _connect() as connection:
+        return connection.execute(
+            "SELECT COALESCE(MAX(idx) + 1, 0) FROM steps WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]

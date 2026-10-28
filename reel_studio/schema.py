@@ -84,7 +84,7 @@ ACTION_FIELDS: dict[str, str] = {
     "wait": "ms",
     "caption": "text, ms, sticky (true: stays until the next caption or page)",
     "set_zoom": "text (a level from 0.5 to 2.0, e.g. \"1.25\")",
-    "annotate": "ref, text, style (marker | callout | underline)",
+    "annotate": "ref, text, style (marker | callout | underline); or target_text and no ref (marks those words on the page: a quote in an article)",
     "mask": "ref (blurs that element on screen until unmask or a page load)",
     "unmask": "ref",
     "card": "text (one or two lines; a newline breaks the line), background (\"brand\": the accent colour, the default; \"blur\": the frame before the card, blurred; or a hex colour such as \"#0b1320\") — a full-screen text card cut into the video here, mid-film, with this step's narration spoken over it; it lasts its line plus a short tail, at least 2.5 s, and dissolves in and out with transitions smooth",

@@ -41,6 +41,10 @@ filmed and cut it with AgentTake.
 - ✅ **A review that knows the script** — the beats the director planned go in
   with `start_session(beats=...)`; the review flags a beat skipped or recorded
   out of order, a page that had not loaded under a line, and a menu left open.
+- 📋 **Storyboards** — the director writes beats (`source`, `highlight`,
+  `card`, `image`, `page_tour`, `login`, `system`, `live_answer`, `cta`) and
+  AgentTake shoots each with a tested recipe; `plan_storyboard` checks sources,
+  URLs, secrets and length before anything records.
 - 🔁 **Edit without a reshoot** — hide a step, hold a result, speed up a wait,
   or rewrite a line, then `rerender`: no re-recording the browser.
 - 📐 **Any format** — 16:9 for X and YouTube, or 4:5 from a site's phone
@@ -160,6 +164,32 @@ with narration on every visible step and a caption on every line; a
 by part, `contact_sheet` the whole of it in one picture, and `edit_step` plus
 `rerender` fix a beat without recording it again.
 
+### Or write a storyboard
+
+For a documentary-style film — a source on screen, a quote marked, text cards,
+a product tour, a sign-in, live proof, a call to action — the director writes
+the film and AgentTake shoots it. `plan_storyboard(beats=[{"shot": ..., "line":
+..., "source": ..., ...}])` checks it without recording: a claim with no
+source, a URL that does not answer or answers 401/403, a secret AgentTake does
+not have, and a plan longer than the film are on its checklist.
+`shoot_storyboard(session_id, plan_id=...)` then records each beat with its
+recipe (consent banners closed offscreen, every line waiting for its text,
+glides, push-ins, sign-ins offscreen) and reports each beat ok or failed with
+the reason; `shoot_beat` retakes one, and `apply_retakes` puts it in place
+after `finish`. The handbook is [docs/storyboard.md](docs/storyboard.md), also
+served as the `director_guide` tool and the `storyboard` prompt.
+
+A Hermes agent learns the whole job, from research to a downloaded MP4, from
+the [film-director skill](skills/film-director/SKILL.md):
+
+```bash
+hermes skills install magnusfroste/agenttake/skills/film-director
+```
+
+It researches every claim to a source, scouts offscreen, plans until the
+checklist is clean, shoots, retakes at most twice per beat, and looks at the
+contact sheet before it calls a film done.
+
 ### What the review checks
 
 `review_session` (and the review `finish` returns) scores the take and lists
@@ -194,6 +224,7 @@ None of these can score `excellent`.
 |---|---|
 | **Session** | `start_session`, `get_status`, `finish`, `finish_status`, `list_sessions`, `get_session`, `delete_session`, `prune` |
 | **Directing** | `observe`, `act`, `act_batch`, `assert_visible`, `begin_shot`, `preview_shot`, `verify_shot`, `review_session` |
+| **Storyboard** | `director_guide`, `plan_storyboard`, `shoot_storyboard`, `shoot_beat`, `apply_retakes` |
 | **After finish** | `storyboard`, `contact_sheet`, `edit_step`, `update_step_narration`, `rerender`, `set_watch_page` |
 | **Voices** | `list_voices` |
 | **Roadmap** | `submit_backlog`, `list_backlog`, `update_backlog` |
@@ -206,7 +237,8 @@ fields) in their input schema, inline with no `$ref`. Verbs: `goto`, `click`,
 `target_text`, `wait_for_url`, `wait_for_text`, `wait_timeout_ms`, `settle_ms`,
 and the flags `quiet` (silent on purpose), `offscreen` (done but cut from the
 video — signing in, a cookie banner) and `speed` (2–16, a labelled time-lapse).
-`click` with `text` and no `ref` clicks the visible element showing that text (a
+`annotate` with `target_text` and no `ref` marks those words on the page (a
+quote in an article). `click` with `text` and no `ref` clicks the visible element showing that text (a
 card with no ref of its own); `press_key` with no `ref` sends the key to the page
 (Escape closes a menu). A `scroll` answers with `scrolled` — the pixels that
 actually moved and which element — and a warning when nothing did.
