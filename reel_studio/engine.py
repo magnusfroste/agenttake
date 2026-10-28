@@ -256,18 +256,26 @@ async def ensure_fullscreen(context, page, settle_ms: int = 1200) -> bool:
 
 # The nearest point to (x, y) that is not on a link, or null when (x, y)
 # is not on one. Searched in rings of 16 directions, 12 px apart, inside the
-# viewport.
+# viewport, and kept MARGIN px clear, so an ad that grows a little does not
+# reach it. A frame counts as a link: an ad is a frame, and the links inside
+# it are invisible from the page. On TechTarget the pointer the consent
+# click left behind sat on a Google ad that loaded under it, and the
+# close-up of the quote carried "https://googleads.g.doubleclick.net/…" in
+# Chrome's status bubble (2026-10-28).
 _POINTER_PARK_JS = """([x, y]) => {
-  const LINK = 'a[href], [role=link]';
+  const LINK = 'a[href], [role=link], iframe, frame, embed, object';
+  const MARGIN = 16;
   const onLink = (px, py) => { const el = document.elementFromPoint(px, py); return !!(el && el.closest(LINK)); };
+  const clear = (px, py) => !onLink(px, py) && !onLink(px - MARGIN, py) && !onLink(px + MARGIN, py)
+    && !onLink(px, py - MARGIN) && !onLink(px, py + MARGIN);
   if (!onLink(x, y)) return null;
   const w = window.innerWidth, h = window.innerHeight;
-  for (let r = 12; r <= 360; r += 12) {
+  for (let r = 12; r <= Math.max(w, h); r += 12) {
     for (let i = 0; i < 16; i++) {
       const a = (i / 16) * 2 * Math.PI;
       const px = x + r * Math.cos(a), py = y + r * Math.sin(a);
       if (px < 2 || py < 2 || px > w - 2 || py > h - 2) continue;
-      if (!onLink(px, py)) return [px, py];
+      if (clear(px, py)) return [px, py];
     }
   }
   return null;
@@ -507,6 +515,11 @@ class BrowserSession:
     # A sticky caption on screen: (annotation id, label), redrawn when the
     # camera moves so it stays inside the frame.
     sticky_caption: tuple[str, str] | None = None
+    # Where the last click, hover or park left the pointer, in viewport CSS
+    # pixels; None before anything moved it. Playwright does not report it.
+    pointer: tuple[float, float] | None = None
+    # The pointer rests on something on purpose: a hover step's menu.
+    pointer_held: bool = False
 
     @classmethod
     async def create(
@@ -949,6 +962,7 @@ class BrowserSession:
         focus_text: str | None = None,
         move_seconds: float | None = None,
         lift: bool = False,
+        fit: bool = False,
     ) -> dict:
         """Aim the camera for the next step: framing, or an explicit zoom, on a focus.
 
@@ -956,10 +970,13 @@ class BrowserSession:
         while that step's narration names the thing it frames. ``lift`` puts
         the focus in the upper part of the frame instead of its middle, clear
         of the band burned-in subtitles take: a highlighted quote under the
-        subtitle of the line that reads it cannot be read.
+        subtitle of the line that reads it cannot be read. ``fit`` lowers the
+        zoom, when it must, until the whole focus is in frame: a quote the
+        line reads cannot lose its end off the edge.
         """
         level = zoom if zoom is not None else FRAMING_ZOOM.get(framing, 1.0)
         level = max(1.0, level)
+        asked = level
         box = None
         box_is_text = False
         note = ""
@@ -980,6 +997,8 @@ class BrowserSession:
                     "No focus_ref or focus_text box on screen: the camera pushes in "
                     "on the current centre and follows the next clicked element."
                 )
+        if box and fit and self.camera is not None:
+            level = self.camera.fit_zoom(box, level, SUBTITLE_LIFT if lift else 0.0)
         cx = cy = None
         if box:
             if self.camera is not None:
@@ -993,6 +1012,8 @@ class BrowserSession:
         self.pending_shot = (level, cx, cy)
         self.pending_ease = EASE_SECONDS if move_seconds is None else min(max(move_seconds, 0.2), 3.0)
         result: dict = {"camera_zoom": level}
+        if level < asked:
+            result["camera_fit"] = f"zoom {level:.2f} instead of {asked:g}, so the whole focus is in frame"
         if self.camera is not None:
             # What the frame will show, in CSS pixels: the centre is clamped so
             # the frame stays on the page, and an agent should not have to crop
@@ -1081,7 +1102,8 @@ class BrowserSession:
             await asyncio.sleep(EASE_SECONDS)
 
     async def _park_pointer(self, x: float, y: float) -> None:
-        """Move the pointer off a link, the shortest way, after a click.
+        """Move the pointer off a link or frame, the shortest way: after a
+        click, and before every visible step (_clear_pointer).
 
         A pointer left on a link makes Chrome show the link's address in a
         status bubble at the bottom of the window, and the recording keeps
@@ -1093,8 +1115,32 @@ class BrowserSession:
             spot = await self.page.evaluate(_POINTER_PARK_JS, [x, y])
             if spot:
                 await self.page.mouse.move(spot[0], spot[1], steps=6)
+                x, y = spot
         except PlaywrightError:
             pass
+        self.pointer = (x, y)
+
+    async def _clear_pointer(self) -> None:
+        """Before a visible step: move the pointer off whatever is under it now.
+
+        A click parks it once, but the page goes on under a pointer that
+        stays put: a consent banner's button closes and an ad loads where it
+        was, a scroll or a new page brings a link under it. A hover step's
+        pointer is left where the step put it.
+        """
+        if self.pointer is None or self.pointer_held:
+            return
+        await self._park_pointer(*self.pointer)
+
+    async def _note_pointer(self, target: Locator, held: bool = False) -> None:
+        """Remember where a click or hover on target leaves the pointer."""
+        try:
+            box = await target.bounding_box()
+        except PlaywrightError:
+            box = None
+        if box:
+            self.pointer = (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        self.pointer_held = held
 
     async def _redraw_sticky_caption(self) -> None:
         if self.sticky_caption is None:
@@ -1193,6 +1239,7 @@ class BrowserSession:
                 button = frame.get_by_role("button", name=pattern).first
                 if await button.count() and await button.is_visible():
                     label = (await button.inner_text()).strip()
+                    await self._note_pointer(button)
                     await button.click(timeout=3000)
                     await self.page.wait_for_timeout(600)
                     return label or "button"
@@ -1242,6 +1289,8 @@ class BrowserSession:
         }, screenshot
 
     async def act(self, action: Action, narration: str = "") -> tuple[dict, Path | None]:
+        if not action.offscreen:
+            await self._clear_pointer()
         offset = time.monotonic() - self.t0
         clip: Path | None = None
         duration = 0.0
@@ -1475,6 +1524,7 @@ class BrowserSession:
                     if clicked_box:
                         pointer = (clicked_box["x"] + clicked_box["width"] / 2,
                                    clicked_box["y"] + clicked_box["height"] / 2)
+                        self.pointer, self.pointer_held = pointer, False
                     await target.click()
                     await self.page.wait_for_timeout(500)
                     await self._clear_spotlights()
@@ -1511,6 +1561,7 @@ class BrowserSession:
                         option = self.page.get_by_role(
                             "option", name=option_text, exact=False
                         ).first
+                        await self._note_pointer(option)
                         await option.click(timeout=5000)
                 elif action_type == "press_key":
                     key = (action.text or "").strip()
@@ -1521,6 +1572,7 @@ class BrowserSession:
                     await target.press(key)
                 elif action_type == "hover":
                     await target.hover()
+                    await self._note_pointer(target, held=True)
                 elif action_type == "mask":
                     await target.evaluate(
                         "(el) => { el.dataset.reelMaskedFilter = el.style.filter || '';"

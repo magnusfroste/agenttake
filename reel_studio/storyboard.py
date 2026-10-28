@@ -298,6 +298,23 @@ PAYWALL_MARKERS = (
     re.compile(r"(?:this (?:article|story) is|only) (?:for|available to) subscribers", re.I),
     re.compile(r"already a subscriber\?", re.I),
 )
+# An element the page hides is not a wall. Every TechTarget article carries
+# its content gate's form, display: none and switched off — "Already a
+# subscriber?" and all — and an article that reads in full was planned as a
+# paywall (2026-10-28). A metered wall a script reveals later does not
+# reach a recording either: each session starts with a fresh profile. Up to
+# the first closing tag of the same name: a nested one leaves the rest in,
+# which can only keep a marker, never invent one.
+_HIDDEN = re.compile(
+    r"<(\w+)\b[^>]*\bstyle\s*=\s*[\"'][^\"']*display\s*:\s*none[^>]*>.*?</\1\s*>", re.I | re.S
+)
+
+
+def looks_paywalled(html: str) -> bool:
+    shown = _HIDDEN.sub(" ", html)
+    return any(marker.search(shown) for marker in PAYWALL_MARKERS)
+
+
 BROWSER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/130.0 Safari/537.36"
@@ -329,7 +346,7 @@ async def probe_url(url: str) -> dict:
                         if len(body) > 400_000:
                             break
                 text = body.decode("utf-8", "replace")
-                result["paywall"] = any(marker.search(text) for marker in PAYWALL_MARKERS)
+                result["paywall"] = looks_paywalled(text)
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"[:200]
     return result
@@ -501,7 +518,7 @@ document.body.appendChild(s)}</script></body></html>"""
 # An op is one of
 #   {"op": "act", "action": {...}, "narration": str}   — one engine action
 #   {"op": "consent"}                                  — close a cookie banner
-#   {"op": "shot", "zoom", "focus_text", "move_seconds", "lift"}  — the camera
+#   {"op": "shot", "zoom", "focus_text", "move_seconds", "lift", "fit"}  — the camera
 #   {"op": "observe"}                                  — fresh refs and form fields
 # An action's ref "@username", "@password" or "@message" is the field of that
 # kind the last observe found.
@@ -510,8 +527,10 @@ def _act(action: dict, narration: str = "") -> dict:
     return {"op": "act", "action": action, "narration": narration}
 
 
-def _shot(zoom: float, focus_text: str | None = None, move_seconds: float = 1.0, lift: bool = False) -> dict:
-    return {"op": "shot", "zoom": zoom, "focus_text": focus_text, "move_seconds": move_seconds, "lift": lift}
+def _shot(zoom: float, focus_text: str | None = None, move_seconds: float = 1.0, lift: bool = False,
+          fit: bool = False) -> dict:
+    return {"op": "shot", "zoom": zoom, "focus_text": focus_text, "move_seconds": move_seconds, "lift": lift,
+            "fit": fit}
 
 
 def _open(url: str, wait_for_text: str | None) -> list[dict]:
@@ -562,7 +581,10 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
         return [
             *ops,
             _act({"type": "scroll_to_text", "text": text, "offscreen": True}),
-            _shot(1.8, text, move_seconds=1.2, lift=True),
+            # Close, but never closer than the whole quote: a standfirst that
+            # wraps is as wide as its column, and at 1.8x it lost its last
+            # words off the right edge (TechTarget, 2026-10-28).
+            _shot(1.8, text, move_seconds=1.2, lift=True, fit=True),
             _act({"type": "annotate", "target_text": text, "text": mark, "style": "marker",
                   "ms": 4000, "wait_for_text": text}, line),
         ]
@@ -684,7 +706,7 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
             zoom = op["zoom"]
             result = await session.set_shot(
                 "wide" if zoom <= 1.0 else "medium", zoom, None, op.get("focus_text"),
-                op.get("move_seconds"), lift=op.get("lift", False),
+                op.get("move_seconds"), lift=op.get("lift", False), fit=op.get("fit", False),
             )
             # A shot with no focus pushes in on the centre on purpose.
             if result.get("camera_note") and op.get("focus_text"):

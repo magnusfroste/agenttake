@@ -45,7 +45,7 @@ contact_sheet(session_id)              ← look at the film before you share it
 | shot | fields | what AgentTake does |
 |---|---|---|
 | `source` | `url`, `wait_for_text` (the headline) | Opens the article offscreen, closes a cookie banner, waits for the headline, then holds it wide with a slow push-in while the line plays. |
-| `highlight` | `text` (a short quote), `url` optional, `source`, `caption` optional | Scrolls to the words, marks them with the source's name, close shot kept above the subtitle band. Without `url` it stays on the page before. |
+| `highlight` | `text` (a short quote), `url` optional, `source`, `caption` optional | Scrolls to the words, marks them with the source's name, close shot kept above the subtitle band. The close-up is never tighter than the whole quote: a quote that wraps across a column gets a gentler zoom instead of losing its end off the edge. Without `url` it stays on the page before. |
 | `card` | `text` (`\n` for a second line), `background` optional, `source` when it states a number | A full-screen text card: `auto` follows the session's colour scheme; or a colour (`#0f1420`, `navy`), or an https image dimmed under the text. A sourced card names its source in the corner. |
 | `image` | `url` (an https image), `caption` optional | The still with a slow Ken Burns drift; `caption` is a lower third, above the subtitles. |
 | `page_tour` | `url`, `wait_for_text` optional | A glide from the hero to the footer, as long as the line. **Once per page**: a second tour of it, from whatever anchor, glides over the same sections again. |
