@@ -48,9 +48,9 @@ contact_sheet(session_id)              ← look at the film before you share it
 | `highlight` | `text` (a short quote), `url` optional, `source`, `caption` optional | Scrolls to the words, marks them with the source's name, close shot kept above the subtitle band. Without `url` it stays on the page before. |
 | `card` | `text` (`\n` for a second line), `background` optional, `source` when it states a number | A full-screen text card: `auto` follows the session's colour scheme; or a colour (`#0f1420`, `navy`), or an https image dimmed under the text. A sourced card names its source in the corner. |
 | `image` | `url` (an https image), `caption` optional | The still with a slow Ken Burns drift; `caption` is a lower third, above the subtitles. |
-| `page_tour` | `url`, `wait_for_text` optional | A glide from the hero to the footer, as long as the line. |
+| `page_tour` | `url`, `wait_for_text` optional | A glide from the hero to the footer, as long as the line. **Once per page**: a second tour of it, from whatever anchor, glides over the same sections again. |
 | `login` | `url`, `username`, `password_secret`, `wait_for_text` | Signs in offscreen and lands on the page after it. `password_secret` is the NAME of a secret AgentTake has (start_session lists them); the password never passes through you. `wait_for_text` is something the page after sign-in shows. The line is optional. |
-| `system` | `url`, `wait_for_text`, `zoom` optional | A page in the product, a gentle push-in on `wait_for_text`. `zoom` (0.5–2) makes small text readable. |
+| `system` | `url`, `wait_for_text`, `zoom` optional | A page in the product, or one section of any page, held with a gentle push-in on `wait_for_text` (the section's heading). `zoom` (0.5–2) makes small text readable. |
 | `live_answer` | `input_text`, `wait_for_text`, `timeout` (seconds, default 120), `url` optional | Types the question and sends it offscreen, waits for the answer (minutes if need be), then shows it close, above the subtitles. `wait_for_text` must be words only the answer has. |
 | `cta` | `url`, `wait_for_text` optional | The page the viewer should go to. Pair it with start_session's `cta_url` for the closing card and its QR code. |
 
@@ -65,7 +65,7 @@ Nothing is recorded. The checklist has two severities:
 - **fix** — shoot_storyboard refuses until it is gone: a claim without a
   source; a URL that does not answer, answers 4xx/5xx, or 401/403 (a viewer
   cannot open it); a secret AgentTake does not have; a missing field; a line
-  planned twice.
+  planned twice; a page toured twice.
 - **warn** — yours to weigh: a plan longer than the film (`target_seconds`,
   60 by default, flagged above 70 s; 150 words is a minute), a page that
   looks paywalled, a bot check, a long quote, a figure in a line with no
@@ -80,8 +80,9 @@ Six movements, about ten beats, about 150 words.
 2. **Problem, with a source** (5–20 s) — `source`, then a `highlight` of the
    sentence that proves it.
 3. **The turn** (20–25 s) — a `card`: "What if …?", "There is another way."
-4. **The solution** (25–40 s) — `page_tour` of the product's site, or a
-   `system` page.
+4. **The solution** (25–40 s) — one `page_tour` of the product's site, then
+   a `system` shot for each section a line names (its heading as
+   `wait_for_text`), so the picture is what the voice is talking about.
 5. **Proof, in the system** (40–55 s) — `login`, then `system` and a
    `live_answer`: the product doing it, live.
 6. **Call to action** (55–60 s) — `cta`.
@@ -118,7 +119,8 @@ from the beat's source):
   attributed to real people. An `image` is a real photograph or a graphic you
   have the right to use, and its source is named.
 - **Speak what the picture shows.** The line names what is on screen; the
-  camera is already framing it.
+  camera is already framing it. A tour is for the page as a whole; a line
+  about one section belongs on a `system` shot of that section.
 - **Open on the claim, not on a login.** The first three seconds decide
   whether anyone watches. Sign-ins are offscreen by design.
 

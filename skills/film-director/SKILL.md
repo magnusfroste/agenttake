@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.1.0
+version: 0.2.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -73,7 +73,9 @@ Don't use for:
 5. **Write the beats.** Follow the template: hook, problem with a source, the
    turn, solution, proof in the system, CTA. That is about ten beats and 150
    words for a minute. Each line is one thought and at most 35 words, spoken
-   once, naming what is on screen. Save them with `write_file` to
+   once, naming what is on screen. A `page_tour` glides over a whole page,
+   so give each page at most one; a line about one section of it is a
+   `system` shot with that section's heading as `wait_for_text`. Save them with `write_file` to
    `storyboard.json` in your working directory. Retakes must reuse identical
    lines: AgentTake reuses the voice clip of an unchanged line, so a retake
    costs no TTS. *Done when* the file holds every beat.
@@ -156,6 +158,10 @@ Don't use for:
   non-breaking spaces, a CSS uppercase heading and a truncated teaser all
   differ from the article body. Copy from `web_extract`, not from a search
   snippet.
+- **A tour does not stop at its anchor.** Four `page_tour`s of one site,
+  from four anchors, each glided to the footer: the footer played under four
+  lines, and lines about memory played over the model section. The plan now
+  refuses a page toured twice; use `system` per section.
 - **AgentTake probes the URLs from its own server.** A site that blocks
   datacenter addresses shows a bot check in the plan even though it opens in
   your browser. Treat `bot_check` as a likely failed beat and pick another

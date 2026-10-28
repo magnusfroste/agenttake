@@ -120,6 +120,23 @@ def test_secrets_named_must_exist():
     assert (1, "unknown_secret") in categories(check(username_secret, secrets=["SLUSS_DEMO"]), "fix")
 
 
+def test_a_page_toured_twice_must_be_fixed():
+    # The first storyboarded film toured one site from four anchors; each tour
+    # glided to the footer, and the footer played under four lines.
+    beats = good_plan()[:4] + [
+        {"shot": "page_tour", "url": "https://www.sluss.example/#features", "line": "Every policy in one place."},
+        {"shot": "page_tour", "url": PRODUCT + "/pricing", "line": "Priced per seat."},
+        {"shot": "system", "url": PRODUCT + "/#features", "wait_for_text": "Policies",
+         "line": "Each policy names who may use which model."},
+    ]
+    report = check(beats)
+    assert categories(report, "fix") == {(5, "repeated_tour")}
+    assert "system shot" in next(item["message"] for item in report["checklist"]
+                                 if item["category"] == "repeated_tour")
+    # Another page of the site, and a section held with a system shot, are fine.
+    assert not {6, 7} & {beat for beat, _ in categories(report)}
+
+
 def test_shape_problems_are_listed_together():
     plan = [
         {"shot": "system", "url": "https://app.example", "line": "No wait text."},
