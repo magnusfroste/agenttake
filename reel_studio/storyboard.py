@@ -35,7 +35,7 @@ SHOT_TYPES: tuple[str, ...] = get_args(ShotType)
 # the director picks from, stated once for the tool schema, the checks and
 # the handbook.
 SHOT_FIELDS: dict[str, str] = {
-    "source": "url, wait_for_text (the headline): opens the article, dismisses a consent banner offscreen, "
+    "source": "url, wait_for_text (the headline): opens the article, closes a consent banner offscreen without accepting it, "
               "settles, then a slow push-in on the headline",
     "highlight": "text (a short quote on the page), url optional (default: the page before), source: "
                  "scrolls to the words, marks them, close shot kept above the subtitle band",
@@ -75,11 +75,24 @@ SIGN_IN_TIMEOUT_MS = 30000
 IMAGE_READY = "image ready"
 IMAGE_FAILED = "image failed"
 
-CONSENT_LABELS = (
-    "Accept all", "Accept all cookies", "Allow all", "Allow all cookies", "Accept cookies",
-    "Accept", "I agree", "Agree", "Got it", "OK",
-    "Godkänn alla", "Acceptera alla", "Godkänn", "Acceptera", "Alle akzeptieren", "Tout accepter",
+# A cookie banner is closed without agreeing to anything: a button that
+# refuses, else the consent manager is hidden from the page, else a button
+# that only acknowledges a notice. There is no accept label on purpose.
+CONSENT_REFUSE = (
+    "Reject all", "Reject all cookies", "Reject", "Decline all", "Decline", "Refuse all", "Deny all", "Deny",
+    "Do not consent", "Continue without accepting", "Only essential", "Essential only",
+    "Only essential cookies", "Only necessary", "Necessary only", "Necessary cookies only",
+    "Use necessary cookies only", "Endast nödvändiga", "Neka alla", "Avvisa alla",
+    "Alle ablehnen", "Nur notwendige", "Tout refuser", "Continuer sans accepter",
 )
+CONSENT_MANAGERS = (
+    ".fc-consent-root",                                   # Google Funding Choices (The Register)
+    "#onetrust-consent-sdk", "#CybotCookiebotDialog", "#usercentrics-root", "#usercentrics-cmp-ui",
+    "#didomi-host", ".qc-cmp2-container", "[id^='sp_message_container']",
+    "#truste-consent-track", ".truste_box_overlay", "#cmpbox", "#cmpbox2",
+    "iframe[title*='consent' i]",
+)
+CONSENT_NOTICE = ("Got it", "OK", "Okay", "I understand", "Dismiss")
 
 
 class StoryBeat(BaseModel):
@@ -670,7 +683,7 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
         kind = op["op"]
         if kind == "consent":
             try:
-                clicked = await session.dismiss_consent(CONSENT_LABELS)
+                clicked = await session.dismiss_consent(CONSENT_REFUSE, CONSENT_MANAGERS, CONSENT_NOTICE)
             except Exception:
                 clicked = None
             if clicked:
