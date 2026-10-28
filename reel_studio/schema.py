@@ -12,7 +12,7 @@ OFFSCREEN_WAIT_MAX_MS = 600000
 class Action(BaseModel):
     type: Literal[
         "goto", "click", "click_and_wait", "type", "select_option", "press_key", "set_zoom", "annotate", "scroll", "scroll_to_text",
-        "hover", "highlight", "wait", "caption", "mask", "unmask",
+        "hover", "highlight", "wait", "caption", "mask", "unmask", "card",
     ]
     url: str | None = None
     ref: str | None = None
@@ -47,6 +47,9 @@ class Action(BaseModel):
     # time-lapse — instead of cutting it out.
     speed: float = Field(default=1.0, ge=1.0, le=16.0)
     narration_timing: Literal["before_action", "after_action", "after_settle"] = "after_settle"
+    # card only: "brand" (the accent colour), "blur" (the last frame before
+    # the card, blurred) or a hex colour.
+    background: str | None = None
 
     @model_validator(mode="after")
     def _visible_waits_are_short(self) -> "Action":
@@ -84,6 +87,7 @@ ACTION_FIELDS: dict[str, str] = {
     "annotate": "ref, text, style (marker | callout | underline)",
     "mask": "ref (blurs that element on screen until unmask or a page load)",
     "unmask": "ref",
+    "card": "text (one or two lines; a newline breaks the line), background (\"brand\": the accent colour, the default; \"blur\": the frame before the card, blurred; or a hex colour such as \"#0b1320\") — a full-screen text card cut into the video here, mid-film, with this step's narration spoken over it; it lasts its line plus a short tail, at least 2.5 s, and dissolves in and out with transitions smooth",
 }
 
 ACTION_CONTRACT = (
@@ -156,6 +160,7 @@ def action_json_schema() -> dict[str, Any]:
             "offscreen": {"type": "boolean"},
             "speed": {"type": "number", "minimum": 1, "maximum": 16},
             "narration_timing": {"type": "string", "enum": ["before_action", "after_action", "after_settle"]},
+            "background": {"type": "string", "description": "card only: brand (default), blur, or a hex colour like #0b1320"},
         },
     }
 

@@ -148,12 +148,17 @@ def _has_branding(config: RenderConfig) -> bool:
 
 
 def _escape_drawtext(text: str) -> str:
+    """Text for drawtext's text='...' inside a -vf chain, which unquotes and
+    unescapes it twice (the filtergraph, then the filter's options) before
+    drawtext expands %. A quote closes the quoting and is escaped for both
+    levels: as \\' an apostrophe ("you're not alone") broke the whole chain.
+    """
     return (
-        text.replace("\\", r"\\")
-        .replace(":", r"\:")
-        .replace("'", r"\'")
-        .replace(",", r"\,")
-        .replace("%", r"\%")
+        text.replace("\\", "\\\\\\\\")
+        .replace("'", "'\\\\\\''")
+        .replace("%", "\\\\%")
+        .replace(":", "\\:")
+        .replace(",", "\\,")
     )
 
 
@@ -258,6 +263,8 @@ def _card(
     accent: str,
     lines: Sequence[tuple[str, int]],
     background: Path | None = None,
+    duration: float = CARD_DURATION,
+    text_colour: str = "white",
 ) -> None:
     if not Path(FONT_PATH).is_file():
         raise RuntimeError(f"Title-card font is missing: {FONT_PATH}")
@@ -271,7 +278,7 @@ def _card(
         drawtext.append(
             "drawtext="
             f"fontfile={FONT_PATH}:text='{_escape_drawtext(text)}':"
-            f"fontcolor=white:fontsize={size}:"
+            f"fontcolor={text_colour if background is None else 'white'}:fontsize={size}:"
             + ("shadowcolor=black@0.55:shadowx=2:shadowy=2:" if background else "")
             + f"x=(w-text_w)/2:y=(h-text_h)/2+{index * 1.4 - center_offset}*{size}"
         )
@@ -280,7 +287,7 @@ def _card(
         # the card, and is blurred and dimmed just enough for the text to read
         # on any image, with a soft shadow under the letters.
         # A strip of the accent colour at the bottom keeps the brand.
-        frames = int(CARD_DURATION * 25)
+        frames = int(round(duration * 25))
         hero = [
             # The bottom band is where captions sit in a still from the video;
             # it is cut off so a caption does not ghost through the title.
@@ -310,7 +317,7 @@ def _card(
         [
             "ffmpeg", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i",
-            f"color=c={accent}:s={width}x{height}:r=25:d={CARD_DURATION}",
+            f"color=c={accent}:s={width}x{height}:r=25:d={duration:.3f}",
             "-vf", ",".join(drawtext),
             "-an", "-c:v", "libx264", "-preset", "veryfast",
             "-pix_fmt", "yuv420p", str(output_path),
@@ -615,6 +622,85 @@ def _render_glide_pan(
     return output_path
 
 
+# Where a session keeps its mid-film cards (the card action): for each, the
+# step's offset, its text and its background. The render cuts a generated
+# card in where the step was recorded, instead of the footage, so a rerender
+# keeps it.
+CARDS_FILE = "cards.json"
+# A card holds its line plus this, and never less than CARD_MIN_SECONDS: with
+# a dissolve out of it the line has ended before the next part's begins.
+CARD_TAIL = 0.8
+CARD_MIN_SECONDS = 2.5
+CARD_TEXT_MAX = 140
+HEX_COLOUR = re.compile(r"#?[0-9a-fA-F]{6}")
+
+
+def card_background(value: str | None) -> str | None:
+    """A card's background as stored: "brand", "blur" or "#rrggbb"; None when
+    it is none of those."""
+    value = (value or "brand").strip()
+    if value.lower() in {"brand", "blur"}:
+        return value.lower()
+    if HEX_COLOUR.fullmatch(value):
+        return "#" + value.lstrip("#").lower()
+    return None
+
+
+def card_seconds(hold: float) -> float:
+    """How long a card plays: its line (or its hold) plus a tail, at least
+    CARD_MIN_SECONDS."""
+    return max(CARD_MIN_SECONDS, hold + CARD_TAIL if hold else 0.0)
+
+
+def load_cards(directory: Path) -> dict[float, dict]:
+    """The mid-film cards recorded in directory, keyed by step offset."""
+    record = directory / CARDS_FILE
+    try:
+        cards = json.loads(record.read_text()) if record.is_file() else []
+    except (OSError, ValueError):
+        return {}
+    return {round(float(card["offset"]), 3): card for card in cards if str(card.get("text") or "").strip()}
+
+
+def record_card(directory: Path, offset: float, text: str, background: str) -> None:
+    record = directory / CARDS_FILE
+    try:
+        cards = json.loads(record.read_text()) if record.is_file() else []
+    except (OSError, ValueError):
+        cards = []
+    cards.append({"offset": round(offset, 3), "text": text, "background": background})
+    record.write_text(json.dumps(cards))
+
+
+def _light(colour: str) -> bool:
+    red, green, blue = (int(colour.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue > 150
+
+
+def render_card_segment(
+    card: dict,
+    duration: float,
+    output_path: Path,
+    size: tuple[int, int],
+    accent: str,
+    still: Path | None = None,
+) -> Path:
+    """A mid-film card, as a segment of the film: its text over the accent
+    colour ("brand"), over a blurred still of what came before ("blur"), or
+    over a flat colour. Built like the title card; dark text on a light
+    colour, so it reads."""
+    width, height = size
+    background = card_background(card.get("background")) or "brand"
+    colour = accent if background in {"brand", "blur"} else background
+    lines = [(line, max(36, width // 26)) for line in str(card["text"]).split("\n") if line.strip()]
+    _card(
+        output_path, width, height, colour, lines,
+        still if background == "blur" else None, duration,
+        "#111111" if _light(colour) else "white",
+    )
+    return output_path
+
+
 # A glide's screen never stands still on purpose: a still stretch this long
 # inside one is the browser stalling (a busy two-core host, 2026-10-24: 4.4 s
 # with no frame painted in the middle of a page glide), and it is cut.
@@ -652,6 +738,7 @@ def plan_segments(
     glides: Sequence[float | None] | None = None,
     stalls: Callable[[float, float], list[tuple[float, float]]] | None = None,
     order: Sequence[float] | None = None,
+    cards: Sequence[bool] | None = None,
 ) -> tuple[list[Segment], list[dict]]:
     """The windows of the recording a segmented render keeps, in order.
 
@@ -684,6 +771,10 @@ def plan_segments(
     after it in the recording, so its camera keys and its glide go with it;
     only the order the windows are played in changes. The lead-in stays
     first.
+
+    ``cards`` marks the steps that are mid-film cards: generated, not cut
+    from the recording, so a card lasts card_seconds of its line whatever
+    footage follows it.
     """
     ordered = sorted(
         (offset, index, clip, max(0.0, duration))
@@ -708,6 +799,10 @@ def plan_segments(
         )
         speed = speeds[step_index] if speeds is not None and step_index < len(speeds) else 1.0
         glide_line = glides[step_index] if glides is not None and step_index < len(glides) else None
+        if cards is not None and step_index < len(cards) and cards[step_index]:
+            keep = card_seconds(narration_duration)
+            segments.append(Segment(f"{index:04d}", offset, min(available, keep), keep, clip, step_index))
+            continue
         if glide_line is not None:
             # narration_duration is the step's hold: the glide's whole length.
             window = min(available, narration_duration + SEGMENT_TAIL_PAD)
@@ -770,17 +865,20 @@ def segmented_render(
     ``pages`` is the URL each step ended on, in the order of ``steps``; with
     transitions "smooth" it tells a page change (a hard cut) from a jump on
     the same page (a dissolve). ``order`` plays the steps in another order
-    than they were recorded in (see plan_segments).
+    than they were recorded in (see plan_segments). A step with a card in
+    cards.json beside the recording plays as that card (render_card_segment).
     """
     config = config or RenderConfig()
     if camera is not None:
         output_size = camera.output_size(output_size)
     video_duration = probe_duration(video_path)
     lapsing = speeds is not None and any(speed and speed > 1.0 for speed in speeds)
+    cards = load_cards(video_path.parent)
     segments, warnings = plan_segments(
         steps, video_duration, floors, lead_in, speeds,
         (lambda start, end: active_seconds(video_path, start, end)) if lapsing else None,
         glides, lambda start, end: frozen_spans(video_path, start, end), order,
+        [round(offset, 3) in cards for offset, _, _ in steps] if cards else None,
     )
     pans = load_glides(video_path.parent) if glides is not None else {}
     if pans:
@@ -805,6 +903,9 @@ def segmented_render(
         segment_pages: list[str | None] = []
         audio_clips: list[tuple[float, Path]] = []
         cumulative = 0.0
+        # Cards are made once the footage around them is: "blur" is built on
+        # the last frame before the card.
+        card_parts: list[tuple[int, dict, Segment]] = []
 
         for segment in segments:
             segment_pages.append(
@@ -812,6 +913,14 @@ def segmented_render(
                 if pages is not None and segment.step_index is not None
                 and segment.step_index < len(pages) else None
             )
+            card = cards.get(round(segment.offset, 3)) if segment.step_index is not None else None
+            if card is not None:
+                card_parts.append((len(segment_paths), card, segment))
+                segment_paths.append(temporary_path / f"segment-{segment.name}.mp4")
+                if segment.clip is not None:
+                    audio_clips.append((cumulative, segment.clip))
+                cumulative += segment.output_duration
+                continue
             pan = pans.get(round(segment.offset, 3)) if segment.step_index is not None else None
             if pan is not None:
                 segment_paths.append(_render_glide_pan(
@@ -849,12 +958,34 @@ def segmented_render(
             )
             cumulative = video_duration
 
+        is_card = [False] * len(segment_paths)
+        for position, _, _ in card_parts:
+            is_card[position] = True
+        if card_parts:
+            footage = [position for position, card in enumerate(is_card) if not card]
+            size = output_size or probe_video_size(segment_paths[footage[0]] if footage else video_path)
+            for position, card, segment in card_parts:
+                still = None
+                if card_background(card.get("background")) == "blur":
+                    # The last frame before the card; for a card that opens
+                    # the film, the first frame after it.
+                    before = [other for other in footage if other < position]
+                    after = [other for other in footage if other > position]
+                    if before or after:
+                        still = _still(
+                            segment_paths[before[-1] if before else after[0]], bool(before),
+                            temporary_path / f"card-{segment.name}.png",
+                        )
+                render_card_segment(
+                    card, segment.output_duration, segment_paths[position], size, config.accent, still,
+                )
+
         if config.transitions == "smooth" and segment_paths and len(segments) > 0:
             timeline = _assemble_smooth(
                 segment_paths, segment_pages,
                 [segment.clip for segment in segments],
                 output_path, output_size, config, temporary_path,
-                [segment.step_index for segment in segments],
+                [segment.step_index for segment in segments], is_card,
             )
             return SegmentedRenderResult(output_path, probe_duration(output_path), warnings, timeline)
 
@@ -978,11 +1109,13 @@ def _assemble_smooth(
     config: RenderConfig,
     temporary: Path,
     step_indices: Sequence[int | None] | None = None,
+    cards: Sequence[bool] | None = None,
 ) -> list[dict]:
     """Join segments and cards in one xfade chain, then lay the narration on.
 
     Returns where each part landed in the finished video (see
-    SegmentedRenderResult.timeline).
+    SegmentedRenderResult.timeline). A mid-film card (``cards``) fades in
+    and out like the title and closing cards.
 
     Each dissolve overlaps two parts, so every later part — and its
     narration — starts that much earlier; offsets are tracked as the chain is
@@ -1008,7 +1141,12 @@ def _assemble_smooth(
         parts.append((intro, None))
         joins.append(CARD_FADE)
     parts.extend(zip(segment_paths, clips))
-    joins.extend(choose_transitions(segment_paths, pages, temporary))
+    segment_joins = choose_transitions(segment_paths, pages, temporary)
+    if cards:
+        for index in range(1, len(segment_paths)):
+            if cards[index] or cards[index - 1]:
+                segment_joins[index - 1] = CARD_FADE
+    joins.extend(segment_joins)
     if config.cta_url.strip():
         outro = temporary / "outro.mp4"
         _closing_card(outro, width, height, config, outro_background, temporary)
@@ -1266,6 +1404,10 @@ def rerender_narration(
 # video muted (LinkedIn does by default). Each line shows while its step is on
 # screen; a long line is split into short chunks, timed by their length.
 SUBTITLE_MAX_WORDS = 8
+# The box behind the text, as ASS colours (alpha first: 00 opaque, FF clear).
+# "soft" is about 40% black; on light, busy pages white text over it was hard
+# to read (FlowWink film, 2026-10-25), so "box" is about 75% and "solid" opaque.
+SUBTITLE_STYLES = {"soft": "&H96000000", "box": "&H40000000", "solid": "&H00000000"}
 
 
 def subtitle_cues(parts: Sequence[dict], narrations: dict, max_words: int = SUBTITLE_MAX_WORDS) -> list[tuple[float, float, str]]:
@@ -1309,8 +1451,10 @@ def _ass_time(seconds: float) -> str:
     return f"{centis // 360000}:{centis // 6000 % 60:02d}:{centis // 100 % 60:02d}.{centis % 100:02d}"
 
 
-def subtitles_ass(cues: Sequence[tuple[float, float, str]], width: int, height: int) -> str:
-    """An ASS script: white text on a dark box near the bottom, sized to the frame."""
+def subtitles_ass(cues: Sequence[tuple[float, float, str]], width: int, height: int, style: str = "soft") -> str:
+    """An ASS script: white text on a dark box near the bottom, sized to the
+    frame; style (SUBTITLE_STYLES) sets how dark the box is."""
+    box = SUBTITLE_STYLES.get(style, SUBTITLE_STYLES["soft"])
     size = max(18, round(min(width, height) / 22))
     margin = max(24, round(height * 0.07))
     escape = lambda t: t.replace("\\", "\\\\").replace("{", "(").replace("}", ")").replace("\n", " ")
@@ -1318,7 +1462,7 @@ def subtitles_ass(cues: Sequence[tuple[float, float, str]], width: int, height: 
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}", "WrapStyle: 0", "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,DejaVu Sans,{size},&H00FFFFFF,&H00FFFFFF,&H96000000,&H96000000,1,0,0,0,100,100,0,0,3,{max(6, size // 3)},0,2,{round(width * 0.08)},{round(width * 0.08)},{margin},1",
+        f"Style: Default,DejaVu Sans,{size},&H00FFFFFF,&H00FFFFFF,{box},{box},1,0,0,0,100,100,0,0,3,{max(6, size // 3)},0,2,{round(width * 0.08)},{round(width * 0.08)},{margin},1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for start, end, text in cues:
@@ -1326,13 +1470,13 @@ def subtitles_ass(cues: Sequence[tuple[float, float, str]], width: int, height: 
     return "\n".join(lines) + "\n"
 
 
-def burn_subtitles(video: Path, cues: Sequence[tuple[float, float, str]]) -> bool:
+def burn_subtitles(video: Path, cues: Sequence[tuple[float, float, str]], style: str = "soft") -> bool:
     """Write the cues into the video in place. False when there was nothing to write."""
     if not cues:
         return False
     width, height = probe_video_size(video)
     script = video.with_name("subtitles.ass")
-    script.write_text(subtitles_ass(cues, width, height), encoding="utf-8")
+    script.write_text(subtitles_ass(cues, width, height, style), encoding="utf-8")
     temporary = video.with_name("video.subtitled.mp4")
     subprocess.run(
         ["ffmpeg", "-loglevel", "error", "-y", "-i", str(video), "-vf", f"ass={script.name}",

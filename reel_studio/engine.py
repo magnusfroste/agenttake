@@ -24,12 +24,15 @@ from playwright.async_api import (
 
 from .render import (
     CARD_DURATION,
+    CARD_TEXT_MAX,
     GLIDES_FILE,
     QUIET_FLOOR,
     SEGMENT_FLOOR,
+    card_background,
     mux_narration,
     plan_segments,
     probe_duration,
+    record_card,
     segmented_render,
     segmented_render_enabled,
     write_storyboard,
@@ -459,6 +462,8 @@ class BrowserSession:
     timeline_speeds: list[float] = field(default_factory=list)
     # Each timeline step's narration length when it is a glide, else None.
     timeline_glides: list[float | None] = field(default_factory=list)
+    # Each timeline step: True when it is a mid-film card (cards.json).
+    timeline_cards: list[bool] = field(default_factory=list)
     # A sticky caption on screen: (annotation id, label), redrawn when the
     # camera moves so it stays inside the frame.
     sticky_caption: tuple[str, str] | None = None
@@ -1161,6 +1166,8 @@ class BrowserSession:
         live_annotation_id: str | None = None
         annotation_duration = 0.0
         glide_started_at: float | None = None
+        # A card step's (text, background); see render.CARDS_FILE.
+        card: tuple[str, str] | None = None
         # What a scroll moved: (pixels, the element's name).
         scrolled: tuple[int, str | None] | None = None
         settled_by: dict[str, str] = {}
@@ -1216,6 +1223,26 @@ class BrowserSession:
                 )
                 # Any caption replaces a sticky one.
                 self.sticky_caption = (live_annotation_id, label) if action.sticky else None
+            elif action_type == "card":
+                # Nothing happens in the browser: the render cuts a card in
+                # here instead of this step's footage.
+                text = "\n".join(line.strip() for line in (action.text or "").strip().splitlines())
+                background = card_background(action.background)
+                if not text:
+                    return await self.error_result("invalid_action", "card requires text")
+                if len(text) > CARD_TEXT_MAX:
+                    return await self.error_result(
+                        "invalid_action", f"card text is {CARD_TEXT_MAX} characters at most: one or two lines"
+                    )
+                if background is None:
+                    return await self.error_result(
+                        "invalid_action", "card background is brand, blur or a hex colour such as #0b1320"
+                    )
+                if action.offscreen:
+                    return await self.error_result(
+                        "invalid_action", "A card is shown in the video; it cannot be offscreen"
+                    )
+                card = (text, background)
             elif action_type == "goto":
                 if not action.url:
                     return await self.error_result("invalid_action", "goto requires url")
@@ -1542,7 +1569,7 @@ class BrowserSession:
             # TTS is prepared before the browser action; align narration with
             # the settled visual state rather than with synthesis start.
             offset = action_completed_at
-        if self.pending_shot is not None and self.camera is not None:
+        if self.pending_shot is not None and self.camera is not None and card is None:
             # The shot's move starts where this step's footage starts in the
             # video: at its narration, after the action has settled. Timed
             # from the start of the act call, it eased during the action and
@@ -1566,7 +1593,10 @@ class BrowserSession:
             self.timeline_floors.append(QUIET_FLOOR if action.quiet else SEGMENT_FLOOR)
             self.timeline_speeds.append(action.speed)
             self.timeline_glides.append(duration if glide else None)
-        if hold_duration:
+            self.timeline_cards.append(card is not None)
+            if card is not None:
+                record_card(self.directory, offset, *card)
+        if hold_duration and card is None:
             elapsed = time.monotonic() - (self.t0 + offset)
             padding_applied = elapsed < hold_duration
             if elapsed < hold_duration:
@@ -1625,6 +1655,12 @@ class BrowserSession:
             result["annotation_id"] = live_annotation_id
         if live_annotation_id or glide:
             result["annotation_duration"] = round(annotation_duration, 3)
+        if card is not None:
+            result["card"] = {"text": card[0], "background": card[1]}
+            result["hint"] = (
+                "The video shows this card here, with this step's line spoken over it; the "
+                "screenshot is the page behind it. storyboard after finish shows the card."
+            )
         if chrome_restored:
             result["hint"] = (
                 "The browser had left fullscreen and showed its tab and address bars; it is back "
@@ -1659,6 +1695,7 @@ class BrowserSession:
         segments, _ = plan_segments(
             self.timeline, max(elapsed, 0.001), self.timeline_floors,
             not self.offscreen_first, self.timeline_speeds, None, self.timeline_glides,
+            cards=self.timeline_cards,
         )
         cards = CARD_DURATION * (
             bool(self.render_config.title.strip())
