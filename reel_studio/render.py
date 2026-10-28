@@ -677,6 +677,24 @@ def _light(colour: str) -> bool:
     return 0.2126 * red + 0.7152 * green + 0.0722 * blue > 150
 
 
+def card_text_lines(text: str) -> list[str]:
+    """A card's lines. A director's model can escape its newline once too often
+    and send a backslash and an n: a card Hermes directed read "server—\\nand"
+    on screen (2026-10-28). A card never means those two characters."""
+    return [line for line in str(text).replace("\\n", "\n").split("\n") if line.strip()]
+
+
+def wants_lead_in(steps: Sequence[dict]) -> bool:
+    """Whether the video keeps its second of footage before the first step.
+    Not when the film opens on a step that is not that footage: an offscreen
+    one, or a card, which is drawn — a storyboard opening on a card showed the
+    start page between the title and the card (2026-10-28)."""
+    if not steps:
+        return True
+    first = steps[0]
+    return not (first.get("offscreen") or first.get("action_type") == "card")
+
+
 def render_card_segment(
     card: dict,
     duration: float,
@@ -692,7 +710,7 @@ def render_card_segment(
     width, height = size
     background = card_background(card.get("background")) or "brand"
     colour = accent if background in {"brand", "blur"} else background
-    lines = [(line, max(36, width // 26)) for line in str(card["text"]).split("\n") if line.strip()]
+    lines = [(line, max(36, width // 26)) for line in card_text_lines(card["text"])]
     _card(
         output_path, width, height, colour, lines,
         still if background == "blur" else None, duration,

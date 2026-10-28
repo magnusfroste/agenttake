@@ -41,10 +41,11 @@ SHOT_FIELDS: dict[str, str] = {
                  "scrolls to the words, marks them, close shot kept above the subtitle band",
     "card": "text, background optional (auto, brand, blur, a colour, or an https image), source when it states a number",
     "image": "url (an https image), caption optional (a lower third): a slow Ken Burns drift over the still",
-    "page_tour": "url, wait_for_text optional: a glide from the hero to the footer",
+    "page_tour": "url, wait_for_text optional: a glide from the hero to the footer, once per page",
     "login": "url (the sign-in page), username, password_secret (a secret's NAME), wait_for_text (what the "
              "page after sign-in shows): signs in offscreen, line optional",
-    "system": "url, wait_for_text, zoom optional (page zoom 0.5-2, for readable text): a page in the product",
+    "system": "url, wait_for_text, zoom optional (page zoom 0.5-2, for readable text): a page, or one "
+              "section of a page, held with a push-in on wait_for_text",
     "live_answer": "input_text, wait_for_text (words of the answer), timeout optional (seconds, default 120), "
                    "url optional (default: the page before): sends offscreen, waits, shows the answer",
     "cta": "url, wait_for_text optional: the page the viewer should go to",
@@ -153,6 +154,12 @@ def domain(url: str | None) -> str:
     return host.removeprefix("www.")
 
 
+def tour_page(url: str) -> str:
+    """One page whatever anchor or trailing slash names it: www.x.org/#features is x.org."""
+    parsed = urllib.parse.urlsplit(url)
+    return f"{domain(url)}{parsed.path.rstrip('/')}?{parsed.query}"
+
+
 def has_statistic(text: str | None) -> bool:
     return bool(re.search(r"\d", text or ""))
 
@@ -178,6 +185,7 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
     beats: list[dict] = []
     items: list[dict] = []
     seen_lines: dict[str, int] = {}
+    seen_tours: dict[str, int] = {}
     page_url: str | None = None
     page_source: str | None = None
     for number, entry in enumerate(raw or [], start=1):
@@ -191,6 +199,10 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
             continue
         beat = {k: (v.strip() if isinstance(v, str) else v)
                 for k, v in parsed.model_dump().items()}
+        for name in ("text", "caption"):
+            if beat.get(name):
+                # An escaped newline is a newline (see render.card_text_lines).
+                beat[name] = beat[name].replace("\\n", "\n")
         beat["number"] = number
         beat["label"] = beat["label"] or f"{number} {beat['shot']}"
         label = beat["label"]
@@ -250,6 +262,18 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
             items.append(_item(number, label, "warn", "unchecked_sign_in",
                                "give wait_for_text, something the page after sign-in shows, "
                                "or a failed sign-in goes unnoticed until the next beat"))
+        if shot == "page_tour" and _is_http(beat.get("url")):
+            # Every tour glides to the footer, so a second tour of the page
+            # plays the same sections again under a different line: the first
+            # Hermes storyboard toured agenthotel.org four times from four
+            # anchors, and the footer was on screen under four lines (2026-10-28).
+            page = tour_page(beat["url"])
+            if page in seen_tours:
+                items.append(_item(number, label, "fix", "repeated_tour",
+                                   f"beat {seen_tours[page]} already tours this page, and a tour glides to the "
+                                   "footer: the same sections would play under this line. To speak about one "
+                                   "section, use a system shot (url, wait_for_text=<the section's heading>)"))
+            seen_tours.setdefault(page, number)
         if shot == "login":
             # Where a sign-in lands is the app's to say: a beat after it that
             # stays on the page names its url, so a retake can go back to it.
@@ -526,7 +550,9 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             *_open(beat["url"], wait_text),
             _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
             # Wide, then a slow push-in on the headline while the line plays.
-            _shot(1.25, wait_text, move_seconds=3.0),
+            # Gentle: a full-width headline at 1.25x lost its last words off
+            # both edges at 1280x720 (TNW, 2026-10-28).
+            _shot(1.12, wait_text, move_seconds=3.0),
             _say(line, wait_text),
         ]
     if shot == "highlight":

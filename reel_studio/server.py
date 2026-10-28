@@ -38,6 +38,7 @@ from .render import (
     read_storyboard,
     write_storyboard,
     subtitle_cues,
+    wants_lead_in,
     burn_subtitles,
     STORYBOARD_DIR,
     QUIET_FLOOR,
@@ -3139,7 +3140,7 @@ async def rerender(
     render_speeds: list[float] = []
     render_glides: list[float | None] = []
     render_order: list[int] = []
-    lead_in = not (session["steps"] and session["steps"][0].get("offscreen"))
+    lead_in = wants_lead_in(session["steps"])
     steps = session["steps"]
     # Where each step plays (edit_step position); the steps themselves stay in
     # recording order, which is what the storyboard's part numbers count.

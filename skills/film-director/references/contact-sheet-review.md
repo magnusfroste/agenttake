@@ -7,12 +7,22 @@ beat by beat. AgentTake's own review has passed takes this catches.
 
 ## Every beat
 
+Read the sheet against the lines, not only against the shots. A sheet where
+every page loaded and nothing is open can still be a bad film, and the first
+storyboarded take was one: its own review found nothing.
+
 - **It is there, in order.** Each planned beat has at least one frame showing
   its page, card or image. A missing beat, or two beats swapped, is a retake.
 - **The page had loaded.** No blank white or grey frame, no spinner, no
   skeleton placeholders under a narrated line.
 - **Nothing left open.** No cookie banner, theme or language menu, dropdown,
   modal, chat widget bubble or browser dialog in frame.
+- **The picture is what the line names.** Read each line and look at the
+  frames under it: a line about memory over a section about models, or over
+  a footer, is a flaw even though both frames are clean.
+- **Nothing plays twice.** The same section, footer or heading in frames of
+  two different beats is a flaw: the second beat should have shown something
+  else, usually a `system` shot of the section its line names.
 - **Nothing secret readable.** A password field, key or token is blurred.
 
 ## Per shot
@@ -20,8 +30,8 @@ beat by beat. AgentTake's own review has passed takes this catches.
 | shot | what the sheet must show |
 |---|---|
 | `source` | The headline readable, wide, with no paywall overlay covering it. |
-| `highlight` | The marker on the quoted words with the source label, above the subtitle band. |
-| `card` | The text whole, not cut at the edge; a sourced card shows its source. |
+| `highlight` | The marker on the quoted words with the source label, above the subtitle band, and a line that reports the source rather than argues past it. |
+| `card` | The text whole, not cut at the edge, with no stray `\n`; a sourced card shows its source. |
 | `image` | The image itself, not a broken-image icon; the lower third above the subtitles. |
 | `page_tour` | Consecutive frames at different scroll positions. Two identical frames across the whole beat mean the glide never moved. |
 | `login` | Nothing: it is offscreen. Any sign-in form in frame is a flaw. |

@@ -120,6 +120,46 @@ def test_secrets_named_must_exist():
     assert (1, "unknown_secret") in categories(check(username_secret, secrets=["SLUSS_DEMO"]), "fix")
 
 
+def test_a_page_toured_twice_must_be_fixed():
+    # The first storyboarded film toured one site from four anchors; each tour
+    # glided to the footer, and the footer played under four lines.
+    beats = good_plan()[:4] + [
+        {"shot": "page_tour", "url": "https://www.sluss.example/#features", "line": "Every policy in one place."},
+        {"shot": "page_tour", "url": PRODUCT + "/pricing", "line": "Priced per seat."},
+        {"shot": "system", "url": PRODUCT + "/#features", "wait_for_text": "Policies",
+         "line": "Each policy names who may use which model."},
+    ]
+    report = check(beats)
+    assert categories(report, "fix") == {(5, "repeated_tour")}
+    assert "system shot" in next(item["message"] for item in report["checklist"]
+                                 if item["category"] == "repeated_tour")
+    # Another page of the site, and a section held with a system shot, are fine.
+    assert not {6, 7} & {beat for beat, _ in categories(report)}
+
+
+def test_an_escaped_newline_on_a_card_is_a_line_break():
+    # Hermes sent "server—\\nand" over MCP while its own file had a newline,
+    # and the card showed the backslash and the n (2026-10-28).
+    from reel_studio.render import card_text_lines
+
+    beats = good_plan()
+    beats[2]["text"] = "What if your agent could live on your server—\\nand leave with its memory?"
+    report = check(beats)
+    assert report["beats"][2]["text"] == "What if your agent could live on your server—\nand leave with its memory?"
+    assert card_text_lines("one\\ntwo\nthree") == ["one", "two", "three"]
+
+
+def test_a_film_that_opens_on_a_card_has_no_lead_in():
+    # Deepseek's take opened on a card, and the start page played for a second
+    # between the title and it (2026-10-28).
+    from reel_studio.render import wants_lead_in
+
+    assert wants_lead_in([{"action_type": "goto"}])
+    assert not wants_lead_in([{"action_type": "goto", "offscreen": True}])
+    assert not wants_lead_in([{"action_type": "card"}, {"action_type": "goto"}])
+    assert wants_lead_in([])
+
+
 def test_shape_problems_are_listed_together():
     plan = [
         {"shot": "system", "url": "https://app.example", "line": "No wait text."},
@@ -354,7 +394,7 @@ def test_shoot_reports_each_beat_and_a_retake_goes_where_it_belongs(server, tmp_
     assert not any(call[2] for call in narrated)
     assert session.calls[:4] == [
         ("act", "goto", True, ""), ("act", "scroll_to_text", True, ""),
-        ("shot", 1.25, "Shadow AI is here", False), ("act", "wait", False, good_plan()[0]["line"]),
+        ("shot", 1.12, "Shadow AI is here", False), ("act", "wait", False, good_plan()[0]["line"]),
     ]
 
     # A second call has nothing left to shoot.

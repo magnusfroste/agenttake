@@ -1330,7 +1330,11 @@ class BrowserSession:
             elif action_type == "goto":
                 if not action.url:
                     return await self.error_result("invalid_action", "goto requires url")
-                await self.page.goto(action.url, wait_until="domcontentloaded", timeout=15000)
+                # Offscreen, a slow page costs nothing on screen: give it the
+                # step's own wait. GitHub's repository page missed 15 s on a
+                # busy two-core host and failed a beat (2026-10-28).
+                timeout = max(15000, action.wait_timeout_ms) if action.offscreen else 15000
+                await self.page.goto(action.url, wait_until="domcontentloaded", timeout=timeout)
             elif action_type == "scroll_to_text":
                 if not action.text or not action.text.strip():
                     return await self.error_result(

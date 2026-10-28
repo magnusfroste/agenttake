@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.1.0
+version: 0.2.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -73,7 +73,9 @@ Don't use for:
 5. **Write the beats.** Follow the template: hook, problem with a source, the
    turn, solution, proof in the system, CTA. That is about ten beats and 150
    words for a minute. Each line is one thought and at most 35 words, spoken
-   once, naming what is on screen. Save them with `write_file` to
+   once, naming what is on screen. A `page_tour` glides over a whole page,
+   so give each page at most one; a line about one section of it is a
+   `system` shot with that section's heading as `wait_for_text`. Save them with `write_file` to
    `storyboard.json` in your working directory. Retakes must reuse identical
    lines: AgentTake reuses the voice clip of an unchanged line, so a retake
    costs no TTS. *Done when* the file holds every beat.
@@ -111,7 +113,10 @@ Don't use for:
     `shoot_storyboard`. *Done when* every beat is ok or deliberately cut.
 11. **Review, finish, place the retakes.**
     1. Call `review_session` and fix every high-severity finding. A planned
-       line that is missing or out of order is one.
+       line that is missing or out of order is one, with one exception: a
+       beat you retook is reported `beat_out_of_order`, because the retake
+       was recorded at the end. That one is expected; `apply_retakes` puts
+       it in place after `finish`.
     2. Call `finish` once. Follow `finish_status` until it is `done`.
     3. If you retook any beat, call `apply_retakes(session_id)`, then
        `rerender(session_id)`.
@@ -136,6 +141,9 @@ Don't use for:
 ## Rules
 
 - **A source for every claim**, named on the beat. No source, no claim.
+- **A source's beat says what the source says.** The viewer reads the
+  source's name under the quote, so its line reports the source; your own
+  point goes on the next beat.
 - **Headlines and short quotes only.** One marked sentence, never an article
   read out. For a paywalled page, the headline only.
 - **Never a synthetic real person.** No generated faces, voices or quotes
@@ -156,14 +164,25 @@ Don't use for:
   non-breaking spaces, a CSS uppercase heading and a truncated teaser all
   differ from the article body. Copy from `web_extract`, not from a search
   snippet.
+- **A tour does not stop at its anchor.** Four `page_tour`s of one site,
+  from four anchors, each glided to the footer: the footer played under four
+  lines, and lines about memory played over the model section. The plan now
+  refuses a page toured twice; use `system` per section.
 - **AgentTake probes the URLs from its own server.** A site that blocks
   datacenter addresses shows a bot check in the plan even though it opens in
   your browser. Treat `bot_check` as a likely failed beat and pick another
   source.
+- **Open on the hook, not on the start page.** `start_url` loads before
+  beat 1. When beat 1 is a card, AgentTake cuts the footage before it.
+- **A section shot frames its `wait_for_text`.** Give the section's
+  heading, not one card's text inside a grid, or the push-in lands on a
+  grid the viewer cannot read.
 - **A shot changed after it was shot** shows as `changed` in the plan. Only
   `shoot_beat` records it again; `shoot_storyboard` moves on.
-- **`finish` answering `rendering` is not a failure.** Follow `finish_status`.
-  Calling `finish` again does not help.
+- **`finish` answering `rendering` is not a failure.** Follow `finish_status`
+  with the session id about every 30 s. Calling `finish` again does not help.
+  If the first `finish_status` answers `unknown_job`, wait 30 s and ask again
+  before you conclude anything.
 - **A finished session can be pruned later.** The downloaded MP4 is the
   delivery; a `video_url` in a reply is not.
 
