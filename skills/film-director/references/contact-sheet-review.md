@@ -30,8 +30,8 @@ storyboarded take was one: its own review found nothing.
 | shot | what the sheet must show |
 |---|---|
 | `source` | The headline readable, wide, with no paywall overlay covering it. |
-| `highlight` | The marker on the quoted words with the source label, above the subtitle band. |
-| `card` | The text whole, not cut at the edge; a sourced card shows its source. |
+| `highlight` | The marker on the quoted words with the source label, above the subtitle band, and a line that reports the source rather than argues past it. |
+| `card` | The text whole, not cut at the edge, with no stray `\n`; a sourced card shows its source. |
 | `image` | The image itself, not a broken-image icon; the lower third above the subtitles. |
 | `page_tour` | Consecutive frames at different scroll positions. Two identical frames across the whole beat mean the glide never moved. |
 | `login` | Nothing: it is offscreen. Any sign-in form in frame is a flaw. |

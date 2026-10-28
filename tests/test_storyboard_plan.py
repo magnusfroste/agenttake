@@ -137,6 +137,18 @@ def test_a_page_toured_twice_must_be_fixed():
     assert not {6, 7} & {beat for beat, _ in categories(report)}
 
 
+def test_an_escaped_newline_on_a_card_is_a_line_break():
+    # Hermes sent "server—\\nand" over MCP while its own file had a newline,
+    # and the card showed the backslash and the n (2026-10-28).
+    from reel_studio.render import card_text_lines
+
+    beats = good_plan()
+    beats[2]["text"] = "What if your agent could live on your server—\\nand leave with its memory?"
+    report = check(beats)
+    assert report["beats"][2]["text"] == "What if your agent could live on your server—\nand leave with its memory?"
+    assert card_text_lines("one\\ntwo\nthree") == ["one", "two", "three"]
+
+
 def test_shape_problems_are_listed_together():
     plan = [
         {"shot": "system", "url": "https://app.example", "line": "No wait text."},
@@ -371,7 +383,7 @@ def test_shoot_reports_each_beat_and_a_retake_goes_where_it_belongs(server, tmp_
     assert not any(call[2] for call in narrated)
     assert session.calls[:4] == [
         ("act", "goto", True, ""), ("act", "scroll_to_text", True, ""),
-        ("shot", 1.25, "Shadow AI is here", False), ("act", "wait", False, good_plan()[0]["line"]),
+        ("shot", 1.12, "Shadow AI is here", False), ("act", "wait", False, good_plan()[0]["line"]),
     ]
 
     # A second call has nothing left to shoot.

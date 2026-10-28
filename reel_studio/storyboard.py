@@ -199,6 +199,10 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
             continue
         beat = {k: (v.strip() if isinstance(v, str) else v)
                 for k, v in parsed.model_dump().items()}
+        for name in ("text", "caption"):
+            if beat.get(name):
+                # An escaped newline is a newline (see render.card_text_lines).
+                beat[name] = beat[name].replace("\\n", "\n")
         beat["number"] = number
         beat["label"] = beat["label"] or f"{number} {beat['shot']}"
         label = beat["label"]
@@ -546,7 +550,9 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             *_open(beat["url"], wait_text),
             _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
             # Wide, then a slow push-in on the headline while the line plays.
-            _shot(1.25, wait_text, move_seconds=3.0),
+            # Gentle: a full-width headline at 1.25x lost its last words off
+            # both edges at 1280x720 (TNW, 2026-10-28).
+            _shot(1.12, wait_text, move_seconds=3.0),
             _say(line, wait_text),
         ]
     if shot == "highlight":

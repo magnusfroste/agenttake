@@ -112,6 +112,10 @@ from the beat's source):
 
 - **A source for every claim.** A number, a quote, a finding: the beat names
   the URL it comes from. If you cannot find a public source, cut the claim.
+- **A source's beat says what the source says.** Under a `source` or a
+  marked quote the viewer reads the source's name, so the line reports the
+  source; your own argument ("and that means…") goes on the next beat, a
+  `card` or the product.
 - **Headlines and short quotes only.** Show a headline and one sentence, not
   an article: a quote of a dozen words, marked, is fair use; a page read out
   is not. Paywalled pages: the headline only.

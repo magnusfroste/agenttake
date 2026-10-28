@@ -138,6 +138,9 @@ Don't use for:
 ## Rules
 
 - **A source for every claim**, named on the beat. No source, no claim.
+- **A source's beat says what the source says.** The viewer reads the
+  source's name under the quote, so its line reports the source; your own
+  point goes on the next beat.
 - **Headlines and short quotes only.** One marked sentence, never an article
   read out. For a paywalled page, the headline only.
 - **Never a synthetic real person.** No generated faces, voices or quotes
