@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.2.0
+version: 0.3.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -74,8 +74,10 @@ Don't use for:
    turn, solution, proof in the system, CTA. That is about ten beats and 150
    words for a minute. Each line is one thought and at most 35 words, spoken
    once, naming what is on screen. A `page_tour` glides over a whole page,
-   so give each page at most one; a line about one section of it is a
-   `system` shot with that section's heading as `wait_for_text`. Save them with `write_file` to
+   past every section, so give each page at most one, and in a 60 s film
+   usually none. Open the product on a `system` shot of its hero, then one
+   `system` shot per section a line names, with the section's heading as
+   `wait_for_text`. Save them with `write_file` to
    `storyboard.json` in your working directory. Retakes must reuse identical
    lines: AgentTake reuses the voice clip of an unchanged line, so a retake
    costs no TTS. *Done when* the file holds every beat.
@@ -125,8 +127,20 @@ Don't use for:
 12. **Look at the film.** Call `contact_sheet(session_id)`, then
     `vision_analyze` on its image against your beat list, using the checklist
     in `references/contact-sheet-review.md`. *Done when* every beat is
-    accounted for on the sheet. If a flaw shows, return to step 10 for that
-    beat.
+    accounted for on the sheet. The session is finished now, so
+    `shoot_beat` no longer works on it. Mend a flaw in one of two ways:
+    - **In the edit**, when the footage is right: hide a stray step with
+      `edit_step(session_id, index, hidden=true)`, hold a result longer with
+      `hold_seconds`, change a line with `update_step_narration`, then
+      `rerender(session_id)` and look again.
+    - **In a fresh take**, when the footage itself is wrong (a cropped quote,
+      a page that never loaded). Fix the beats in `storyboard.json`, run
+      `plan_storyboard` until it is ready, then `start_session` and
+      `shoot_storyboard` again. Unchanged lines reuse their voice clips, so
+      the take costs minutes. Once the new film passes this step, remove
+      the flawed one with `delete_session(session_id, confirm=true)`.
+
+    Make at most one fresh take unattended; after that, report the flaw.
 13. **Deliver.** Download the MP4 at once with
     `terminal(command="curl -fLo film.mp4 <video_url>")`, and measure it with
     `ffprobe`. Report:
@@ -143,7 +157,9 @@ Don't use for:
 - **A source for every claim**, named on the beat. No source, no claim.
 - **A source's beat says what the source says.** The viewer reads the
   source's name under the quote, so its line reports the source; your own
-  point goes on the next beat.
+  point goes on the next beat. Under a `highlight`, the line says what the
+  marked words say, not another sentence of the article the viewer cannot
+  see.
 - **Headlines and short quotes only.** One marked sentence, never an article
   read out. For a paywalled page, the headline only.
 - **Never a synthetic real person.** No generated faces, voices or quotes
@@ -151,8 +167,9 @@ Don't use for:
   with its source named.
 - **Open on the claim.** The first three seconds decide whether anyone
   watches. Sign-ins are offscreen by design.
-- **One session per film.** Never start a second one to get around a problem
-  in the first. Fix the beat and retake it.
+- **One session at a time.** Before `finish`, fix a beat by retaking it in
+  the same session; never open a second one to get around it. After
+  `finish`, a fresh take is a new session, and the flawed one is deleted.
 
 ## Pitfalls
 
