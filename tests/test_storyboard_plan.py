@@ -149,6 +149,17 @@ def test_an_escaped_newline_on_a_card_is_a_line_break():
     assert card_text_lines("one\\ntwo\nthree") == ["one", "two", "three"]
 
 
+def test_a_film_that_opens_on_a_card_has_no_lead_in():
+    # Deepseek's take opened on a card, and the start page played for a second
+    # between the title and it (2026-10-28).
+    from reel_studio.render import wants_lead_in
+
+    assert wants_lead_in([{"action_type": "goto"}])
+    assert not wants_lead_in([{"action_type": "goto", "offscreen": True}])
+    assert not wants_lead_in([{"action_type": "card"}, {"action_type": "goto"}])
+    assert wants_lead_in([])
+
+
 def test_shape_problems_are_listed_together():
     plan = [
         {"shot": "system", "url": "https://app.example", "line": "No wait text."},

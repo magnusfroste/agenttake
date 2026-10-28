@@ -684,6 +684,17 @@ def card_text_lines(text: str) -> list[str]:
     return [line for line in str(text).replace("\\n", "\n").split("\n") if line.strip()]
 
 
+def wants_lead_in(steps: Sequence[dict]) -> bool:
+    """Whether the video keeps its second of footage before the first step.
+    Not when the film opens on a step that is not that footage: an offscreen
+    one, or a card, which is drawn — a storyboard opening on a card showed the
+    start page between the title and the card (2026-10-28)."""
+    if not steps:
+        return True
+    first = steps[0]
+    return not (first.get("offscreen") or first.get("action_type") == "card")
+
+
 def render_card_segment(
     card: dict,
     duration: float,

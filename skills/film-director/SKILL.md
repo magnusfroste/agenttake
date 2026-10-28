@@ -113,7 +113,10 @@ Don't use for:
     `shoot_storyboard`. *Done when* every beat is ok or deliberately cut.
 11. **Review, finish, place the retakes.**
     1. Call `review_session` and fix every high-severity finding. A planned
-       line that is missing or out of order is one.
+       line that is missing or out of order is one, with one exception: a
+       beat you retook is reported `beat_out_of_order`, because the retake
+       was recorded at the end. That one is expected; `apply_retakes` puts
+       it in place after `finish`.
     2. Call `finish` once. Follow `finish_status` until it is `done`.
     3. If you retook any beat, call `apply_retakes(session_id)`, then
        `rerender(session_id)`.
@@ -169,10 +172,17 @@ Don't use for:
   datacenter addresses shows a bot check in the plan even though it opens in
   your browser. Treat `bot_check` as a likely failed beat and pick another
   source.
+- **Open on the hook, not on the start page.** `start_url` loads before
+  beat 1. When beat 1 is a card, AgentTake cuts the footage before it.
+- **A section shot frames its `wait_for_text`.** Give the section's
+  heading, not one card's text inside a grid, or the push-in lands on a
+  grid the viewer cannot read.
 - **A shot changed after it was shot** shows as `changed` in the plan. Only
   `shoot_beat` records it again; `shoot_storyboard` moves on.
-- **`finish` answering `rendering` is not a failure.** Follow `finish_status`.
-  Calling `finish` again does not help.
+- **`finish` answering `rendering` is not a failure.** Follow `finish_status`
+  with the session id about every 30 s. Calling `finish` again does not help.
+  If the first `finish_status` answers `unknown_job`, wait 30 s and ask again
+  before you conclude anything.
 - **A finished session can be pruned later.** The downloaded MP4 is the
   delivery; a `video_url` in a reply is not.
 
