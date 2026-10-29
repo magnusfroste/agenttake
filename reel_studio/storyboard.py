@@ -22,7 +22,7 @@ from typing import Any, Awaitable, Callable, Literal, get_args
 
 from pydantic import BaseModel, Field, ValidationError
 
-from .review import normalize_line
+from .review import describe_cover, focus_covered, normalize_line
 from .schema import OFFSCREEN_WAIT_MAX_MS, secret_names
 
 
@@ -737,6 +737,12 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
             error = payload.get("error") or {}
             return {"ok": False, "op": number, "notes": notes, "action": action["type"],
                     "reason": f"{action['type']}: {error.get('type', 'failed')}: {error.get('message', '')}".strip()}
+        if op.get("narration") and focus_covered(payload.get("focus_cover")):
+            # The step went through, but its line plays over a dialog, a
+            # banner or an ad: a beat nobody can read is not shot.
+            return {"ok": False, "op": number, "notes": notes, "action": action["type"],
+                    "reason": f"focus_covered: {describe_cover(payload['focus_cover'])}. Close or avoid it, "
+                              "or give the beat another url or wait_for_text"}
         if action["type"] == "scroll" and action.get("ms") and not (payload.get("scrolled") or {}).get("pixels"):
             notes.append("the glide moved nothing: the page is no taller than the screen")
     return {"ok": True, "notes": notes}

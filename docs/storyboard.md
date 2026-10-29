@@ -134,9 +134,16 @@ from the beat's source):
 ## When a beat fails
 
 shoot_storyboard reports each beat `ok`, or `failed` with the reason — text
-that never appeared, a field it could not find, a URL that did not open. The
-shoot carries on with the next beat (a failed `login` stops it: what follows
-needs the sign-in).
+that never appeared, a field it could not find, a URL that did not open, or
+`focus_covered`: the text the line waits for is there, but half or more of it
+is under something else, and the reason names it (a consent dialog, a
+newsletter box, an ad frame). The shoot carries on with the next beat (a
+failed `login` stops it: what follows needs the sign-in).
+
+A `focus_covered` beat needs a change before a retake can pass: another
+`wait_for_text` further down the article, below the box, or another source.
+AgentTake already refuses or hides the consent managers it knows; the one it
+names is one it does not.
 
 1. If the reason is in the beat (wrong `wait_for_text`, a quote that is not on
    the page), fix it: plan_storyboard(beats, plan_id=...) again. Beats already

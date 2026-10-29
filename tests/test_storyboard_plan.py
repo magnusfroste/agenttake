@@ -332,11 +332,12 @@ def test_form_fields_are_told_apart():
 class StandInSession:
     """Records what the recipes ask of a browser session."""
 
-    def __init__(self, missing=()):
+    def __init__(self, missing=(), covered=()):
         self.voice = "en-US-JennyNeural"
         self.refs: dict[str, str] = {}
         self.refs_stale = False
         self.missing = set(missing)
+        self.covered = set(covered)
         self.calls: list[tuple] = []
         self.fits: list[bool] = []
 
@@ -351,7 +352,12 @@ class StandInSession:
         for text in (action.wait_for_text, action.text if action.type == "scroll_to_text" else None):
             if text and text in self.missing:
                 return {"ok": False, "error": {"type": "text_not_found", "message": f"Visible text not found: {text}"}}, None
-        return {"ok": True, "url": action.url or "https://page.example", "narration_duration": 1.0 if narration else 0}, None
+        result = {"ok": True, "url": action.url or "https://page.example", "narration_duration": 1.0 if narration else 0}
+        if narration and action.wait_for_text in self.covered:
+            result["focus_cover"] = {"points": 15, "covered": 12, "text": action.wait_for_text,
+                                     "by": {"element": "div.fc-consent-root", "position": "fixed",
+                                            "text": "The Register asks for your consent"}}
+        return result, None
 
     async def set_shot(self, framing, zoom=None, focus_ref=None, focus_text=None, move_seconds=None, lift=False,
                        fit=False):
@@ -500,3 +506,18 @@ def test_director_guide_is_the_handbook(server):
     for shot in boards.SHOT_TYPES:
         assert f"`{shot}`" in guide
     assert server.storyboard_prompt() == guide
+
+
+def test_a_beat_whose_line_plays_over_a_dialog_is_not_shot(server):
+    """The Sluss film's source beats played under Google's consent dialog for
+    22 s, and every beat was reported ok (2026-10-28)."""
+    session = StandInSession(covered={"Shadow AI is here"})
+    start(server, "s-covered", session)
+    plan = asyncio.run(server.plan_storyboard(good_plan()))
+    shot = asyncio.run(server.shoot_storyboard("s-covered", plan_id=plan["plan_id"]))
+    first = shot["beats"][0]
+    assert first["ok"] is False and 1 in shot["failed"]
+    assert first["reason"].startswith("focus_covered: ")
+    assert "div.fc-consent-root (fixed)" in first["reason"] and "12 of 15" in first["reason"]
+    # The others are untouched.
+    assert [beat["ok"] for beat in shot["beats"][1:]] == [True, True, True, True]

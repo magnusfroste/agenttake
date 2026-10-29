@@ -50,7 +50,7 @@ from .annotations import (
     validate_annotation,
 )
 from .refs import semantic_ref
-from .review import OPEN_OVERLAYS_JS
+from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, describe_cover, focus_covered
 from .schema import resolve_secret, secret_names, Action, mask_stylesheet
 from .tts import synthesize
 
@@ -1821,6 +1821,16 @@ class BrowserSession:
             open_overlays = await self.page.evaluate(OPEN_OVERLAYS_JS)
         except PlaywrightError:
             open_overlays = None
+        # And whether the text the line waited for is in front: a consent
+        # dialog over a headline passes wait_for_text (focus_findings).
+        focus_cover = None
+        if narration.strip() and not action.offscreen and action.wait_for_text:
+            try:
+                target = await self._visible_text_target(action.wait_for_text)
+                if target is not None:
+                    focus_cover = {**await target.evaluate(FOCUS_COVER_JS), "text": action.wait_for_text}
+            except PlaywrightError:
+                focus_cover = None
         screenshot = await self.capture_screenshot()
         result = {
             "ok": True,
@@ -1839,6 +1849,13 @@ class BrowserSession:
         }
         if open_overlays is not None:
             result["open_overlays"] = open_overlays
+        if focus_cover is not None:
+            result["focus_cover"] = focus_cover
+            if focus_covered(focus_cover):
+                result["warning"] = (
+                    f"This line plays over a covered page: {describe_cover(focus_cover)}. "
+                    "Close or avoid it and retake the step."
+                )
         if settled_by:
             result["settled_by"] = settled_by
         if action_completed_at is not None:

@@ -152,6 +152,11 @@ def init_schema() -> None:
             # JSON counts of the menus, listboxes and popovers on screen after
             # the step; NULL where nobody looked (an error, an older take).
             connection.execute("ALTER TABLE steps ADD COLUMN open_overlays TEXT")
+        if "focus_cover" not in columns:
+            # JSON {points, covered, by, text}: how much of the text a
+            # narrated step waited for was under something else; NULL where
+            # the step waited for no text.
+            connection.execute("ALTER TABLE steps ADD COLUMN focus_cover TEXT")
         if "position" not in columns:
             connection.execute("ALTER TABLE steps ADD COLUMN position INTEGER")
         session_columns = {
@@ -281,6 +286,7 @@ def append_step(
     narration_clip: str | None = None,
     speed: float = 1.0,
     open_overlays: dict[str, int] | None = None,
+    focus_cover: dict | None = None,
 ) -> None:
     init_schema()
     with _lock, _connect() as connection:
@@ -294,8 +300,8 @@ def append_step(
                 (session_id, idx, action_type, target, url, title, narration_text,
                  voice, narration_duration, offset_seconds, screenshot_path, ok,
                  error_type, created_at, quiet, offscreen, annotation_seconds, narration_clip, speed,
-                 open_overlays)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 open_overlays, focus_cover)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -318,6 +324,7 @@ def append_step(
                 narration_clip,
                 float(speed or 1.0),
                 json.dumps(open_overlays) if open_overlays is not None else None,
+                json.dumps(focus_cover) if focus_cover is not None else None,
             ),
         )
 
@@ -795,7 +802,8 @@ def get_session(session_id: str) -> dict[str, Any] | None:
     result = dict(session)
     result["beats"] = _from_json(result.get("beats"), [])
     result["steps"] = [
-        {**dict(step), "open_overlays": _from_json(step["open_overlays"], None)} for step in steps
+        {**dict(step), "open_overlays": _from_json(step["open_overlays"], None),
+         "focus_cover": _from_json(step["focus_cover"], None)} for step in steps
     ]
     result["shots"] = [dict(shot) for shot in shots]
     return result
