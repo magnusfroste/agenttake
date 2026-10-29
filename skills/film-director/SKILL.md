@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.3.1
+version: 0.4.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -16,7 +16,7 @@ metadata:
 You direct a short film. You do the research, choose the story and write every
 line. AgentTake shoots it with its recipes, so you never issue browser actions
 yourself. The tools come from the AgentTake MCP server: `director_guide`,
-`plan_storyboard`, `shoot_storyboard`, `shoot_beat`, `apply_retakes` and the
+`plan_storyboard`, `shoot_storyboard`, `shoot_beat`, `shoot_status`, `apply_retakes` and the
 session tools.
 
 Sixteen takes of one film failed on procedure and never on writing: a skipped
@@ -41,7 +41,8 @@ Don't use for:
 
 - The AgentTake MCP server is configured under `mcp_servers` (an
   `https://<host>/mcp` URL and a bearer token), with a tool `timeout` of at
-  least 300 s. One `shoot_storyboard` call records for up to about 240 s.
+  least 300 s. Every shoot call answers within about 200 s; a shoot still
+  running answers `status: "shooting"` and `shoot_status` follows it.
 - `plan_storyboard` is in your tool list. If it is not, that AgentTake predates
   storyboards: say so and stop. Do not fall back to seventy `act` calls.
 - A password is held by AgentTake as `REEL_SECRET_<NAME>`. You only ever pass
@@ -66,8 +67,10 @@ Don't use for:
    has a URL, and its `text` was found verbatim in that page's extract.
 4. **Scout the product offscreen** with your browser tools. Note the tour
    URLs, the sign-in URL and what the page after sign-in shows, the system
-   page and a word on it, and the chat page. For a live answer, ask the
-   question once yourself and pick words only the answer contains. Ask the
+   page and a word on it, and the chat page. A live answer needs no
+   predicted words: AgentTake waits until it stops growing and frames its
+   start. Give `wait_for_text` only for words the answer must contain to
+   prove the line, from asking the question once yourself. Ask the
    operator for the secret's NAME, never the password. *Done when* every
    `url` and `wait_for_text` in the plan was seen on a real page.
 5. **Write the beats.** Follow the template: hook, problem with a source, the
@@ -100,8 +103,10 @@ Don't use for:
    `session_id`: it is not your chat session's id. *Done when* you hold
    exactly one open session id.
 9. **Shoot.** Call `shoot_storyboard(session_id, plan_id)`, and again while
-   `to_come` is not empty. Note each beat's `ok` or `failed` and its reason.
-   *Done when* `to_come` is empty.
+   `to_come` is not empty. An answer with `status: "shooting"` is a shoot
+   still running: call `shoot_status(session_id)` until `status` is `done`,
+   and nothing else meanwhile. Note each beat's `ok` or `failed` and its
+   reason. *Done when* `to_come` is empty.
 10. **Retake what failed**, at most twice per beat:
     1. Read the reason.
     2. Fix the beat in `storyboard.json`. A wrong `wait_for_text` or a quote

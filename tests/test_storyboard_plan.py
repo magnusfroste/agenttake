@@ -261,12 +261,84 @@ def test_live_answer_waits_offscreen_then_shows_the_answer():
              "timeout": 300, "line": "The gate holds."}]
     beat = check(plan)["beats"][1]
     ops = boards.recipe(beat)
-    assert acts(ops) == [("observe", None), ("act", "type"), ("act", "press_key"), ("act", "scroll_to_text"),
-                         ("shot", None), ("act", "wait")]
-    send = ops[2]["action"]
-    assert send["offscreen"] and send["wait_timeout_ms"] == 300000 and send["wait_for_text"] == "blocked by policy"
-    assert ops[4]["lift"] is True
-    assert ops[5]["narration"] == "The gate holds." and not ops[5]["action"].get("offscreen")
+    assert acts(ops) == [("observe", None), ("act", "type"), ("answer_start", None), ("act", "press_key"),
+                         ("answer", None), ("act", "scroll_to_text"), ("shot", None), ("act", "wait")]
+    send = ops[3]["action"]
+    # Sent offscreen, and the answer op does the waiting, not the key press.
+    assert send["offscreen"] and "wait_for_text" not in send
+    assert ops[4] == {"op": "answer", "timeout": 300.0, "expect": "blocked by policy",
+                      "question": "Summarise the customer list"}
+    assert ops[6]["lift"] is True and ops[6]["focus_text"] == "@answer"
+    assert ops[7]["narration"] == "The gate holds." and not ops[7]["action"].get("offscreen")
+
+
+def test_a_live_answer_needs_no_predicted_words():
+    plan = [{"shot": "system", "url": "https://app.example/chat", "wait_for_text": "Ask", "line": "The chat."},
+            {"shot": "live_answer", "input_text": "Summarise the customer list", "line": "The gate holds."}]
+    report = check(plan)
+    assert report["ready"], report["checklist"]
+    assert boards.recipe(report["beats"][1])[4]["expect"] is None
+
+
+# A live answer: the page's new text, read until it stops growing ------------
+
+def test_new_text_is_what_the_page_added_without_the_question():
+    before = "Sluss demo\nAsk the gateway\nSend\nFooter"
+    now = ("Sluss demo\nAsk the gateway\nYou: Summarise customer 81121\n"
+           "Blocked: the prompt holds personal data (PII), so it stays local.\nSend\nFooter")
+    assert boards.new_text(before, now, "Summarise customer 81121") == (
+        "You:\nBlocked: the prompt holds personal data (PII), so it stays local.")
+    assert boards.new_text(before, before, "x") == ""
+    assert boards.answer_focus("You:\nBlocked: the prompt holds personal data (PII), so it stays local.") == (
+        "Blocked: the prompt holds personal data (PII), so")
+
+
+def watch(pages, timeout=60.0, quiet=3.0):
+    """watch_answer over a scripted page, one text per poll, on a fake clock."""
+    clock = {"now": 0.0}
+    texts = iter(pages)
+    last = {"text": ""}
+
+    async def read():
+        last["text"] = next(texts, last["text"])
+        return last["text"]
+
+    async def sleep(seconds):
+        clock["now"] += seconds
+
+    return asyncio.run(boards.watch_answer(read, "Chat\nSend", "Hi?", timeout, quiet=quiet, poll=1.0,
+                                           clock=lambda: clock["now"], sleep=sleep))
+
+
+def test_an_answer_has_landed_when_it_stops_growing():
+    thinking = "Chat\nHi?\nThinking\nSend"
+    pages = [thinking] * 5 + [
+        "Chat\nHi?\nThe gateway keeps\nSend",
+        "Chat\nHi?\nThe gateway keeps personal data local.\nSend",
+    ]
+    watched = watch(pages)
+    # "Thinking" stays put for five seconds and is not taken for the answer.
+    assert watched["settled"] and watched["text"] == "The gateway keeps personal data local."
+    assert watched["seconds"] == 9.0
+
+
+def test_an_answer_still_growing_at_the_timeout_is_reported_as_such():
+    pages = [f"Chat\nHi?\n{'word ' * n}\nSend" for n in range(1, 40)]
+    watched = watch(pages, timeout=10.0)
+    assert not watched["settled"] and watched["seconds"] == 10.0 and watched["text"].startswith("word word")
+
+
+def test_an_answer_is_judged_ok_or_failed_with_what_it_said():
+    said = {"text": "The prompt was routed to the local model.", "settled": True, "seconds": 7.0}
+    assert boards.answer_verdict(said, None, 120) == ("The prompt was routed to the local model.", None, None)
+    assert boards.answer_verdict(said, "local model", 120) == ("local model", None, None)
+    focus, reason, _ = boards.answer_verdict(said, "blocked", 120)
+    assert focus is None and reason.startswith("answer_without_text: the answer does not contain 'blocked'")
+    assert "it said: 'The prompt was routed to the local model.'" in reason
+    focus, reason, _ = boards.answer_verdict({"text": "", "settled": False, "seconds": 120.0}, None, 120)
+    assert reason == "no_answer: nothing new appeared on the page in 120 s"
+    focus, reason, note = boards.answer_verdict({**said, "settled": False, "seconds": 120.0}, None, 120)
+    assert reason is None and note.startswith("the answer was still growing after 120 s")
 
 
 def test_card_and_image_are_pages_of_their_own():
@@ -332,12 +404,15 @@ def test_form_fields_are_told_apart():
 class StandInSession:
     """Records what the recipes ask of a browser session."""
 
-    def __init__(self, missing=(), covered=()):
+    def __init__(self, missing=(), covered=(), pages=(), slow=0.0):
         self.voice = "en-US-JennyNeural"
         self.refs: dict[str, str] = {}
         self.refs_stale = False
         self.missing = set(missing)
         self.covered = set(covered)
+        self.pages = list(pages)
+        self.page = ""
+        self.slow = slow
         self.calls: list[tuple] = []
         self.fits: list[bool] = []
 
@@ -347,8 +422,15 @@ class StandInSession:
     async def error_result(self, error_type, message):
         return {"ok": False, "error": {"type": error_type, "message": message}}, None
 
+    async def page_text(self):
+        if self.pages:
+            self.page = self.pages.pop(0)
+        return self.page
+
     async def act(self, action, narration=""):
         self.calls.append(("act", action.type, action.offscreen, narration))
+        if self.slow and narration:
+            await asyncio.sleep(self.slow)
         for text in (action.wait_for_text, action.text if action.type == "scroll_to_text" else None):
             if text and text in self.missing:
                 return {"ok": False, "error": {"type": "text_not_found", "message": f"Visible text not found: {text}"}}, None
@@ -371,7 +453,7 @@ class StandInSession:
         return {}, None
 
     async def form_fields(self):
-        return {"username": "input:email", "password": "input:password"}
+        return {"username": "input:email", "password": "input:password", "message": "textarea:ask"}
 
     async def dismiss_consent(self, refuse, managers=(), notice=()):
         self.consent_asked = (refuse, managers, notice)
@@ -521,3 +603,118 @@ def test_a_beat_whose_line_plays_over_a_dialog_is_not_shot(server):
     assert "div.fc-consent-root (fixed)" in first["reason"] and "12 of 15" in first["reason"]
     # The others are untouched.
     assert [beat["ok"] for beat in shot["beats"][1:]] == [True, True, True, True]
+
+
+CHAT_PLAN = [
+    {"shot": "system", "url": "https://demo.example/chat", "wait_for_text": "Ask", "line": "The demo's chat."},
+    {"shot": "live_answer", "input_text": "Summarise customer 81121", "line": "Personal data stays in the house."},
+]
+
+
+def test_a_live_answer_is_framed_by_its_first_words(server, monkeypatch):
+    monkeypatch.setattr(boards, "ANSWER_QUIET_SECONDS", 0.0)
+    monkeypatch.setattr(boards, "ANSWER_POLL_SECONDS", 0.0)
+    answered = "Chat\nYou: Summarise customer 81121\nRouted to the local model: it holds personal data.\nSend"
+    session = StandInSession(pages=["Chat\nSend", answered])
+    start(server, "s-answer", session)
+    plan = asyncio.run(server.plan_storyboard(CHAT_PLAN))
+    shot = asyncio.run(server.shoot_storyboard("s-answer", plan_id=plan["plan_id"]))
+    assert shot["status"] == "done" and [beat["ok"] for beat in shot["beats"]] == [True, True]
+    focus = "Routed to the local model: it holds personal"
+    assert ("shot", 1.5, focus, True) in session.calls
+    assert session.calls[-1] == ("act", "wait", False, "Personal data stays in the house.")
+
+
+def test_a_live_answer_that_never_comes_fails_with_a_verdict(server, monkeypatch):
+    monkeypatch.setattr(boards, "ANSWER_POLL_SECONDS", 0.0)
+    plan_beats = [CHAT_PLAN[0], {**CHAT_PLAN[1], "timeout": 1}]
+    start(server, "s-silent", StandInSession(pages=["Chat\nSend"]))
+    plan = asyncio.run(server.plan_storyboard(plan_beats))
+    shot = asyncio.run(server.shoot_storyboard("s-silent", plan_id=plan["plan_id"]))
+    assert shot["beats"][1]["ok"] is False
+    assert shot["beats"][1]["reason"] == "no_answer: nothing new appeared on the page in 1 s"
+
+
+def test_a_slow_shoot_answers_in_time_and_shoot_status_follows_it(server, monkeypatch):
+    """The Sluss film's live beat answered the director with a bare client
+    timeout twice: no verdict, so it was cut (2026-10-28)."""
+    monkeypatch.setenv("REEL_SHOOT_WAIT_SECONDS", "1")
+    session = StandInSession(slow=0.8)
+    start(server, "s-slow", session)
+    plan = asyncio.run(server.plan_storyboard(good_plan()))
+
+    async def scenario():
+        first = await server.shoot_storyboard("s-slow", plan_id=plan["plan_id"])
+        # Nothing else drives the browser meanwhile.
+        refused = await server.finish("s-slow")
+        joined = await server.shoot_beat("s-slow", beat=1)
+        done = first
+        while done.get("status") == "shooting":
+            done = await server.shoot_status("s-slow")
+        return first, refused, joined, done
+
+    first, refused, joined, done = asyncio.run(scenario())
+    assert first["status"] == "shooting" and first["shooting"] == "storyboard"
+    assert first["beat"]["beat"] == 2 and [beat["beat"] for beat in first["beats"]] == [1]
+    assert "shoot_status(session_id)" in first["hint"]
+    assert refused["error"]["type"] == "session_shooting"
+    assert joined["status"] == "shooting" and joined["shooting"] == "storyboard"
+    assert done["status"] == "done" and [beat["ok"] for beat in done["beats"]] == [True] * 5
+
+
+def test_shoot_status_without_a_shoot_says_how_to_start_one(server):
+    assert asyncio.run(server.shoot_status("s-none"))["error"]["type"] == "no_shoot"
+
+
+STREAMING_CHAT = """<body style="font:16px sans-serif">
+  <div id="log"><p>Ask the gateway anything.</p></div>
+  <textarea id="ask"></textarea>
+  <script>
+    document.getElementById('ask').addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const log = document.getElementById('log');
+      log.insertAdjacentHTML('beforeend', '<p>' + e.target.value + '</p><p id="a">Thinking…</p>');
+      e.target.value = '';
+      const words = 'Blocked: the prompt holds personal data, so it stays on the local model.'.split(' ');
+      setTimeout(() => {
+        const answer = document.getElementById('a');
+        answer.textContent = '';
+        let n = 0;
+        const timer = setInterval(() => {
+          answer.textContent += (n ? ' ' : '') + words[n++];
+          if (n === words.length) clearInterval(timer);
+        }, 150);
+      }, 1500);
+    });
+  </script>
+</body>"""
+
+
+def test_a_streamed_answer_is_read_once_it_has_landed():
+    """In a real browser: a 'Thinking…' line, then the answer word by word."""
+    playwright = pytest.importorskip("playwright.async_api")
+
+    async def run():
+        async with playwright.async_playwright() as p:
+            try:
+                browser = await p.chromium.launch()
+            except Exception as exc:  # no browser in this environment
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = await browser.new_page()
+            await page.set_content(STREAMING_CHAT)
+
+            async def read():
+                return await page.evaluate("() => document.body.innerText")
+
+            await page.fill("#ask", "Summarise customer 81121")
+            before = await read()
+            await page.press("#ask", "Enter")
+            watched = await boards.watch_answer(read, before, "Summarise customer 81121", 20, quiet=1.0, poll=0.25)
+            await browser.close()
+            return watched
+
+    watched = asyncio.run(run())
+    assert watched["settled"]
+    assert watched["text"] == "Blocked: the prompt holds personal data, so it stays on the local model."
+    assert boards.answer_verdict(watched, "personal data", 20)[0] == "personal data"

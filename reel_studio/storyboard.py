@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+import time
 import urllib.parse
 from typing import Any, Awaitable, Callable, Literal, get_args
 
@@ -46,8 +47,9 @@ SHOT_FIELDS: dict[str, str] = {
              "page after sign-in shows): signs in offscreen, line optional",
     "system": "url, wait_for_text, zoom optional (page zoom 0.5-2, for readable text): a page, or one "
               "section of a page, held with a push-in on wait_for_text",
-    "live_answer": "input_text, wait_for_text (words of the answer), timeout optional (seconds, default 120), "
-                   "url optional (default: the page before): sends offscreen, waits, shows the answer",
+    "live_answer": "input_text, wait_for_text optional (words the answer must have), timeout optional (seconds, "
+                   "default 120), url optional (default: the page before): sends offscreen, waits until the "
+                   "answer stops growing, shows it",
     "cta": "url, wait_for_text optional: the page the viewer should go to",
 }
 
@@ -71,6 +73,12 @@ LONG_QUOTE_CHARS = 200
 GLIDE_MIN_MS = 6000
 GLIDE_MAX_MS = 20000
 OPEN_TIMEOUT_MS = 30000
+# A live answer has landed when the page's new text, the question left out,
+# has stopped growing this long; under ANSWER_MIN_CHARS it is a "thinking"
+# indicator, not an answer yet.
+ANSWER_QUIET_SECONDS = 3.0
+ANSWER_MIN_CHARS = 20
+ANSWER_POLL_SECONDS = 0.5
 SIGN_IN_TIMEOUT_MS = 30000
 IMAGE_READY = "image ready"
 IMAGE_FAILED = "image failed"
@@ -137,7 +145,7 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "page_tour": ("url",),
     "login": ("url", "password_secret"),
     "system": ("url", "wait_for_text"),
-    "live_answer": ("input_text", "wait_for_text"),
+    "live_answer": ("input_text",),
     "cta": ("url",),
 }
 # The shots that may leave url out and stay on the page the beat before opened.
@@ -650,16 +658,23 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             _say(line, wait_text),
         ]
     if shot == "live_answer":
+        # Sent offscreen, then the page is read until the answer stops
+        # growing: waiting for words the director predicted gave no verdict
+        # when the answer said something else (demo.sluss.eu, 2026-10-28).
+        # "@answer" is the text the answer op framed: wait_for_text if given,
+        # else the answer's first words.
         ops = _open(beat["url"], None) if beat.get("url") else (_open(beat["page_url"], None) if reopen else [])
         return [
             *ops,
             {"op": "observe"},
             _act({"type": "type", "ref": "@message", "text": beat["input_text"], "offscreen": True}),
-            _act({"type": "press_key", "ref": "@message", "text": "Enter", "offscreen": True,
-                  "wait_for_text": wait_text, "wait_timeout_ms": int(beat.get("timeout", 120) * 1000)}),
-            _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
-            _shot(1.5, wait_text, move_seconds=1.2, lift=True),
-            _say(line, wait_text),
+            {"op": "answer_start"},
+            _act({"type": "press_key", "ref": "@message", "text": "Enter", "offscreen": True}),
+            {"op": "answer", "timeout": float(beat.get("timeout", 120)), "expect": wait_text,
+             "question": beat["input_text"]},
+            _act({"type": "scroll_to_text", "text": "@answer", "offscreen": True}),
+            _shot(1.5, "@answer", move_seconds=1.2, lift=True),
+            _say(line, "@answer"),
         ]
     if shot == "cta":
         return [
@@ -696,13 +711,105 @@ def render_card_action(beat: dict) -> dict | None:
 RunAction = Callable[[str, dict, str], Awaitable[tuple[dict, Any]]]
 
 
+def new_text(before: str, now: str, question: str = "") -> str:
+    """What the page says now that it did not before, the question left out:
+    what lies between the longest common start and end of the two texts."""
+    start = 0
+    limit = min(len(before), len(now))
+    while start < limit and before[start] == now[start]:
+        start += 1
+    end = 0
+    while end < limit - start and before[len(before) - 1 - end] == now[len(now) - 1 - end]:
+        end += 1
+    added = now[start:len(now) - end]
+    if question.strip():
+        added = added.replace(question.strip(), " ")
+    return re.sub(r"[ \t]+", " ", re.sub(r"\s*\n\s*", "\n", added)).strip()
+
+
+def answer_focus(text: str) -> str:
+    """Words to frame an answer by, when the director named none: the start
+    of its first line with three words or more."""
+    for line in text.splitlines():
+        words = line.split()
+        if len(words) >= 3:
+            return " ".join(words[:8])
+    return " ".join(text.split()[:8])
+
+
+async def watch_answer(
+    read_text: Callable[[], Awaitable[str]], before: str, question: str, timeout: float,
+    quiet: float | None = None, poll: float | None = None,
+    clock: Callable[[], float] | None = None, sleep: Callable[[float], Awaitable[Any]] | None = None,
+) -> dict:
+    """Read the page until its new text has stopped growing for ``quiet``
+    seconds, or ``timeout`` has passed. Returns the text, whether it
+    settled, and the seconds it took."""
+    import time
+    quiet = ANSWER_QUIET_SECONDS if quiet is None else quiet
+    poll = ANSWER_POLL_SECONDS if poll is None else poll
+    clock = clock or time.monotonic
+    sleep = sleep or asyncio.sleep
+    started = clock()
+    text, changed = "", started
+    while True:
+        current = new_text(before, await read_text(), question)
+        now = clock()
+        if current != text:
+            text, changed = current, now
+        elif len(text) >= ANSWER_MIN_CHARS and now - changed >= quiet:
+            return {"text": text, "settled": True, "seconds": round(now - started, 1)}
+        if now - started >= timeout:
+            return {"text": text, "settled": False, "seconds": round(now - started, 1)}
+        await sleep(poll)
+
+
+def answer_verdict(watched: dict, expect: str | None, timeout: float) -> tuple[str | None, str | None, str | None]:
+    """(the text to frame, a failure reason, a note) for a watched answer."""
+    text = watched["text"]
+    said = text if len(text) <= 160 else text[:157] + "..."
+    if not text:
+        return None, f"no_answer: nothing new appeared on the page in {timeout:g} s", None
+    still = "" if watched["settled"] else f" (still growing after {watched['seconds']:g} s)"
+    if expect and expect.lower() not in text.lower():
+        return None, (f"answer_without_text: the answer does not contain {expect!r}{still}; it said: {said!r}. "
+                      "Wait for words it does say, or leave wait_for_text out"), None
+    note = f"the answer was still growing after {watched['seconds']:g} s; it is shown as it was" if still else None
+    return expect or answer_focus(text), None, note
+
+
+def _with_answer(op: dict, answer: str) -> dict:
+    """The op with "@answer" replaced by the text the answer op framed."""
+    if op.get("focus_text") == "@answer":
+        op = {**op, "focus_text": answer}
+    action = op.get("action")
+    if action and "@answer" in (action.get("text"), action.get("wait_for_text")):
+        op = {**op, "action": {key: answer if value == "@answer" else value for key, value in action.items()}}
+    return op
+
+
 async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: RunAction) -> dict:
     """Play a recipe's ops against a live session, in order, stopping at the
     first that fails. Returns ok, and on a failure the reason."""
     fields: dict[str, str] = {}
     notes: list[str] = []
+    before = ""
+    answer: str | None = None
     for number, op in enumerate(ops):
         kind = op["op"]
+        if kind == "answer_start":
+            before = await session.page_text()
+            continue
+        if kind == "answer":
+            watched = await watch_answer(session.page_text, before, op.get("question", ""), op["timeout"])
+            answer, reason, note = answer_verdict(watched, op.get("expect"), op["timeout"])
+            if reason:
+                return {"ok": False, "op": number, "notes": notes, "reason": reason}
+            if note:
+                notes.append(note)
+            continue
+        if answer is not None:
+            op = _with_answer(op, answer)
         if kind == "consent":
             try:
                 clicked = await session.dismiss_consent(CONSENT_REFUSE, CONSENT_MANAGERS, CONSENT_NOTICE)

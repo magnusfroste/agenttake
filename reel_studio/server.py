@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Awaitable, Callable, Literal
 import hmac
 import html
 import json
@@ -1606,8 +1606,8 @@ def idle_session_ids(live: dict, now: float, timeout: float) -> list[str]:
 async def reap_idle_sessions(now: float | None = None) -> list[str]:
     reaped = []
     for session_id in idle_session_ids(sessions, time.monotonic() if now is None else now, idle_timeout_seconds()):
-        if _finishing(session_id):
-            continue  # rendering: no tool call is expected
+        if _finishing(session_id) or _shooting(session_id):
+            continue  # rendering or shooting: no tool call is expected
         session = sessions.pop(session_id, None)
         if session is None:
             continue
@@ -2091,6 +2091,8 @@ async def observe(
     session = sessions.get(session_id)
     if session is None:
         return feedback_result(_unknown_session(session_id))
+    if _shooting(session_id):
+        return feedback_result(_shooting_error(session_id))
     session.touch()
     try:
         payload, screenshot = await asyncio.wait_for(
@@ -2206,6 +2208,8 @@ async def act(session_id: str, action: ActionParam, narration: str = "") -> Call
         return feedback_result(_unknown_session(session_id))
     if _finishing(session_id):
         return feedback_result(_finishing_error(session_id))
+    if _shooting(session_id):
+        return feedback_result(_shooting_error(session_id))
     payload, screenshot = await _run_action(session_id, action, narration)
     return feedback_result(payload, screenshot)
 
@@ -2243,6 +2247,8 @@ async def act_batch(
         return feedback_result(_unknown_session(session_id))
     if _finishing(session_id):
         return feedback_result(_finishing_error(session_id))
+    if _shooting(session_id):
+        return feedback_result(_shooting_error(session_id))
     if not steps:
         return feedback_result(
             {"ok": False, "error": {"type": "invalid_batch", "message": "steps must be a non-empty list"}}
@@ -2308,6 +2314,95 @@ def shoot_budget_seconds() -> float:
         return max(30.0, float(os.environ.get("REEL_SHOOT_BUDGET_SECONDS", "240")))
     except ValueError:
         return 240.0
+
+
+# One beat can outlast what an MCP client waits for a reply: a live answer
+# given 300 s, a slow page, a sign-in. The Sluss film's live PII beat answered
+# the director with a bare client timeout twice, no verdict either way, and
+# it was cut (2026-10-28). A shoot runs as a job: shoot_storyboard and
+# shoot_beat wait this long for it, then answer with where it has got to, and
+# shoot_status follows it.
+def shoot_wait_seconds() -> float:
+    try:
+        return max(1.0, float(os.environ.get("REEL_SHOOT_WAIT_SECONDS", "200")))
+    except ValueError:
+        return 200.0
+
+
+class ShootJob:
+    """A shoot running in the background: shoot_storyboard's beats, or one
+    shoot_beat."""
+
+    def __init__(self, session_id: str, what: str) -> None:
+        self.session_id = session_id
+        self.what = what
+        self.started = time.monotonic()
+        self.beat: dict | None = None
+        self.reports: list[dict] = []
+        self.task: asyncio.Task | None = None
+
+    def running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    def progress(self) -> dict:
+        report: dict = {
+            "status": "shooting",
+            "session_id": self.session_id,
+            "shooting": self.what,
+            "elapsed_seconds": round(time.monotonic() - self.started, 1),
+            "beats": list(self.reports),
+        }
+        if self.beat is not None:
+            report["beat"] = dict(self.beat)
+        return report
+
+
+shoot_jobs: dict[str, ShootJob] = {}
+
+
+def _shooting(session_id: str) -> bool:
+    job = shoot_jobs.get(session_id)
+    return job is not None and job.running()
+
+
+def _shooting_error(session_id: str) -> dict:
+    return {
+        "ok": False,
+        "error": {"type": "session_shooting", "message": f"{session_id} is shooting its storyboard"},
+        "hint": "shoot_status(session_id) waits for the shoot and gives its result.",
+    }
+
+
+async def _await_shoot(job: ShootJob) -> dict:
+    """The shoot's result when it is done within shoot_wait_seconds, else where
+    it has got to and how to follow it."""
+    assert job.task is not None
+    try:
+        result = await asyncio.wait_for(asyncio.shield(job.task), shoot_wait_seconds())
+    except asyncio.TimeoutError:
+        return {
+            "ok": True,
+            **job.progress(),
+            "hint": "Still shooting. Call shoot_status(session_id): it waits for the shoot again and "
+                    "gives the result when it is done. Do not call shoot_storyboard or shoot_beat "
+                    "meanwhile: they would only report this same shoot.",
+        }
+    return {"status": "done", **result}
+
+
+def _start_shoot(session_id: str, what: str, work: Callable[[ShootJob], Awaitable[dict]]) -> ShootJob:
+    job = ShootJob(session_id, what)
+
+    async def run() -> dict:
+        try:
+            return await work(job)
+        except Exception as exc:  # a crash is a result, not a job that never answers
+            return {"ok": False, "error": {"type": "shoot_failed", "message": f"{type(exc).__name__}: {exc}"},
+                    "beats": job.reports}
+
+    job.task = asyncio.create_task(run())
+    shoot_jobs[session_id] = job
+    return job
 
 
 def _beat_state(beat: dict) -> dict:
@@ -2403,8 +2498,11 @@ def fix_count_words(count: int) -> str:
     return "item" if count == 1 else f"{count} items"
 
 
-async def _shoot_beat(session_id: str, plan: dict, beat: dict, retake: bool) -> dict:
+async def _shoot_beat(session_id: str, plan: dict, beat: dict, retake: bool,
+                      job: ShootJob | None = None) -> dict:
     live = sessions[session_id]
+    if job is not None:
+        job.beat = {"beat": beat["number"], "label": beat["label"], "shot": beat["shot"]}
     before = store.next_step_index(session_id)
     started = time.monotonic()
     outcome = await boards.run_ops(live, session_id, boards.recipe(beat, retake=retake), _run_action)
@@ -2428,6 +2526,9 @@ async def _shoot_beat(session_id: str, plan: dict, beat: dict, retake: bool) -> 
         report["retake"] = True
     if outcome.get("notes"):
         report["notes"] = outcome["notes"]
+    if job is not None:
+        job.reports.append(report)
+        job.beat = None
     return report
 
 
@@ -2485,12 +2586,24 @@ async def shoot_storyboard(
     then answers: call again and it carries on with the next beat. A beat that
     fails is reported with its reason and the shoot goes on (a failed login
     stops it: what follows needs the sign-in). Retake a beat with shoot_beat.
+
+    A call answers within about three minutes. A shoot still running then is
+    reported with status shooting and the beat it is on: follow it with
+    shoot_status(session_id).
     """
+    job = shoot_jobs.get(session_id)
+    if job is not None and job.running():
+        return await _await_shoot(job)
     plan, error = _live_plan(session_id, plan_id)
     if error:
         return error
     assert plan is not None
     sessions[session_id].touch()
+    return await _await_shoot(_start_shoot(
+        session_id, "storyboard", lambda job: _shoot_storyboard_now(session_id, plan, job)))
+
+
+async def _shoot_storyboard_now(session_id: str, plan: dict, job: ShootJob) -> dict:
     budget = shoot_budget_seconds()
     started = time.monotonic()
     shot: list[dict] = []
@@ -2502,7 +2615,7 @@ async def shoot_storyboard(
         if shot and time.monotonic() - started > budget:
             stopped = "time"
             break
-        report = await _shoot_beat(session_id, plan, beat, retake=False)
+        report = await _shoot_beat(session_id, plan, beat, retake=False, job=job)
         shot.append(report)
         if not report["ok"] and beat["shot"] == "login":
             stopped = "login"
@@ -2535,7 +2648,12 @@ async def shoot_beat(
     recipe opens the beat's page itself. After finish, apply_retakes(session_id)
     hides the earlier take and plays this one where the beat belongs; then
     rerender. The next beat not shot yet is shot here as itself, not a retake.
+    Like shoot_storyboard, a beat still shooting after about three minutes is
+    reported with status shooting: follow it with shoot_status(session_id).
     """
+    job = shoot_jobs.get(session_id)
+    if job is not None and job.running():
+        return await _await_shoot(job)
     plan, error = _live_plan(session_id)
     if error:
         return error
@@ -2545,15 +2663,33 @@ async def shoot_beat(
     if not 1 <= beat <= len(beats):
         return {"ok": False, "error": {"type": "unknown_beat", "message": f"beat is 1-{len(beats)}"}}
     target = beats[beat - 1]
-    if _beat_state(target)["status"] == "planned":
-        if any(_beat_state(other)["status"] == "planned" for other in beats[:beat - 1]):
-            return {"ok": False,
-                    "error": {"type": "beat_not_reached", "message": f"beat {beat} has not been shot yet"},
-                    "hint": "shoot_storyboard shoots the beats in order; shoot_beat retakes one already shot."}
-        report = await _shoot_beat(session_id, plan, target, retake=False)
-    else:
-        report = await _shoot_beat(session_id, plan, target, retake=True)
-    return {**report, "next": _shoot_next_hint(plan)}
+    retake = _beat_state(target)["status"] != "planned"
+    if not retake and any(_beat_state(other)["status"] == "planned" for other in beats[:beat - 1]):
+        return {"ok": False,
+                "error": {"type": "beat_not_reached", "message": f"beat {beat} has not been shot yet"},
+                "hint": "shoot_storyboard shoots the beats in order; shoot_beat retakes one already shot."}
+
+    async def work(job: ShootJob) -> dict:
+        report = await _shoot_beat(session_id, plan, target, retake=retake, job=job)
+        return {**report, "next": _shoot_next_hint(plan)}
+
+    return await _await_shoot(_start_shoot(session_id, f"beat {beat}", work))
+
+
+@mcp.tool()
+async def shoot_status(session_id: str) -> dict:
+    """Follow a shoot that was still running when shoot_storyboard or
+    shoot_beat answered.
+
+    Waits for it again, up to about three minutes, then gives status done
+    with the result shoot_storyboard or shoot_beat would have given, or
+    status shooting with the beat it is on and the beats reported so far.
+    """
+    job = shoot_jobs.get(session_id)
+    if job is None:
+        return {"ok": False, "error": {"type": "no_shoot", "message": f"No shoot in {session_id}"},
+                "hint": "shoot_storyboard(session_id) starts one."}
+    return await _await_shoot(job)
 
 
 @mcp.tool()
@@ -2769,6 +2905,8 @@ async def preview_shot(session_id: str) -> CallToolResult:
     live = sessions.get(session_id)
     if live is None:
         return feedback_result(_unknown_session(session_id))
+    if _shooting(session_id):
+        return feedback_result(_shooting_error(session_id))
     try:
         still, frame = await live.frame_preview()
     except Exception as exc:
@@ -3613,6 +3751,8 @@ async def finish(session_id: str) -> dict:
     job = finish_jobs.get(session_id)
     if job is not None and job.running():
         return await _await_finish(job)
+    if _shooting(session_id):
+        return _shooting_error(session_id)
     session = sessions.get(session_id)
     if session is None:
         stored = store.get_session(session_id)

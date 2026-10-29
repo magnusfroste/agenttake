@@ -727,6 +727,14 @@ class BrowserSession:
         })
         record.write_text(json.dumps(glides))
 
+    async def page_text(self) -> str:
+        """The page's text as a reader sees it: what a live answer is read
+        from (storyboard.watch_answer). Empty mid-navigation."""
+        try:
+            return await self.page.evaluate("() => document.body ? document.body.innerText : ''")
+        except PlaywrightError:
+            return ""
+
     async def capture_screenshot(self) -> Path:
         screenshot = self.directory / f"screenshot-{int(time.time() * 1000)}.jpg"
         if await self._grab_display(screenshot, scale_to=f"{self.width}:{self.height}"):
