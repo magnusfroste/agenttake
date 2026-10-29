@@ -18,6 +18,7 @@ import asyncio
 import html
 import re
 import time
+import unicodedata
 import urllib.parse
 from typing import Any, Awaitable, Callable, Literal, get_args
 
@@ -28,7 +29,7 @@ from .schema import OFFSCREEN_WAIT_MAX_MS, secret_names
 
 
 ShotType = Literal[
-    "source", "highlight", "card", "image", "page_tour", "login", "system", "live_answer", "cta",
+    "source", "highlight", "source_card", "card", "image", "page_tour", "login", "system", "live_answer", "cta",
 ]
 SHOT_TYPES: tuple[str, ...] = get_args(ShotType)
 
@@ -40,6 +41,10 @@ SHOT_FIELDS: dict[str, str] = {
               "settles, then a slow push-in on the headline",
     "highlight": "text (a short quote on the page), url optional (default: the page before), source: "
                  "scrolls to the words, marks them, close shot kept above the subtitle band",
+    "source_card": "source (the article), text (its headline or a short quote, word for word), publication "
+                   "optional (default: the site's name), date optional: the quote on a clean card with the "
+                   "publication, the date and the URL, for a source the camera cannot show (a paywall, a 403, "
+                   "a page covered by dialogs)",
     "card": "text, background optional (auto, brand, blur, a colour, or an https image), source when it states a number",
     "image": "url (an https image), caption optional (a lower third): a slow Ken Burns drift over the still",
     "page_tour": "url, wait_for_text optional: a glide from the hero to the footer, once per page",
@@ -55,7 +60,10 @@ SHOT_FIELDS: dict[str, str] = {
 
 # Shots that state something about the world: the viewer is owed where it
 # comes from. A card counts when it carries a number.
-CLAIM_SHOTS = {"source", "highlight"}
+CLAIM_SHOTS = {"source", "highlight", "source_card"}
+# Shots that show a source's own page: when its text is covered there, the
+# beat is shot as a source card instead.
+CARD_FALLBACK_SHOTS = {"source", "highlight"}
 # Behind a sign-in: a 401 or a redirect to a login form is expected there.
 PRIVATE_SHOTS = {"system", "live_answer"}
 
@@ -63,7 +71,7 @@ PRIVATE_SHOTS = {"system", "live_answer"}
 WORDS_PER_SECOND = 2.5
 # The least a shot holds however short its line: a glide needs time to move,
 # a card time to be read.
-SHOT_MIN_SECONDS = {"card": 2.5, "image": 3.0, "page_tour": 6.0}
+SHOT_MIN_SECONDS = {"card": 2.5, "source_card": 3.0, "image": 3.0, "page_tour": 6.0}
 DEFAULT_MIN_SECONDS = 1.5
 # A "one minute" film may run a little over; past this it is not one minute.
 LENGTH_TOLERANCE_SECONDS = 10
@@ -113,6 +121,8 @@ class StoryBeat(BaseModel):
     text: str | None = None
     background: str | None = None
     caption: str | None = None
+    publication: str | None = None
+    date: str | None = None
     username: str | None = None
     password_secret: str | None = None
     zoom: float | None = Field(default=None, ge=0.5, le=2.0)
@@ -131,7 +141,7 @@ def beats_json_schema() -> dict[str, Any]:
         "zoom": {"type": "number", "minimum": 0.5, "maximum": 2.0},
         "timeout": {"type": "number", "minimum": 1, "maximum": OFFSCREEN_WAIT_MAX_MS / 1000},
     }
-    for name in ("url", "wait_for_text", "text", "background", "caption", "username",
+    for name in ("url", "wait_for_text", "text", "background", "caption", "publication", "date", "username",
                  "password_secret", "input_text"):
         properties[name] = {"type": "string"}
     return {"type": "object", "required": ["shot"], "properties": properties}
@@ -140,6 +150,7 @@ def beats_json_schema() -> dict[str, Any]:
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "source": ("url", "wait_for_text"),
     "highlight": ("text",),
+    "source_card": ("text",),
     "card": ("text",),
     "image": ("url",),
     "page_tour": ("url",),
@@ -264,7 +275,7 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
             # or the highlight itself opens. A highlight on a page some other
             # shot opened (a product tour) names its source itself.
             beat["source"] = beat.get("url") or (page_source if beat.get("inherits_url") else None)
-        if shot == "highlight" and beat.get("text") and len(beat["text"]) > LONG_QUOTE_CHARS:
+        if shot in ("highlight", "source_card") and beat.get("text") and len(beat["text"]) > LONG_QUOTE_CHARS:
             items.append(_item(number, label, "warn", "long_quote",
                                f"{len(beat['text'])} characters: show a headline or a short quote, not a passage"))
         if (shot in CLAIM_SHOTS or (shot == "card" and has_statistic(beat.get("text")))) and not beat.get("source"):
@@ -295,9 +306,10 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
                                    "footer: the same sections would play under this line. To speak about one "
                                    "section, use a system shot (url, wait_for_text=<the section's heading>)"))
             seen_tours.setdefault(page, number)
-        if shot == "login":
+        if shot in ("login", "source_card"):
             # Where a sign-in lands is the app's to say: a beat after it that
             # stays on the page names its url, so a retake can go back to it.
+            # A source card leaves the browser on the card.
             page_url = page_source = None
         elif beat.get("url") and shot not in ("card", "image"):
             page_url = beat["url"]
@@ -336,6 +348,32 @@ def looks_paywalled(html: str) -> bool:
     return any(marker.search(shown) for marker in PAYWALL_MARKERS)
 
 
+def loose_text(text: str | None) -> str:
+    """Text as the engine's loose match sees it (engine._LOOSE_TEXT_JS):
+    dashes, quotes, invisible and repeated spaces, ellipses and case alike."""
+    text = unicodedata.normalize("NFKC", text or "").lower()
+    text = re.sub("[\u200b-\u200d\ufeff]", "", text)
+    text = re.sub("[\u2010-\u2015\u2212\u2e3a\u2e3b]", "-", text)
+    text = re.sub("[\u2018\u2019\u201a\u201b\u2032\u00b4`]", "'", text)
+    text = re.sub("[\u201c\u201d\u201e\u201f\u2033\u00ab\u00bb]", '"', text)
+    return re.sub(r"\s+", " ", re.sub(r"\s+-+\s+", " ", text)).strip()
+
+
+_NOT_TEXT = re.compile(r"<(script|style|noscript|template)\b.*?</\1\s*>|<!--.*?-->", re.I | re.S)
+
+
+def html_text(document: str) -> str:
+    """The words of an HTML page: scripts, styles and tags left out."""
+    return html.unescape(re.sub(r"<[^>]+>", " ", _NOT_TEXT.sub(" ", document)))
+
+
+def quote_on_page(quote: str, page_text: str) -> bool:
+    """Every part of the quote is in the page's text, loosely matched; an
+    ellipsis marks words left out."""
+    parts = [loose_text(part) for part in re.split(r"\[?(?:\.\.\.|\u2026)\]?", quote)]
+    return all(part in page_text for part in parts if part)
+
+
 BROWSER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/130.0 Safari/537.36"
@@ -369,6 +407,8 @@ async def probe_url(url: str) -> dict:
                             break
                 text = body.decode("utf-8", "replace")
                 result["paywall"] = looks_paywalled(text)
+                if text:
+                    result["text"] = loose_text(html_text(text))
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"[:200]
     return result
@@ -487,6 +527,8 @@ def _url_items(beat: dict, name: str, url: str, answer: dict) -> list[dict]:
     status = answer.get("status")
     if answer.get("error"):
         return [_item(number, label, "fix", "unreachable_url", f"{name} {url} did not answer: {answer['error']}")]
+    if shot == "source_card":
+        return _card_source_items(beat, url, answer)
     if status in (401, 403):
         if private:
             return [_item(number, label, "warn", "private_url",
@@ -495,22 +537,44 @@ def _url_items(beat: dict, name: str, url: str, answer: dict) -> list[dict]:
             return [_item(number, label, "warn", "bot_check",
                           f"{name} {url} answers {status} behind a bot check: it may still open in the "
                           "recording browser, but find another source if the shot fails")]
+        hint = (" or show it as a source_card (source, text: the quote)" if shot in CARD_FALLBACK_SHOTS
+                else "")
         return [_item(number, label, "fix", "forbidden_url",
-                      f"{name} {url} answers {status}: a viewer cannot open it — find a public source")]
+                      f"{name} {url} answers {status}: the camera cannot open it — find a public source{hint}")]
     if status is not None and status >= 400:
         return [_item(number, label, "fix", "broken_url", f"{name} {url} answers {status}")]
     found: list[dict] = []
     if answer.get("paywall"):
         found.append(_item(number, label, "warn", "paywall",
-                           f"{name} {url} looks paywalled: show the headline only, or find an open source"))
+                           f"{name} {url} looks paywalled: show the headline only, find an open source, "
+                           "or show it as a source_card"))
     if shot == "image" and name == "url" and status and not str(answer.get("content_type", "")).startswith("image/"):
         found.append(_item(number, label, "warn", "not_an_image",
                            f"url answers {answer.get('content_type') or 'no content type'}, not an image"))
     return found
 
 
+def _card_source_items(beat: dict, url: str, answer: dict) -> list[dict]:
+    """A source card quotes a page the viewer is not shown: the page must
+    exist, and the quote must be on it. A page AgentTake cannot read (a
+    paywall, a 403) is the reason for a card, so it is a warning there."""
+    number, label, status = beat["number"], beat["label"], answer.get("status")
+    if status in (401, 403) or answer.get("paywall") or answer.get("challenge"):
+        why = f"answers {status}" if status in (401, 403) else "is paywalled"
+        return [_item(number, label, "warn", "unverified_quote",
+                      f"source {url} {why}, so AgentTake cannot check the quote: the card shows it as you "
+                      "wrote it — check it word for word against the article")]
+    if status is not None and status >= 400:
+        return [_item(number, label, "fix", "broken_url", f"source {url} answers {status}")]
+    if answer.get("text") and beat.get("text") and not quote_on_page(beat["text"], answer["text"]):
+        return [_item(number, label, "warn", "quote_not_on_page",
+                      f"the quote is not in the text of {url}: a card says the source says it, so copy it "
+                      "word for word (a page its scripts build may still have it)")]
+    return []
+
+
 # ---------------------------------------------------------------------------
-# The pages AgentTake draws itself: a card, a still image.
+# The pages AgentTake draws itself: a card, a source card, a still image.
 
 def _data_url(document: str) -> str:
     return "data:text/html;charset=utf-8," + urllib.parse.quote(document)
@@ -550,6 +614,57 @@ letter-spacing:-.01em}
 .credit{position:fixed;right:5vw;top:5vh;font-size:22px;opacity:.75;font-weight:500}
 </style></head><body style="__STYLE__"><div class="card">__TEXT__</div>__CREDIT__</body></html>"""
     return _data_url(document.replace("__STYLE__", style).replace("__TEXT__", paragraphs).replace("__CREDIT__", credit))
+
+
+def source_display(url: str, limit: int = 64) -> str:
+    """The URL as a card prints it: no scheme, no www, no query, shortened."""
+    parsed = urllib.parse.urlsplit(url)
+    shown = domain(url) + parsed.path.rstrip("/")
+    return shown if len(shown) <= limit else shown[:limit - 1] + "\u2026"
+
+
+def source_card_page(quote: str, source: str, publication: str | None = None, date: str | None = None) -> str:
+    """A source as a television documentary shows one: the publication and
+    the date above, the quote large, the address below. For a page the
+    camera cannot show cleanly; it says what the article says, nothing more.
+
+    The quote marks are drawn by CSS, so the quote's own words are what
+    wait_for_text finds. The address sits above the band burned-in
+    subtitles take, like an image's lower third.
+    """
+    publication = publication or domain(source)
+    quote = quote.replace("\n", " ").strip()
+    size = "clamp(34px,3.6vw,68px)" if len(quote) <= 110 else "clamp(26px,2.7vw,50px)"
+    dated = f'<div class="date">{html.escape(date)}</div>' if date else ""
+    document = _PAGE_BASE + """<style>
+:root{--accent:#c8102e;--rule:rgba(127,127,127,.35)}
+body{display:flex;flex-direction:column;justify-content:center;padding:0 9vw;box-sizing:border-box}
+.head{position:fixed;left:9vw;top:9vh;border-left:6px solid var(--accent);padding-left:18px}
+.pub{font-size:clamp(20px,1.9vw,34px);font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+.date{margin-top:6px;font-size:clamp(16px,1.3vw,24px);color:var(--muted)}
+.quote{font-family:Georgia,"Times New Roman",serif;font-size:__SIZE__;line-height:1.28;max-width:78vw;
+margin:0;position:relative}
+.quote::before{content:"\\201C";position:absolute;left:-.55em;top:-.05em;color:var(--accent)}
+.quote::after{content:"\\201D";color:var(--accent)}
+.url{position:fixed;left:9vw;right:9vw;bottom:20vh;padding-top:14px;border-top:1px solid var(--rule);
+font:500 clamp(15px,1.15vw,22px) ui-monospace,"DejaVu Sans Mono",monospace;color:var(--muted)}
+</style></head><body><div class="head"><div class="pub">__PUB__</div>__DATE__</div>
+<p class="quote">__QUOTE__</p><div class="url">__URL__</div></body></html>"""
+    return _data_url(
+        document.replace("__SIZE__", size).replace("__PUB__", html.escape(publication))
+        .replace("__DATE__", dated).replace("__QUOTE__", html.escape(quote))
+        .replace("__URL__", html.escape(source_display(source)))
+    )
+
+
+def source_card_beat(beat: dict) -> dict | None:
+    """The beat as a source card: what a source or highlight beat becomes
+    when its page covers the text. The text was found on the page, so the
+    card quotes what the source says."""
+    quote = beat.get("text") or beat.get("wait_for_text")
+    if beat.get("shot") not in CARD_FALLBACK_SHOTS or not beat.get("source") or not quote:
+        return None
+    return {**beat, "shot": "source_card", "text": quote, "fallback_of": beat["shot"]}
 
 
 def image_page(url: str, caption: str | None = None, source: str | None = None) -> str:
@@ -659,6 +774,15 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             _shot(1.8, text, move_seconds=1.2, lift=True, fit=True),
             _act({"type": "annotate", "target_text": text, "text": mark, "style": "marker",
                   "ms": 4000, "wait_for_text": text}, line),
+        ]
+    if shot == "source_card":
+        first_words = " ".join(beat["text"].replace("\n", " ").split()[:6])
+        return [
+            _act({"type": "goto", "url": source_card_page(beat["text"], beat["source"], beat.get("publication"),
+                                                          beat.get("date")),
+                  "offscreen": True, "wait_for_text": first_words, "settle_ms": 300}),
+            _shot(1.06, None, move_seconds=3.0),
+            _say(line, first_words),
         ]
     if shot == "card":
         render_card = render_card_action(beat)

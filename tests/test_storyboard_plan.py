@@ -359,6 +359,71 @@ def test_card_and_image_are_pages_of_their_own():
     assert ops[-1]["narration"] == "The city."
 
 
+def test_a_source_card_quotes_its_source_with_the_publication_date_and_address():
+    beat = check([{"shot": "source_card", "source": "https://www.nytimes.example/2026/10/shadow-ai.html?smid=x",
+                   "text": "Nearly 40% of uploaded files contain <PII>", "date": "28 October 2026",
+                   "line": "Two in five uploads carry personal data."}])["beats"][0]
+    ops = boards.recipe(beat)
+    goto = ops[0]["action"]
+    assert goto["type"] == "goto" and goto["offscreen"] and goto["wait_for_text"] == "Nearly 40% of uploaded files contain"
+    assert ops[-1]["narration"] == "Two in five uploads carry personal data."
+    page = urllib.parse.unquote(goto["url"])
+    assert "nytimes.example" in page and "28 October 2026" in page
+    assert "nytimes.example/2026/10/shadow-ai.html" in page and "smid" not in page
+    assert "&lt;PII&gt;" in page and "<PII>" not in page
+    # The quote marks are CSS, so the quote's words are what the step waits for.
+    assert '<p class="quote">Nearly 40%' in page
+    named = boards.source_card_page("Quoted.", "https://x.example/a", publication="The Register")
+    assert "The Register" in urllib.parse.unquote(named)
+
+
+def test_a_source_card_needs_its_source_and_a_quote_that_is_on_the_page():
+    article = "https://news.example/a"
+    page = boards.loose_text(boards.html_text(
+        "<html><script>var x='Nearly 40%'</script><p>Nearly&nbsp;40% of uploaded files contain "
+        "<em>personally</em> identifiable information, the report says.</p></html>"))
+    probe = answers({
+        article: {"text": page},
+        "https://paywalled.example/a": {"status": 403},
+        "https://gone.example/a": {"status": 404},
+    })
+    plan = [
+        {"shot": "source_card", "text": "Nearly 40% of uploaded files contain personally identifiable information",
+         "source": article, "line": "One."},
+        {"shot": "source_card", "text": "Nearly 40% \u2026 identifiable information", "source": article,
+         "line": "Two."},
+        {"shot": "source_card", "text": "Nearly half of all files", "source": article, "line": "Three."},
+        {"shot": "source_card", "text": "Behind the wall", "source": "https://paywalled.example/a", "line": "Four."},
+        {"shot": "source_card", "text": "Gone", "source": "https://gone.example/a", "line": "Five."},
+        {"shot": "source_card", "text": "No source", "line": "Six."},
+    ]
+    report = check(plan, probe)
+    flagged = categories(report)
+    assert not any(beat in (1, 2) for beat, _ in flagged)
+    assert (3, "quote_not_on_page") in categories(report, "warn")
+    # A 403 is why a card is shown: AgentTake says it could not check the quote.
+    assert (4, "unverified_quote") in categories(report, "warn")
+    assert (4, "forbidden_url") not in flagged
+    assert (5, "broken_url") in categories(report, "fix")
+    assert (6, "missing_source") in categories(report, "fix")
+
+
+def test_a_forbidden_source_suggests_a_source_card():
+    locked = "https://locked.example/a"
+    report = check([{"shot": "source", "url": locked, "wait_for_text": "Headline", "line": "One."}],
+                   answers({locked: {"status": 403}}))
+    assert any("source_card" in item["message"] for item in report["checklist"]
+               if item["category"] == "forbidden_url")
+
+
+def test_a_beat_after_a_source_card_names_its_page():
+    report = check([
+        {"shot": "source_card", "text": "A quote", "source": "https://news.example/a", "line": "One."},
+        {"shot": "highlight", "text": "a quote", "source": "https://news.example/a", "line": "Two."},
+    ])
+    assert (2, "missing_field") in categories(report, "fix")
+
+
 def test_a_card_uses_the_render_card_where_agenttake_has_one(monkeypatch):
     from reel_studio import schema
 
@@ -412,6 +477,8 @@ class StandInSession:
         self.covered = set(covered)
         self.pages = list(pages)
         self.page = ""
+        self.url = ""
+        self.gotos: list[str] = []
         self.slow = slow
         self.calls: list[tuple] = []
         self.fits: list[bool] = []
@@ -429,13 +496,17 @@ class StandInSession:
 
     async def act(self, action, narration=""):
         self.calls.append(("act", action.type, action.offscreen, narration))
+        if action.type == "goto":
+            self.url = action.url
+            self.gotos.append(action.url)
         if self.slow and narration:
             await asyncio.sleep(self.slow)
         for text in (action.wait_for_text, action.text if action.type == "scroll_to_text" else None):
             if text and text in self.missing:
                 return {"ok": False, "error": {"type": "text_not_found", "message": f"Visible text not found: {text}"}}, None
         result = {"ok": True, "url": action.url or "https://page.example", "narration_duration": 1.0 if narration else 0}
-        if narration and action.wait_for_text in self.covered:
+        # Only a site covers its text: AgentTake's own cards have no dialogs.
+        if narration and action.wait_for_text in self.covered and not self.url.startswith("data:"):
             result["focus_cover"] = {"points": 15, "covered": 12, "text": action.wait_for_text,
                                      "by": {"element": "div.fc-consent-root", "position": "fixed",
                                             "text": "The Register asks for your consent"}}
@@ -590,19 +661,39 @@ def test_director_guide_is_the_handbook(server):
     assert server.storyboard_prompt() == guide
 
 
-def test_a_beat_whose_line_plays_over_a_dialog_is_not_shot(server):
+def test_a_beat_whose_page_is_covered_is_shown_as_a_source_card(server):
     """The Sluss film's source beats played under Google's consent dialog for
-    22 s, and every beat was reported ok (2026-10-28)."""
+    22 s, and every beat was reported ok (2026-10-28). Now the covered take is
+    left out and the beat quotes its source on a card."""
+    from reel_studio import store
+
     session = StandInSession(covered={"Shadow AI is here"})
     start(server, "s-covered", session)
     plan = asyncio.run(server.plan_storyboard(good_plan()))
     shot = asyncio.run(server.shoot_storyboard("s-covered", plan_id=plan["plan_id"]))
     first = shot["beats"][0]
-    assert first["ok"] is False and 1 in shot["failed"]
-    assert first["reason"].startswith("focus_covered: ")
-    assert "div.fc-consent-root (fixed)" in first["reason"] and "12 of 15" in first["reason"]
-    # The others are untouched.
+    assert first["ok"] and first["fallback"] == "source_card" and 1 not in shot["failed"]
+    assert "covered" in first["notes"][0] and "div.fc-consent-root (fixed)" in first["notes"][0]
+    line = good_plan()[0]["line"]
+    spoken = [step for step in store.get_session("s-covered")["steps"] if step["narration_text"] == line]
+    # Spoken twice, played once: over the card, the covered take left out.
+    assert [step["offscreen"] for step in spoken] == [1, 0]
+    assert first["steps"] == [spoken[1]["idx"]]
+    cards = [url for url in session.gotos if url.startswith("data:")]
+    assert "news.example/shadow-ai" in urllib.parse.unquote(cards[0])
     assert [beat["ok"] for beat in shot["beats"][1:]] == [True, True, True, True]
+
+
+def test_a_covered_beat_without_a_card_to_fall_back_on_fails(server):
+    """A system shot is the product, not a source: covered, it fails."""
+    session = StandInSession(covered={"Dashboard"})
+    start(server, "s-covered-system", session)
+    plan = asyncio.run(server.plan_storyboard(
+        [{"shot": "system", "url": PRODUCT, "wait_for_text": "Dashboard", "line": "The dashboard."}]))
+    shot = asyncio.run(server.shoot_storyboard("s-covered-system", plan_id=plan["plan_id"]))
+    first = shot["beats"][0]
+    assert first["ok"] is False and "fallback" not in first
+    assert first["reason"].startswith("focus_covered: ") and "12 of 15" in first["reason"]
 
 
 CHAT_PLAN = [

@@ -33,6 +33,7 @@ storyboarded take was one: its own review found nothing.
 |---|---|
 | `source` | The headline readable, wide, with no paywall overlay covering it. |
 | `highlight` | The marker on the quoted words with the source label, above the subtitle band, the whole quote in frame, and a line that reports the source rather than argues past it. |
+| `source_card` | The publication and date above, the quote whole, the address below; nothing clipped. A beat shot as a `source` or `highlight` that came back with `fallback: source_card` shows this card, not the page. |
 | `card` | The text whole, not cut at the edge, with no stray `\n`; a sourced card shows its source. |
 | `image` | The image itself, not a broken-image icon; the lower third above the subtitles. |
 | `page_tour` | Consecutive frames at different scroll positions. Two identical frames across the whole beat mean the glide never moved. |

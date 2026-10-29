@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.5.0
+version: 0.6.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -169,7 +169,8 @@ Don't use for:
   marked words say, not another sentence of the article the viewer cannot
   see.
 - **Headlines and short quotes only.** One marked sentence, never an article
-  read out. For a paywalled page, the headline only.
+  read out. For a paywalled page, the headline only, or a `source_card`
+  quoting it.
 - **Never a synthetic real person.** No generated faces, voices or quotes
   attributed to someone. An `image` is a real photo or a graphic you may use,
   with its source named.
@@ -186,9 +187,11 @@ Don't use for:
   step 12 is not optional.
 - **A dialog over the text is never "a bar at the bottom".** A beat that fails
   `focus_covered` names what is in front of its text. Do not retake it
-  unchanged: wait for a sentence below the box, or pick another source. In
-  the first Sluss film a consent dialog covered both source beats for 22 s,
-  and the director's own review played it down.
+  unchanged: wait for a sentence below the box, or pick another source. A
+  covered `source` or `highlight` comes back ok with `fallback: source_card`:
+  the beat is a card quoting the page, which is fine; look at it on the
+  contact sheet. In the first Sluss film a consent dialog covered both source
+  beats for 22 s, and the director's own review played it down.
 - **The text has to match the page exactly.** `wait_for_text` and a
   highlight's `text` must match what the page renders. Curly quotes,
   non-breaking spaces, a CSS uppercase heading and a truncated teaser all

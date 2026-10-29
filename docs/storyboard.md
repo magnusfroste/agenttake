@@ -34,8 +34,8 @@ contact_sheet(session_id)              ← look at the film before you share it
 - `shot` — one of the shots below.
 - `line` — the narration, exactly as it is spoken, once. One thought, at most
   about 35 words. Every shot is narrated except `login`.
-- `source` — the URL a claim comes from. Required on `source`, `highlight` and
-  on a `card` that states a number. A `source` shot's own url counts, and so
+- `source` — the URL a claim comes from. Required on `source`, `highlight`,
+  `source_card` and on a `card` that states a number. A `source` shot's own url counts, and so
   does a `highlight`'s, or the article a `source` beat opened before it; a
   `highlight` on a page another shot opened (a product tour) names its source.
 - `label` — a short name, used in reports.
@@ -47,6 +47,7 @@ contact_sheet(session_id)              ← look at the film before you share it
 |---|---|---|
 | `source` | `url`, `wait_for_text` (the headline) | Opens the article offscreen, closes a cookie banner, waits for the headline, then holds it wide with a slow push-in while the line plays. |
 | `highlight` | `text` (a short quote), `url` optional, `source`, `caption` optional | Scrolls to the words, marks them with the source's name, close shot kept above the subtitle band. The close-up is never tighter than the whole quote: a quote that wraps across a column gets a gentler zoom instead of losing its end off the edge. Without `url` it stays on the page before. |
+| `source_card` | `source`, `text` (the headline or a short quote, word for word), `publication` optional (default: the site's name), `date` optional | The quote on a clean card, as a television documentary shows a source: the publication and the date above, the quote large, the address below. For a source the camera cannot show: behind a paywall, answering 403, or buried under dialogs and ads. The real page when it can be read, the card when it cannot. |
 | `card` | `text` (`\n` for a second line), `background` optional, `source` when it states a number | A full-screen text card: `auto` follows the session's colour scheme; or a colour (`#0f1420`, `navy`), or an https image dimmed under the text. A sourced card names its source in the corner. |
 | `image` | `url` (an https image), `caption` optional | The still with a slow Ken Burns drift; `caption` is a lower third, above the subtitles. |
 | `page_tour` | `url`, `wait_for_text` optional | A glide from the hero to the footer, as long as the line. **Once per page**: a second tour of it, from whatever anchor, glides over the same sections again. |
@@ -64,8 +65,9 @@ The session's `color_scheme` is honoured on every page, cards included.
 Nothing is recorded. The checklist has two severities:
 
 - **fix** — shoot_storyboard refuses until it is gone: a claim without a
-  source; a URL that does not answer, answers 4xx/5xx, or 401/403 (a viewer
-  cannot open it); a secret AgentTake does not have; a missing field; a line
+  source; a URL that does not answer, answers 4xx/5xx, or 401/403 (the
+  camera cannot open it: find a public source, or quote it on a
+  `source_card`); a secret AgentTake does not have; a missing field; a line
   planned twice; a page toured twice; a page that sends a visitor to the
   sign-in, shot before the login beat that signs in there
   (`before_sign_in`: move the login first, it is shot offscreen).
@@ -73,7 +75,10 @@ Nothing is recorded. The checklist has two severities:
   60 by default, flagged above 70 s; 150 words is a minute), a page that
   looks paywalled, a bot check, a long quote, a figure in a line with no
   source on the beat, a page behind a sign-in with no login beat for it
-  (`behind_sign_in`).
+  (`behind_sign_in`). On a `source_card`: a quote that is not in the page's
+  text (`quote_not_on_page`: the card says the source says it, so copy it
+  word for word), or a source AgentTake cannot read to check it
+  (`unverified_quote`, a paywall or a 403: check it yourself).
 
 Text is matched loosely when it is not found as written: dashes, quotes,
 spaces, ellipses and case count as alike, so "Dry-run — test a prompt"
@@ -157,10 +162,14 @@ and gives the result. Do not call `shoot_storyboard` or `shoot_beat` meanwhile
 (they only report the same shoot), and `act` and `finish` refuse until it is
 done.
 
-A `focus_covered` beat needs a change before a retake can pass: another
-`wait_for_text` further down the article, below the box, or another source.
-AgentTake already refuses or hides the consent managers it knows; the one it
-names is one it does not.
+A `source` or `highlight` beat whose text is covered is not failed: the text
+was found on the page, so AgentTake leaves the covered take out of the video
+and shoots the beat again as a `source_card` quoting it, under the same
+line. The report says `fallback: "source_card"` and names what covered the
+page. Any other covered beat fails `focus_covered` and needs a change before
+a retake can pass: another `wait_for_text` further down the page, below the
+box. AgentTake already refuses or hides the consent managers it knows; the
+one it names is one it does not.
 
 1. If the reason is in the beat (wrong `wait_for_text`, a quote that is not on
    the page), fix it: plan_storyboard(beats, plan_id=...) again. Beats already
