@@ -355,6 +355,7 @@ async def probe_url(url: str) -> dict:
         ) as client:
             async with client.stream("GET", url) as response:
                 result["status"] = response.status_code
+                result["final_url"] = str(response.url)
                 result["content_type"] = response.headers.get("content-type", "")
                 result["challenge"] = (
                     response.headers.get("cf-mitigated") == "challenge"
@@ -414,6 +415,7 @@ async def check_storyboard(
     for answer, (url, uses) in zip(answers, urls.items()):
         for beat, name in uses:
             items.extend(_url_items(beat, name, url, answer))
+    items.extend(sign_in_items(beats, dict(zip(urls, answers))))
     items.sort(key=lambda item: (item["severity"] != "fix", item.get("beat") or 0))
     return {
         "beats": beats,
@@ -421,6 +423,55 @@ async def check_storyboard(
         "ready": not any(item["severity"] == "fix" for item in items),
         "estimated_seconds": estimated,
     }
+
+
+# A page that sends a visitor to a sign-in: its address ends up on one of
+# these paths.
+SIGN_IN_PATH = re.compile(r"/(log-?in|sign-?in|auth|sso)(/|$)", re.IGNORECASE)
+
+
+def sends_to_sign_in(url: str, answer: dict, private: bool) -> bool:
+    """Redirected to a sign-in page; or, for a page only a signed-in user
+    sees (system, live_answer), answered 401 or 403. A public page that
+    answers 401 is already forbidden_url."""
+    final = answer.get("final_url") or ""
+    if final and final != url and SIGN_IN_PATH.search(urllib.parse.urlsplit(final).path):
+        return True
+    return private and answer.get("status") in (401, 403) and not answer.get("challenge")
+
+
+def sign_in_items(beats: list[dict], answers: dict[str, dict]) -> list[dict]:
+    """A beat that opens a page behind a sign-in before any login beat has
+    signed in to that site. The Sluss film's console beat came before its
+    login beat and failed on the sign-in page (2026-10-28); a login is shot
+    offscreen, so moving it first costs nothing on screen."""
+    items = []
+    signed_in: set[str] = set()
+    logins = [(beat["number"], urllib.parse.urlsplit(beat["url"]).hostname)
+              for beat in beats if beat["shot"] == "login" and _is_http(beat.get("url"))]
+    for beat in beats:
+        url = beat.get("url")
+        if beat["shot"] == "login":
+            if _is_http(url):
+                signed_in.add(urllib.parse.urlsplit(url).hostname)
+            continue
+        if not _is_http(url) or url not in answers:
+            continue
+        host = urllib.parse.urlsplit(url).hostname
+        if host in signed_in or not sends_to_sign_in(url, answers[url], beat["shot"] in PRIVATE_SHOTS):
+            continue
+        later = [number for number, login_host in logins if login_host == host and number > beat["number"]]
+        if later:
+            items.append(_item(beat["number"], beat["label"], "fix", "before_sign_in",
+                               f"{url} sends a visitor to the sign-in, and the login beat {later[0]} comes "
+                               "after this one: move the login before it (it is shot offscreen, so it costs "
+                               "nothing on screen)"))
+        elif answers[url].get("status") not in (401, 403):  # a 401 is private_url already
+            # Signed in some other way, perhaps: weigh it, do not refuse it.
+            items.append(_item(beat["number"], beat["label"], "warn", "behind_sign_in",
+                               f"{url} sends a visitor to the sign-in, and no login beat signs in to {host}: "
+                               "add one before it, or show a public page"))
+    return items
 
 
 def _secret_name(value: str | None) -> str | None:

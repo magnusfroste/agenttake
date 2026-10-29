@@ -2032,6 +2032,14 @@ async def start_session(
         store.update_session_subtitles(session.session_id, True)
     if subtitle_style != "soft":
         store.update_session_subtitle_style(session.session_id, subtitle_style)
+    store.update_session_start_args(session.session_id, {
+        "start_url": start_url, "width": width, "height": height, "voice": voice,
+        "provider": selected_provider, "output_size": output_size, "title": title, "subtitle": subtitle,
+        "accent": accent, "cta_url": cta_url, "cta_text": cta_text, "music": music,
+        "transitions": transitions, "title_background": title_background, "closing_qr": closing_qr,
+        "subtitles": subtitles, "subtitle_style": subtitle_style, "mask": mask,
+        "color_scheme": color_scheme,
+    })
     result: dict = {"session_id": session.session_id}
     if planned_beats:
         result["beats"] = len(planned_beats)
@@ -2674,6 +2682,62 @@ async def shoot_beat(
         return {**report, "next": _shoot_next_hint(plan)}
 
     return await _await_shoot(_start_shoot(session_id, f"beat {beat}", work))
+
+
+@mcp.tool()
+async def fresh_take(
+    session_id: Annotated[str, Field(description="The session to shoot again, finished or not.")],
+) -> dict:
+    """Shoot a storyboard film again, from its first beat, in a new session.
+
+    After finish, shoot_beat no longer works: a flaw the contact sheet shows
+    is mended in the edit, or in a fresh take. This starts the new session
+    exactly as the first one was started (size, voice, cards, subtitles,
+    mask, colour scheme) and gives it a copy of the storyboard with every beat
+    still to shoot, so nothing has to be kept in your own files. Unchanged
+    lines reuse their voice clips. The reply lists the beats: to change one,
+    plan_storyboard(beats, plan_id=<the new plan_id>) before shooting. The
+    earlier session is left as it is.
+    """
+    stored = store.get_session(session_id)
+    if stored is None:
+        return _unknown_session(session_id)
+    if _shooting(session_id) or _finishing(session_id):
+        return {"ok": False, "error": {"type": "session_busy", "message": f"{session_id} is still shooting or rendering"},
+                "hint": "shoot_status or finish_status first."}
+    plan = store.session_storyboard(session_id)
+    if plan is None:
+        return {"ok": False, "error": {"type": "no_storyboard", "message": f"{session_id} has no storyboard"},
+                "hint": "fresh_take repeats a storyboard film; a film made with act is shot again with start_session."}
+    start_args = stored.get("start_args")
+    if not start_args:
+        return {"ok": False,
+                "error": {"type": "no_start_settings",
+                          "message": f"{session_id} was started before AgentTake kept a session's settings"},
+                "hint": "start_session again with the same settings, then plan_storyboard(beats) and shoot_storyboard."}
+    started = await start_session(**start_args)
+    if not started.get("session_id"):
+        return started
+    new_id = started["session_id"]
+    beats = [{**beat, "state": {"status": "planned", "attempts": []}} for beat in plan["beats"]]
+    plan_id = uuid.uuid4().hex[:12]
+    store.save_storyboard(plan_id, beats, plan["checklist"], plan.get("target_seconds") or 60, new_id)
+    _attach_storyboard(plan_id, new_id, beats)
+    fields = boards.StoryBeat.model_fields
+    result: dict = {
+        "ok": True,
+        "session_id": new_id,
+        "plan_id": plan_id,
+        "from_session": session_id,
+        "beats": [{key: value for key, value in beat.items() if key in fields and value not in (None, "")}
+                  for beat in plan["beats"]],
+        "next": "shoot_storyboard(session_id). To change a beat first, plan_storyboard(beats, "
+                f"plan_id={plan_id!r}) with the beats above, edited.",
+    }
+    for key in ("secrets", "warning", "active_sessions"):
+        if key in started:
+            result[key] = started[key]
+    return result
 
 
 @mcp.tool()

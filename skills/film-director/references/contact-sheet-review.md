@@ -56,6 +56,6 @@ terminal(command="ffprobe -v error -show_entries format=duration -of csv=p=0 fil
 ```
 
 A duration well under the plan means narration was cut. A file that will not
-probe is a broken capture: that take cannot be rendered again, so shoot a
-fresh session from the same `storyboard.json`. The unchanged lines reuse
-their voice clips.
+probe is a broken capture: that take cannot be rendered again, so shoot it
+again with `fresh_take(session_id)`. The unchanged lines reuse their voice
+clips.

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 import asyncio
+import hashlib
 import json
 import tempfile
 import shutil
@@ -466,6 +467,42 @@ def color_scheme_script(scheme: str) -> str:
 # How many text matches focus_text ranks; a word that is everywhere on a
 # page should not cost a round trip per occurrence.
 MAX_TEXT_CANDIDATES = 20
+
+# When get_by_text finds nothing: the smallest visible element whose text,
+# loosely compared, holds the wanted text, marked so a locator can reach it.
+# Loosely: dashes, quotes, spaces, ellipses and case are made alike, and a dash
+# standing between spaces drops out. The Sluss film waited for "Dry-run — test
+# a prompt" and never matched it, though "test a prompt" did (2026-10-28).
+_LOOSE_TEXT_JS = r"""([wanted, mark]) => {
+  const loose = (s) => (s || "").normalize("NFKC").toLowerCase()
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/[\u2010-\u2015\u2212\u2E3A\u2E3B]/g, "-")
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u00B4`]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033\u00AB\u00BB]/g, '"')
+    .replace(/\s+-+\s+/g, " ").replace(/\s+/g, " ").trim();
+  const target = loose(wanted);
+  if (!target) return false;
+  const skip = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD"]);
+  const shown = (el) => {
+    const box = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return box.width > 0 && box.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+  };
+  let found = null;
+  const visit = (el) => {
+    if (skip.has(el.tagName) || !loose(el.textContent).includes(target)) return;
+    for (const child of el.children) {
+      visit(child);
+      if (found) return;
+    }
+    if (!found && shown(el) && loose(el.innerText).includes(target)) found = el;
+  };
+  visit(document.body);
+  document.querySelectorAll(`[data-take-text="${mark}"]`).forEach((el) => el.removeAttribute("data-take-text"));
+  if (!found) return false;
+  found.setAttribute("data-take-text", mark);
+  return true;
+}"""
 
 # (in navigation chrome, font size in px) for a text match.
 _TEXT_RANK_JS = """(el) => {
@@ -934,7 +971,19 @@ class BrowserSession:
             rank = (in_chrome, -font_size, index)
             if best is None or rank < best[0]:
                 best = (rank, candidate)
+        if best is None and not exact:
+            return await self._loose_text_target(text)
         return best[1] if best else None
+
+    async def _loose_text_target(self, text: str) -> Locator | None:
+        """The text found loosely (_LOOSE_TEXT_JS), or None."""
+        mark = hashlib.sha1(text.encode()).hexdigest()[:12]
+        try:
+            if await self.page.evaluate(_LOOSE_TEXT_JS, [text, mark]):
+                return self.page.locator(f'[data-take-text="{mark}"]').first
+        except PlaywrightError:
+            pass
+        return None
 
     async def _text_click_target(self, text: str) -> Locator | None:
         """What a click by text lands on: the visible element whose text is

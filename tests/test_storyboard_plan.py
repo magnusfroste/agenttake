@@ -718,3 +718,86 @@ def test_a_streamed_answer_is_read_once_it_has_landed():
     assert watched["settled"]
     assert watched["text"] == "Blocked: the prompt holds personal data, so it stays on the local model."
     assert boards.answer_verdict(watched, "personal data", 20)[0] == "personal data"
+
+
+# Signing in before the pages behind it ---------------------------------------
+
+CONSOLE = "https://demo.example/router/dashboard"
+SIGN_IN = "https://demo.example/router/login"
+
+
+def console_plan(login_first):
+    login = {"shot": "login", "url": SIGN_IN, "username": "hermes@example.com", "password_secret": "DEMO",
+             "wait_for_text": "Dashboard"}
+    console = {"shot": "system", "url": CONSOLE, "wait_for_text": "Active policy", "line": "Policy decides."}
+    hook = {"shot": "card", "text": "Where did the data go?", "line": "Where did the data go?"}
+    return [hook, login, console] if login_first else [hook, console, login]
+
+
+def test_a_page_behind_the_sign_in_must_come_after_the_login():
+    """The Sluss film's console beat came before its login beat and failed on
+    the sign-in page (2026-10-28)."""
+    gated = answers({CONSOLE: {"final_url": SIGN_IN + "?next=/router/dashboard"}})
+    report = check(console_plan(login_first=False), probe=gated, secrets=["DEMO"])
+    assert (2, "before_sign_in") in categories(report, "fix")
+    item = next(item for item in report["checklist"] if item["category"] == "before_sign_in")
+    assert "login beat 3 comes after this one" in item["message"]
+    assert check(console_plan(login_first=True), probe=gated, secrets=["DEMO"])["ready"]
+    # No login at all: say so.
+    alone = check([console_plan(True)[0], console_plan(True)[2]], probe=gated, secrets=["DEMO"])
+    assert (2, "behind_sign_in") in categories(alone, "warn") and alone["ready"]
+    # A public page is not taken for a sign-in.
+    assert check(console_plan(login_first=False), secrets=["DEMO"])["ready"]
+
+
+# A fresh take, from AgentTake's own copy of the storyboard -------------------
+
+def test_a_fresh_take_starts_like_the_first_and_shoots_the_same_plan(server, monkeypatch):
+    from reel_studio import store
+
+    created = []
+
+    class Recording(StandInSession):
+        def __init__(self, number):
+            super().__init__()
+            self.session_id = f"s-take-{number}"
+            self.directory = "/tmp"
+
+    async def create(*args, **kwargs):
+        created.append((args, kwargs))
+        return Recording(len(created))
+
+    async def speak(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(server, "synthesize", speak)
+    monkeypatch.setattr(server.BrowserSession, "create", create)
+    first = asyncio.run(server.start_session(ARTICLE, width=1280, height=720, title="Shadow AI",
+                                             subtitles=True, mask=["[data-secret]"], color_scheme="dark"))
+    assert first["session_id"] == "s-take-1"
+    plan = asyncio.run(server.plan_storyboard(good_plan(), session_id="s-take-1"))
+    shot = asyncio.run(server.shoot_storyboard("s-take-1"))
+    assert shot["status"] == "done"
+
+    again = asyncio.run(server.fresh_take("s-take-1"))
+    assert again["ok"] and again["session_id"] == "s-take-2" and again["from_session"] == "s-take-1"
+    assert again["plan_id"] != plan["plan_id"]
+    # Started exactly as the first was.
+    assert created[1] == created[0]
+    stored = store.get_session("s-take-2")
+    assert stored["subtitles"] and stored["title"] == "Shadow AI"
+    assert stored["start_args"]["color_scheme"] == "dark" and stored["start_args"]["mask"] == ["[data-secret]"]
+    # The beats come back as the director wrote them, ready to edit and plan again.
+    assert [beat["line"] for beat in again["beats"]] == [beat["line"] for beat in good_plan()]
+    assert "state" not in again["beats"][0] and again["beats"][0]["wait_for_text"] == "Shadow AI is here"
+    retaken = asyncio.run(server.shoot_storyboard("s-take-2"))
+    assert retaken["status"] == "done" and [beat["ok"] for beat in retaken["beats"]] == [True] * 5
+    # The first session's plan is untouched.
+    assert all(beat["state"]["status"] == "ok" for beat in store.get_storyboard(plan["plan_id"])["beats"])
+    for session_id in ("s-take-1", "s-take-2"):
+        server.sessions.pop(session_id, None)
+
+
+def test_a_fresh_take_needs_a_storyboard(server):
+    start(server, "s-acted", StandInSession())
+    assert asyncio.run(server.fresh_take("s-acted"))["error"]["type"] == "no_storyboard"
