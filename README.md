@@ -42,7 +42,7 @@ filmed and cut it with AgentTake.
   with `start_session(beats=...)`; the review flags a beat skipped or recorded
   out of order, a page that had not loaded under a line, and a menu left open.
 - 📋 **Storyboards** — the director writes beats (`source`, `highlight`,
-  `card`, `image`, `page_tour`, `login`, `system`, `live_answer`, `cta`) and
+  `source_card`, `card`, `image`, `page_tour`, `login`, `system`, `live_answer`, `cta`) and
   AgentTake shoots each with a tested recipe; `plan_storyboard` checks sources,
   URLs, secrets and length before anything records.
 - 🔁 **Edit without a reshoot** — hide a step, hold a result, speed up a wait,

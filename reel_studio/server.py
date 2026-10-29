@@ -2514,6 +2514,23 @@ async def _shoot_beat(session_id: str, plan: dict, beat: dict, retake: bool,
     before = store.next_step_index(session_id)
     started = time.monotonic()
     outcome = await boards.run_ops(live, session_id, boards.recipe(beat, retake=retake), _run_action)
+    fallback = None
+    card = boards.source_card_beat(beat)
+    if not outcome["ok"] and outcome["reason"].startswith("focus_covered") and card is not None:
+        # The text is on the page, under a dialog or an ad: the take is
+        # left out and the beat is shown as a card quoting it. The first
+        # Sluss film played 22 s of source beats under a consent dialog.
+        covered = outcome["reason"]
+        for step in (store.get_session(session_id) or {}).get("steps", []):
+            if step["idx"] >= before and step.get("ok") and not step.get("offscreen"):
+                store.edit_step(session_id, step["idx"], hidden=True)
+        outcome = await boards.run_ops(live, session_id, boards.recipe(card), _run_action)
+        fallback = "source_card"
+        if outcome["ok"]:
+            outcome["notes"] = [f"the page was covered ({covered.removeprefix('focus_covered: ')}): "
+                                "shown as a source card quoting it", *outcome.get("notes", [])]
+        else:
+            outcome["reason"] = f"{covered}; the source card failed too: {outcome['reason']}"
     after = store.next_step_index(session_id)
     recorded = [step for step in (store.get_session(session_id) or {}).get("steps", [])
                 if before <= step["idx"] < after]
@@ -2522,6 +2539,7 @@ async def _shoot_beat(session_id: str, plan: dict, beat: dict, retake: bool,
     state["attempts"].append({
         "steps": [step["idx"] for step in recorded], "visible": visible, "retake": retake,
         "ok": outcome["ok"], **({"reason": outcome["reason"]} if not outcome["ok"] else {}),
+        **({"fallback": fallback} if fallback else {}),
     })
     state["status"] = "ok" if outcome["ok"] else "failed"
     state.pop("placed", None)
@@ -2532,6 +2550,8 @@ async def _shoot_beat(session_id: str, plan: dict, beat: dict, retake: bool,
         report["reason"] = outcome["reason"]
     if retake:
         report["retake"] = True
+    if fallback:
+        report["fallback"] = fallback
     if outcome.get("notes"):
         report["notes"] = outcome["notes"]
     if job is not None:

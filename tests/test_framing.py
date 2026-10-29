@@ -213,3 +213,41 @@ def test_text_is_found_loosely_when_get_by_text_misses_it():
     found, exact = asyncio.run(run())
     assert found == {"Dry-run — test a prompt": "H2", 'said "keep it local"...': "P", "Hidden - copy": None}
     assert exact is None
+
+
+def test_a_source_card_fits_the_frame_and_its_quote_is_found_by_its_words():
+    """The card a covered source beat becomes: the quote, its publication and
+    its address on screen at 1280x720, none of them clipped."""
+    from reel_studio.storyboard import source_card_page
+
+    playwright = pytest.importorskip("playwright.async_api")
+    quote = ("Nearly 40% of uploaded files contain personally identifiable information, and most "
+             "employees never told their employer which tools they use for it")
+
+    async def run():
+        async with playwright.async_playwright() as p:
+            try:
+                browser = await p.chromium.launch()
+            except Exception as exc:  # no browser in this environment
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = await browser.new_page(viewport={"width": 1280, "height": 720})
+            await page.goto(source_card_page(quote, "https://www.esecurityplanet.example/news/shadow-ai/",
+                                             date="28 October 2026"))
+            shown = await page.get_by_text("Nearly 40% of uploaded files contain").first.is_visible()
+            boxes = await page.evaluate("""() => ['.pub', '.date', '.quote', '.url'].map((s) => {
+                const r = document.querySelector(s).getBoundingClientRect();
+                return [r.left, r.top, r.right, r.bottom];
+            })""")
+            said = await page.evaluate("document.querySelector('.quote').innerText")
+            await browser.close()
+            return shown, boxes, said
+
+    shown, boxes, said = asyncio.run(run())
+    assert shown and said == quote
+    for left, top, right, bottom in boxes:
+        assert 0 <= left and right <= 1280 and 0 <= top and bottom <= 720
+    # The quote does not run into the publication above or the address below.
+    pub, date, quote_box, url = boxes
+    assert date[3] < quote_box[1] and quote_box[3] < url[1]
+    # Above the subtitles, which take the bottom fifth of the frame.
+    assert url[3] <= 720 * 0.8 + 1
