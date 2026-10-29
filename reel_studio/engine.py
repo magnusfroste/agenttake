@@ -475,6 +475,21 @@ _TEXT_RANK_JS = """(el) => {
 }"""
 
 
+def text_that_appeared(before: str, after: str, limit: int = 600) -> str:
+    """The lines visible after an action that were not there before it.
+
+    What a wait_for_text miss reports alongside "did not appear". The Sluss
+    film's proof beat waited 300 s for "never left the house" while the page
+    said "Stopped by your policy — nothing was sent to any model": the chat
+    still held an earlier prompt, so Sluss blocked the request instead of
+    routing it, and nothing in the error said so (2026-10-28).
+    """
+    seen = {line.strip() for line in before.splitlines()}
+    new = [line.strip() for line in after.splitlines() if line.strip() and line.strip() not in seen]
+    text = " | ".join(new)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def output_root() -> Path:
     return Path(os.environ.get("REEL_OUTPUT_DIR", str(DEFAULT_OUTPUT_DIR))).expanduser()
 
@@ -882,6 +897,12 @@ class BrowserSession:
         await self.page.locator(
             "[data-video-director-spotlight]"
         ).evaluate_all("(nodes) => nodes.forEach((node) => node.remove())")
+
+    async def _body_text(self) -> str:
+        try:
+            return await self.page.locator("body").inner_text(timeout=2000)
+        except PlaywrightError:
+            return ""
 
     async def _visible_text_target(self, text: str, exact: bool = False) -> Locator | None:
         text = text.strip()
@@ -1356,6 +1377,7 @@ class BrowserSession:
         action_finished_at: float | None = None
         action_completed_at: float | None = None
         before_url = self.page.url
+        before_text = await self._body_text() if action.wait_for_text else ""
         if action.ref and self.refs_stale:
             return await self.error_result(
                 "stale_refs",
@@ -1720,10 +1742,16 @@ class BrowserSession:
                         break
                     await self.page.wait_for_timeout(100)
                 else:
+                    appeared = text_that_appeared(before_text, await self._body_text())
+                    shown = (
+                        f" The page showed instead: {appeared}"
+                        if appeared
+                        else " Nothing new appeared on the page."
+                    )
                     return await self.error_result(
                         "page_not_settled",
                         f"Visible text did not appear within "
-                        f"{action.wait_timeout_ms} ms: {action.wait_for_text}. "
+                        f"{action.wait_timeout_ms} ms: {action.wait_for_text}.{shown} "
                         "The action itself already ran — do not repeat it; wait "
                         "for the text with a wait step, and set wait_timeout_ms "
                         "(up to 60000, or 600000 on an offscreen step) for slow answers.",
