@@ -16,6 +16,7 @@ plan_storyboard(beats=[...])           → plan_id, checklist, estimated_seconds
 start_session(start_url=<first beat's url>, title=..., subtitles=true, ...)
 shoot_storyboard(session_id, plan_id=...)   → per beat: ok, or failed and why
   call again while "to_come" is not empty (one call records a few minutes)
+  status "shooting"? shoot_status(session_id) until status is "done"
 shoot_beat(session_id, beat=n)         ← a retake, for a beat that failed
 review_session(session_id), finish(session_id)
 apply_retakes(session_id), rerender(session_id)   ← only if you retook a beat
@@ -51,7 +52,7 @@ contact_sheet(session_id)              ← look at the film before you share it
 | `page_tour` | `url`, `wait_for_text` optional | A glide from the hero to the footer, as long as the line. **Once per page**: a second tour of it, from whatever anchor, glides over the same sections again. |
 | `login` | `url`, `username`, `password_secret`, `wait_for_text` | Signs in offscreen and lands on the page after it. `password_secret` is the NAME of a secret AgentTake has (start_session lists them); the password never passes through you. `wait_for_text` is something the page after sign-in shows. The line is optional. |
 | `system` | `url`, `wait_for_text`, `zoom` optional | A page in the product, or one section of any page, held with a gentle push-in on `wait_for_text` (the section's heading). `zoom` (0.5–2) makes small text readable. |
-| `live_answer` | `input_text`, `wait_for_text`, `timeout` (seconds, default 120), `url` optional | Types the question and sends it offscreen, waits for the answer (minutes if need be), then shows it close, above the subtitles. `wait_for_text` must be words only the answer has. |
+| `live_answer` | `input_text`, `wait_for_text` optional, `timeout` (seconds, default 120), `url` optional | Types the question and sends it offscreen, reads the page until the answer has stopped growing for 3 s (minutes if need be), then shows it close, above the subtitles. With `wait_for_text` (words only the answer has) the answer must contain them and is framed on them; without, it is framed on its first words. |
 | `cta` | `url`, `wait_for_text` optional | The page the viewer should go to. Pair it with start_session's `cta_url` for the closing card and its QR code. |
 
 Every narrated step waits for its text before the line plays, so a page that
@@ -105,7 +106,7 @@ from the beat's source):
  {"shot": "system", "url": "<the policy page>", "wait_for_text": "<a policy's name>",
   "line": "<what the CISO decides here>"},
  {"shot": "live_answer", "url": "<the chat page>", "input_text": "<a request the policy stops>",
-  "wait_for_text": "<words only the answer has>", "line": "<what the viewer just saw happen>"},
+  "line": "<what the viewer just saw happen>"},
  {"shot": "cta", "url": "https://sluss.eu", "line": "<one action, and where>"}
 ]
 ```
@@ -134,11 +135,20 @@ from the beat's source):
 ## When a beat fails
 
 shoot_storyboard reports each beat `ok`, or `failed` with the reason — text
-that never appeared, a field it could not find, a URL that did not open, or
+that never appeared, a field it could not find, a URL that did not open, a
+live answer that never came (`no_answer`) or said something else
+(`answer_without_text`, with what it did say), or
 `focus_covered`: the text the line waits for is there, but half or more of it
 is under something else, and the reason names it (a consent dialog, a
 newsletter box, an ad frame). The shoot carries on with the next beat (a
 failed `login` stops it: what follows needs the sign-in).
+
+Every call answers within about three minutes, whatever a beat waits for. A
+shoot still running then answers with `status: "shooting"`, the beat it is on
+and the beats reported so far; `shoot_status(session_id)` waits for it again
+and gives the result. Do not call `shoot_storyboard` or `shoot_beat` meanwhile
+(they only report the same shoot), and `act` and `finish` refuse until it is
+done.
 
 A `focus_covered` beat needs a change before a retake can pass: another
 `wait_for_text` further down the article, below the box, or another source.

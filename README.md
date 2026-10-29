@@ -176,7 +176,10 @@ not have, and a plan longer than the film are on its checklist.
 recipe (consent banners closed offscreen, every line waiting for its text,
 glides, push-ins, sign-ins offscreen) and reports each beat ok or failed with
 the reason; `shoot_beat` retakes one, and `apply_retakes` puts it in place
-after `finish`. The handbook is [docs/storyboard.md](docs/storyboard.md), also
+after `finish`. A shoot runs as a job: a call answers within about three
+minutes, and one still running reports the beat it is on, followed with
+`shoot_status`. A `live_answer` reads the page until the answer stops growing,
+so it needs no predicted words, and ends in a verdict either way. The handbook is [docs/storyboard.md](docs/storyboard.md), also
 served as the `director_guide` tool and the `storyboard` prompt.
 
 A Hermes agent learns the whole job, from research to a downloaded MP4, from
@@ -230,7 +233,7 @@ None of these can score `excellent`.
 |---|---|
 | **Session** | `start_session`, `get_status`, `finish`, `finish_status`, `list_sessions`, `get_session`, `delete_session`, `prune` |
 | **Directing** | `observe`, `act`, `act_batch`, `assert_visible`, `begin_shot`, `preview_shot`, `verify_shot`, `review_session` |
-| **Storyboard** | `director_guide`, `plan_storyboard`, `shoot_storyboard`, `shoot_beat`, `apply_retakes` |
+| **Storyboard** | `director_guide`, `plan_storyboard`, `shoot_storyboard`, `shoot_beat`, `shoot_status`, `apply_retakes` |
 | **After finish** | `storyboard`, `contact_sheet`, `edit_step`, `update_step_narration`, `rerender`, `set_watch_page` |
 | **Voices** | `list_voices` |
 | **Roadmap** | `submit_backlog`, `list_backlog`, `update_backlog` |
