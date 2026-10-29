@@ -2189,6 +2189,7 @@ async def _run_action(
         payload.get("narration_clip"),
         parsed_action.speed,
         payload.get("open_overlays"),
+        payload.get("focus_cover"),
     )
     return payload, screenshot
 
@@ -3312,7 +3313,7 @@ def _extract_review_frames(session_id: str, video_path: Path, duration: float | 
     return frames
 
 
-BLOCKS_EXCELLENT = {"beat_missing", "beat_out_of_order", "blank_frame", "overlay_left_open"}
+BLOCKS_EXCELLENT = {"beat_missing", "beat_out_of_order", "blank_frame", "overlay_left_open", "focus_covered"}
 
 
 @mcp.tool()
@@ -3439,6 +3440,9 @@ async def review_session(session_id: str) -> dict:
     # 2e. A menu or popover opened by one step and still open under a later
     # step's line.
     findings.extend(checks.overlay_findings(steps))
+
+    # 2f. The text a line is about, under a dialog, a banner or an ad.
+    findings.extend(checks.focus_findings(steps))
 
     # 3. Ending Quality & Structure
     if not steps:

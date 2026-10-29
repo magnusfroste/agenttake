@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.3.0
+version: 0.3.1
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -176,6 +176,11 @@ Don't use for:
 - **`review_session` scoring 95 does not make a film good.** It has passed takes
   with skipped beats and blank pages. Only the contact sheet is evidence, and
   step 12 is not optional.
+- **A dialog over the text is never "a bar at the bottom".** A beat that fails
+  `focus_covered` names what is in front of its text. Do not retake it
+  unchanged: wait for a sentence below the box, or pick another source. In
+  the first Sluss film a consent dialog covered both source beats for 22 s,
+  and the director's own review played it down.
 - **The text has to match the page exactly.** `wait_for_text` and a
   highlight's `text` must match what the page renders. Curly quotes,
   non-breaking spaces, a CSS uppercase heading and a truncated teaser all

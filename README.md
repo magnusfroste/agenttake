@@ -211,6 +211,12 @@ findings. Besides leaked secrets, silent steps and a static camera:
   earlier step opened and that is still open under a later line is
   `overlay_left_open`; what a page has when it arrives (a nav built as a menu)
   is not counted.
+- **The line's text under something else** — every narrated step with a
+  `wait_for_text` asks the page, at 15 points across that text, what the
+  browser would hit there. Half or more under another layer (a consent dialog,
+  a newsletter box, an ad frame) is `focus_covered`, naming the layer; in a
+  storyboard the beat fails with that reason. `wait_for_text` alone passes on
+  covered text: Playwright's `is_visible` does not look at what is on top.
 
 None of these can score `excellent`.
 

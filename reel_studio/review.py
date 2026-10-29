@@ -315,6 +315,97 @@ def overlay_findings(steps: Sequence[dict]) -> list[dict]:
     return findings
 
 
+# The line's text under something else -------------------------------------
+
+# wait_for_text passes on text a dialog covers: Playwright's is_visible does
+# not look at what is on top. The Sluss film's source beats waited on The
+# Register's headline and played their lines under Google's consent dialog for
+# 22 s, and the director's own contact-sheet review called it "a cookie bar at
+# the bottom" (2026-10-28). So the page is asked: points across the element's
+# on-screen box, and at each the element the browser would hit there. One that
+# is neither the element, inside it, nor around it is covering it; the layer
+# reported is its outermost ancestor that does not hold the element. Take's own
+# annotations take no pointer events, so they are never in the way.
+FOCUS_COVER_JS = """(el) => {
+  const box = el.getBoundingClientRect();
+  const left = Math.max(box.left, 0), right = Math.min(box.right, innerWidth);
+  const top = Math.max(box.top, 0), bottom = Math.min(box.bottom, innerHeight);
+  if (right - left < 2 || bottom - top < 2) return {points: 0, covered: 0, by: null};
+  const describe = (node) => {
+    let layer = node;
+    while (layer.parentElement && layer.parentElement !== document.body
+           && !layer.parentElement.contains(el)) layer = layer.parentElement;
+    const name = layer.tagName.toLowerCase() + (layer.id ? "#" + layer.id : "")
+      + (typeof layer.className === "string" && layer.className.trim()
+         ? "." + layer.className.trim().split(/\\s+/)[0] : "");
+    let text = (layer.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 60);
+    if (layer.tagName === "IFRAME") {
+      try { text = new URL(layer.src).host; } catch (e) { text = "a frame"; }
+    }
+    return {element: name, position: getComputedStyle(layer).position, text};
+  };
+  let points = 0, covered = 0;
+  const by = new Map();
+  for (const fy of [0.2, 0.5, 0.8]) {
+    for (const fx of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+      const hit = document.elementFromPoint(left + (right - left) * fx, top + (bottom - top) * fy);
+      if (!hit) continue;
+      points += 1;
+      if (hit === el || el.contains(hit) || hit.contains(el)) continue;
+      covered += 1;
+      const layer = describe(hit);
+      const seen = by.get(layer.element) || {...layer, count: 0};
+      seen.count += 1;
+      by.set(layer.element, seen);
+    }
+  }
+  const worst = [...by.values()].sort((a, b) => b.count - a.count)[0] || null;
+  if (worst) delete worst.count;
+  return {points, covered, by: worst};
+}"""
+
+# A line whose text is at least half covered plays over the thing covering it.
+FOCUS_COVERED_SHARE = 0.5
+
+
+def focus_covered(cover: dict | None) -> bool:
+    if not cover or not cover.get("points"):
+        return False
+    return cover.get("covered", 0) / cover["points"] >= FOCUS_COVERED_SHARE
+
+
+def describe_cover(cover: dict) -> str:
+    """'"Employees regularly paste…" is 12 of 15 points under div.fc-consent-root
+    (fixed): "The Register asks for your consent…"'"""
+    layer = cover.get("by") or {}
+    what = layer.get("element") or "something"
+    if layer.get("position") in ("fixed", "sticky"):
+        what += f" ({layer['position']})"
+    if layer.get("text"):
+        what += f': "{layer["text"]}"'
+    return f'"{cover.get("text", "")}" is {cover.get("covered", 0)} of {cover.get("points", 0)} points under {what}'
+
+
+def focus_findings(steps: Sequence[dict]) -> list[dict]:
+    findings = []
+    for step in steps:
+        cover = step.get("focus_cover")
+        if (not focus_covered(cover) or not step.get("ok", True) or step.get("offscreen")
+                or not (step.get("narration_text") or "").strip()):
+            continue
+        findings.append({
+            "category": "focus_covered",
+            "severity": "high",
+            "location": f"step[{step.get('idx', 0)}]",
+            "message": (
+                f"Step {step.get('idx', 0)}'s line plays over a covered page: {describe_cover(cover)}. "
+                "A dialog, banner or ad is in front of what the line is about. Close or avoid it and retake "
+                "the step, or choose another page or text"
+            ),
+        })
+    return findings
+
+
 # Contact sheet -----------------------------------------------------------
 
 CONTACT_SHEET_COLUMNS = 6

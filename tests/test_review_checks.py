@@ -280,6 +280,85 @@ def test_act_stores_the_menus_on_screen_and_the_review_reads_them(mods):
     assert review["director_score"] == 85 and review["quality_status"] == "acceptable"
 
 
+def test_act_stores_how_much_of_the_line_is_covered_and_the_review_reads_it(mods):
+    server, store = mods
+    _new_session(store, "s-cover")
+    page = {"ok": True, "url": "https://www.theregister.com/a", "title": "A", "offset_seconds": 0.0,
+            "narration_duration": 1.0}
+    dialog = {"element": "div.fc-consent-root", "position": "fixed",
+              "text": "The Register asks for your consent to use your personal data to:"}
+    server.sessions["s-cover"] = Acting([
+        {**page, "focus_cover": {"points": 15, "covered": 12, "by": dialog, "text": "Employees regularly paste"}},
+        # A sticky header over a corner of the text is not a covered line.
+        {**page, "focus_cover": {"points": 15, "covered": 3, "by": {"element": "header", "position": "sticky",
+                                                                     "text": ""}, "text": "82 percent"}},
+    ])
+    try:
+        for narration in ("Employees paste company secrets into ChatGPT.", "Most from personal accounts."):
+            asyncio.run(server.act("s-cover", {"type": "wait", "ms": 300}, narration))
+    finally:
+        server.sessions.pop("s-cover", None)
+    steps = store.get_session("s-cover")["steps"]
+    assert steps[0]["focus_cover"]["by"] == dialog and steps[1]["focus_cover"]["covered"] == 3
+    review = asyncio.run(server.review_session("s-cover"))
+    covered = [f for f in review["findings"] if f["category"] == "focus_covered"]
+    assert len(covered) == 1 and covered[0]["severity"] == "high" and covered[0]["location"] == "step[0]"
+    assert '"Employees regularly paste" is 12 of 15 points under div.fc-consent-root (fixed)' in covered[0]["message"]
+    assert review["quality_status"] != "excellent"
+
+
+def test_covered_is_half_or_more_of_the_points_on_screen():
+    from reel_studio.review import focus_covered
+
+    assert focus_covered({"points": 15, "covered": 8})
+    assert not focus_covered({"points": 15, "covered": 7})
+    assert not focus_covered({"points": 0, "covered": 0}) and not focus_covered(None)
+
+
+PAGE_UNDER_A_DIALOG = """<body style="margin:0;font:16px sans-serif">
+  <h1 id="headline" style="margin:200px 40px 0;font-size:40px">Employees regularly paste company secrets</h1>
+  <p id="quote" style="margin:300px 40px 0">82 percent of pastes come from personal accounts.</p>
+  <div id="take-annotations" style="position:fixed;inset:0;pointer-events:none">
+    <div style="position:fixed;left:30px;top:180px;width:900px;height:80px;border:3px solid gold"></div>
+  </div>
+  <div class="fc-consent-root" style="position:fixed;inset:0">
+    <div class="fc-dialog" style="position:absolute;left:300px;top:120px;width:600px;height:300px;background:#fff">
+      <p>The Register asks for your consent to use your personal data to:</p>
+      <button>Consent</button>
+    </div>
+  </div>
+</body>"""
+
+
+def test_the_page_tells_text_under_a_dialog_from_text_in_the_open():
+    playwright = pytest.importorskip("playwright.async_api")
+    from reel_studio.review import FOCUS_COVER_JS, describe_cover
+
+    async def run():
+        async with playwright.async_playwright() as p:
+            try:
+                browser = await p.chromium.launch()
+            except Exception as exc:  # no browser in this environment
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = await browser.new_page(viewport={"width": 1280, "height": 720})
+            await page.set_content(PAGE_UNDER_A_DIALOG)
+            headline = await page.locator("#headline").evaluate(FOCUS_COVER_JS)
+            quote = await page.locator("#quote").evaluate(FOCUS_COVER_JS)
+            await page.evaluate("() => document.querySelector('.fc-consent-root').remove()")
+            cleared = await page.locator("#headline").evaluate(FOCUS_COVER_JS)
+            await browser.close()
+            return headline, quote, cleared
+
+    headline, quote, cleared = asyncio.run(run())
+    # The backdrop covers every point, and it is the dialog's root that is named.
+    assert headline["points"] == 15 and headline["covered"] == 15
+    assert headline["by"]["element"] == "div.fc-consent-root" and headline["by"]["position"] == "fixed"
+    assert "asks for your consent" in describe_cover({**headline, "text": "Employees"})
+    assert quote["covered"] == 15
+    # Without the dialog, Take's own annotation box (no pointer events) is not in the way.
+    assert cleared == {"points": 15, "covered": 0, "by": None}
+
+
 def test_the_engine_counts_menus_listboxes_and_radix_popovers():
     from reel_studio.review import OPEN_OVERLAYS_JS
 
