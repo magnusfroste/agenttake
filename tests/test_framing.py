@@ -177,3 +177,39 @@ def test_the_pointer_leaves_an_ad_frame_with_room_to_spare():
     margin = 16
     assert not (600 - margin < x < 900 + margin and 100 - margin < y < 350 + margin)
     assert plain is None  # on plain text the pointer stays put
+
+
+LOOSE_PAGE = """<body style="font:16px sans-serif">
+  <h2 style="text-transform:uppercase">Dry&#8209;run &#8211; test&nbsp;a prompt</h2>
+  <p>He said &#8220;keep it local&#8221;&#8230; and it was.</p>
+  <p style="display:none">Hidden &mdash; copy</p>
+</body>"""
+
+
+def test_text_is_found_loosely_when_get_by_text_misses_it():
+    """The Sluss film waited for "Dry-run — test a prompt" and never matched
+    it (2026-10-28)."""
+    playwright = pytest.importorskip("playwright.async_api")
+
+    async def run():
+        async with playwright.async_playwright() as p:
+            try:
+                browser = await p.chromium.launch()
+            except Exception as exc:  # no browser in this environment
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = await browser.new_page()
+            await page.set_content(LOOSE_PAGE)
+            session = types.SimpleNamespace(page=page)
+            session._loose_text_target = types.MethodType(BrowserSession._loose_text_target, session)
+            find = types.MethodType(BrowserSession._visible_text_target, session)
+            found = {}
+            for text in ("Dry-run — test a prompt", 'said "keep it local"...', "Hidden - copy"):
+                target = await find(text)
+                found[text] = await target.evaluate("(el) => el.tagName") if target else None
+            exact = await find("Dry-run — test a prompt", exact=True)
+            await browser.close()
+            return found, exact
+
+    found, exact = asyncio.run(run())
+    assert found == {"Dry-run — test a prompt": "H2", 'said "keep it local"...': "P", "Hidden - copy": None}
+    assert exact is None

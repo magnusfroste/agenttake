@@ -66,11 +66,18 @@ Nothing is recorded. The checklist has two severities:
 - **fix** — shoot_storyboard refuses until it is gone: a claim without a
   source; a URL that does not answer, answers 4xx/5xx, or 401/403 (a viewer
   cannot open it); a secret AgentTake does not have; a missing field; a line
-  planned twice; a page toured twice.
+  planned twice; a page toured twice; a page that sends a visitor to the
+  sign-in, shot before the login beat that signs in there
+  (`before_sign_in`: move the login first, it is shot offscreen).
 - **warn** — yours to weigh: a plan longer than the film (`target_seconds`,
   60 by default, flagged above 70 s; 150 words is a minute), a page that
   looks paywalled, a bot check, a long quote, a figure in a line with no
-  source on the beat.
+  source on the beat, a page behind a sign-in with no login beat for it
+  (`behind_sign_in`).
+
+Text is matched loosely when it is not found as written: dashes, quotes,
+spaces, ellipses and case count as alike, so "Dry-run — test a prompt"
+finds "DRY-RUN – TEST A PROMPT". Copy it from the page all the same.
 
 ## A 60-second story
 
@@ -170,7 +177,11 @@ A beat that shot fine but could look better can be retaken the same way.
 `shoot_beat` only works before `finish`. A flaw you find on the contact
 sheet afterwards is mended in the edit when the footage is right
 (`edit_step`: `hidden`, `hold_seconds`, `position`; `update_step_narration`;
-then `rerender`), or in a fresh take when it is not. A fresh take is a new
-session shot from the same beats. Unchanged lines reuse their voice clips,
-so it costs minutes, not quota. Delete the flawed session once the new
-take passes.
+then `rerender`), or in a fresh take when it is not.
+`fresh_take(session_id)` starts a new session exactly as the first was
+started (size, voice, cards, subtitles, mask, colour scheme) with AgentTake's
+own copy of the storyboard, every beat still to shoot, and answers with the
+beats. Change one with `plan_storyboard(beats, plan_id=<the new plan_id>)`,
+then `shoot_storyboard(<the new session_id>)`. Unchanged lines reuse their
+voice clips, so it costs minutes, not quota. Delete the flawed session once
+the new take passes.

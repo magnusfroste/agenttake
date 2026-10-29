@@ -192,6 +192,9 @@ def init_schema() -> None:
             # The director's planned beats, JSON [{"line", "label"}]: what
             # review_session holds the recorded narration against.
             ("beats", "TEXT"),
+            # start_session's arguments, JSON: what fresh_take starts the
+            # next session with.
+            ("start_args", "TEXT"),
         ):
             if column not in session_columns:
                 connection.execute(
@@ -494,6 +497,12 @@ def update_session_subtitles(session_id: str, on: bool) -> None:
     init_schema()
     with _lock, _connect() as connection:
         connection.execute("UPDATE sessions SET subtitles = ? WHERE id = ?", (int(bool(on)), session_id))
+
+
+def update_session_start_args(session_id: str, start_args: dict[str, Any]) -> None:
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.execute("UPDATE sessions SET start_args = ? WHERE id = ?", (json.dumps(start_args), session_id))
 
 
 def update_session_subtitle_style(session_id: str, style: str) -> None:
@@ -801,6 +810,7 @@ def get_session(session_id: str) -> dict[str, Any] | None:
         ).fetchall()
     result = dict(session)
     result["beats"] = _from_json(result.get("beats"), [])
+    result["start_args"] = _from_json(result.get("start_args"), None)
     result["steps"] = [
         {**dict(step), "open_overlays": _from_json(step["open_overlays"], None),
          "focus_cover": _from_json(step["focus_cover"], None)} for step in steps

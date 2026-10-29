@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.4.0
+version: 0.5.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -16,7 +16,7 @@ metadata:
 You direct a short film. You do the research, choose the story and write every
 line. AgentTake shoots it with its recipes, so you never issue browser actions
 yourself. The tools come from the AgentTake MCP server: `director_guide`,
-`plan_storyboard`, `shoot_storyboard`, `shoot_beat`, `shoot_status`, `apply_retakes` and the
+`plan_storyboard`, `shoot_storyboard`, `shoot_beat`, `shoot_status`, `apply_retakes`, `fresh_take` and the
 session tools.
 
 Sixteen takes of one film failed on procedure and never on writing: a skipped
@@ -139,11 +139,14 @@ Don't use for:
       `hold_seconds`, change a line with `update_step_narration`, then
       `rerender(session_id)` and look again.
     - **In a fresh take**, when the footage itself is wrong (a cropped quote,
-      a page that never loaded). Fix the beats in `storyboard.json`, run
-      `plan_storyboard` until it is ready, then `start_session` and
-      `shoot_storyboard` again. Unchanged lines reuse their voice clips, so
-      the take costs minutes. Once the new film passes this step, remove
-      the flawed one with `delete_session(session_id, confirm=true)`.
+      a page that never loaded). Call `fresh_take(session_id)`: a new
+      session started like the first, with AgentTake's copy of the
+      storyboard and the beats in its reply. Change a beat with
+      `plan_storyboard(beats, plan_id=<the new plan_id>)` until it is ready,
+      then `shoot_storyboard(<the new session_id>)`. Unchanged lines reuse
+      their voice clips, so the take costs minutes. Once the new film passes
+      this step, remove the flawed one with
+      `delete_session(session_id, confirm=true)`.
 
     Make at most one fresh take unattended; after that, report the flaw.
 13. **Deliver.** Download the MP4 at once with
