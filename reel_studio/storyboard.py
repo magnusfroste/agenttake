@@ -106,6 +106,7 @@ CONSENT_MANAGERS = (
     "#onetrust-consent-sdk", "#CybotCookiebotDialog", "#usercentrics-root", "#usercentrics-cmp-ui",
     "#didomi-host", ".qc-cmp2-container", "[id^='sp_message_container']",
     "#truste-consent-track", ".truste_box_overlay", "#cmpbox", "#cmpbox2",
+    "#cookie-information-template-wrapper", "#coiOverlay",  # Cookie Information (upphandlingsmyndigheten.se)
     "iframe[title*='consent' i]",
 )
 CONSENT_NOTICE = ("Got it", "OK", "Okay", "I understand", "Dismiss")

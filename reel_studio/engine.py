@@ -12,7 +12,7 @@ import subprocess
 import time
 import uuid
 import re
-from typing import Sequence, cast
+from typing import Iterable, Sequence, cast
 
 from playwright.async_api import (
     Browser,
@@ -595,6 +595,27 @@ class BrowserSession:
     pointer: tuple[float, float] | None = None
     # The pointer rests on something on purpose: a hover step's menu.
     pointer_held: bool = False
+
+    def leave_out(self, offsets: Iterable[float]) -> None:
+        """Leave steps already recorded out of the video, as if done offscreen.
+
+        finish renders from this timeline, not from the store: a covered
+        source beat that the storyboard reshot as a card was hidden in the
+        store only, and its footage under the cookie dialog still played
+        before the card (Agentanbud take 4, 2026-10-30).
+        """
+        drop = {round(offset, 3) for offset in offsets}
+        keep = [index for index, (offset, _, _) in enumerate(self.timeline) if round(offset, 3) not in drop]
+        if len(keep) == len(self.timeline):
+            return
+        if 0 not in keep:
+            # The film no longer opens on that step's page.
+            self.offscreen_first = True
+        for name in ("timeline", "timeline_pages", "timeline_floors", "timeline_speeds",
+                     "timeline_glides", "timeline_cards"):
+            values = getattr(self, name)
+            setattr(self, name, [values[index] for index in keep if index < len(values)])
+        self.narrations = [entry for entry in self.narrations if round(entry[0], 3) not in drop]
 
     @classmethod
     async def create(
