@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.6.0
+version: 0.7.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -96,6 +96,8 @@ Don't use for:
    - `start_url`: the first page the plan opens
    - `title`, and `subtitles=true` (feeds autoplay muted)
    - `color_scheme`
+   - `show_pointer=false`: a storyboard film clicks nothing on camera, so a
+     recorded pointer is only a stray arrow in every frame
    - `mask=["input[type=password]", "[data-secret]"]`
    - `cta_url`: the cta beat's url
 

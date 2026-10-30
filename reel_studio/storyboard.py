@@ -69,6 +69,14 @@ PRIVATE_SHOTS = {"system", "live_answer"}
 
 # 150 words a minute, the pace of the voices AgentTake uses.
 WORDS_PER_SECOND = 2.5
+# A Swedish read is slower: the Agentanbud film planned at 55 s cut at 72 s
+# with an ElevenLabs voice (2026-10-30), about 1.9 words a second.
+WORDS_PER_SECOND_BY_LANGUAGE = {"en": WORDS_PER_SECOND, "sv": 1.9}
+# What the source marks say, in the film's language: "Source:" over a
+# Swedish film read as a mistake (Agentanbud, 2026-10-30).
+SOURCE_LABEL = {"en": "Source", "sv": "Källa"}
+QUOTE_LABEL = {"en": "Quote", "sv": "Citat"}
+_SWEDISH = re.compile(r"[åäö]|\b(?:och|är|det|att|inte|för|som|med|den|har)\b", re.IGNORECASE)
 # The least a shot holds however short its line: a glide needs time to move,
 # a card time to be read.
 SHOT_MIN_SECONDS = {"card": 2.5, "source_card": 3.0, "image": 3.0, "page_tour": 6.0}
@@ -197,13 +205,21 @@ def has_statistic(text: str | None) -> bool:
     return bool(re.search(r"\d", text or ""))
 
 
-def line_seconds(line: str) -> float:
+def line_seconds(line: str, language: str = "en") -> float:
     words = len((line or "").split())
-    return words / WORDS_PER_SECOND + 0.3 if words else 0.0
+    pace = WORDS_PER_SECOND_BY_LANGUAGE.get(language, WORDS_PER_SECOND)
+    return words / pace + 0.3 if words else 0.0
+
+
+def film_language(beats: list[dict]) -> str:
+    """The film's language, from its lines: "sv" when most read as Swedish."""
+    lines = [beat.get("line") or "" for beat in beats if (beat.get("line") or "").strip()]
+    swedish = sum(1 for line in lines if _SWEDISH.search(line))
+    return "sv" if lines and swedish * 2 >= len(lines) else "en"
 
 
 def beat_seconds(beat: dict) -> float:
-    return max(line_seconds(beat.get("line", "")),
+    return max(line_seconds(beat.get("line", ""), beat.get("language", "en")),
                SHOT_MIN_SECONDS.get(beat["shot"], DEFAULT_MIN_SECONDS if beat.get("line") else 0.0))
 
 
@@ -430,6 +446,9 @@ async def check_storyboard(
     for the director to weigh.
     """
     beats, items = parse_storyboard(raw)
+    language = film_language(beats)
+    for beat in beats:
+        beat["language"] = language
     if not raw:
         items.append(_item(None, "", "fix", "empty_storyboard", "beats is empty: write the film first"))
     estimated = round(sum(beat_seconds(beat) for beat in beats), 1)
@@ -589,7 +608,8 @@ font-family:Inter,"Segoe UI",system-ui,sans-serif}
 </style>"""
 
 
-def card_page(text: str, background: str | None = None, source: str | None = None) -> str:
+def card_page(text: str, background: str | None = None, source: str | None = None,
+              language: str = "en") -> str:
     """A full-screen card: the text on a colour or a dimmed image.
 
     auto (the default) follows the session's color_scheme. A data: URL, so
@@ -606,7 +626,8 @@ def card_page(text: str, background: str | None = None, source: str | None = Non
     elif background != "auto" and _COLOR.match(background):
         style = f"background:{background};color:#fff"
     paragraphs = "".join(f"<p>{html.escape(part)}</p>" for part in text.split("\n") if part.strip())
-    credit = (f'<div class="credit">Source: {html.escape(domain(source))}</div>' if source else "")
+    label = SOURCE_LABEL.get(language, SOURCE_LABEL["en"])
+    credit = (f'<div class="credit">{label}: {html.escape(domain(source))}</div>' if source else "")
     document = _PAGE_BASE + """<style>
 body{display:flex;align-items:center;justify-content:center}
 .card{max-width:72vw;text-align:center;font-weight:700;font-size:clamp(40px,4.6vw,92px);line-height:1.15;
@@ -739,8 +760,8 @@ def _say(line: str, wait_for_text: str | None = None) -> dict:
     return _act(action, line)
 
 
-def glide_ms(line: str) -> int:
-    return int(min(GLIDE_MAX_MS, max(GLIDE_MIN_MS, line_seconds(line) * 1000 + 1000)))
+def glide_ms(line: str, language: str = "en") -> int:
+    return int(min(GLIDE_MAX_MS, max(GLIDE_MIN_MS, line_seconds(line, language) * 1000 + 1000)))
 
 
 def recipe(beat: dict, retake: bool = False) -> list[dict]:
@@ -765,7 +786,10 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
     if shot == "highlight":
         text = beat["text"]
         ops = _open(beat["url"], text) if beat.get("url") else (_open(beat["page_url"], text) if reopen else [])
-        mark = beat.get("caption") or (f"Source: {domain(beat['source'])}" if beat.get("source") else "Quote")
+        language = beat.get("language", "en")
+        mark = beat.get("caption") or (
+            f"{SOURCE_LABEL.get(language, 'Source')}: {domain(beat['source'])}" if beat.get("source")
+            else QUOTE_LABEL.get(language, "Quote"))
         return [
             *ops,
             _act({"type": "scroll_to_text", "text": text, "offscreen": True}),
@@ -791,7 +815,8 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             return [_act(render_card, line)]
         first_words = " ".join(beat["text"].split("\n")[0].split()[:6])
         return [
-            _act({"type": "goto", "url": card_page(beat["text"], beat.get("background"), beat.get("source")),
+            _act({"type": "goto", "url": card_page(beat["text"], beat.get("background"), beat.get("source"),
+                                                    beat.get("language", "en")),
                   "offscreen": True, "wait_for_text": first_words, "settle_ms": 300}),
             _shot(1.06, None, move_seconds=3.0),
             _say(line, first_words),
@@ -805,7 +830,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
     if shot == "page_tour":
         return [
             *_open(beat["url"], wait_text),
-            _act({"type": "scroll", "dy": 99999, "ms": glide_ms(line)}, line),
+            _act({"type": "scroll", "dy": 99999, "ms": glide_ms(line, beat.get("language", "en"))}, line),
         ]
     if shot == "login":
         ops = [*_open(beat["url"], None), {"op": "observe"}]

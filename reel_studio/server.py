@@ -1925,6 +1925,12 @@ async def start_session(
                           "scheme, and sites that keep the choice in localStorage \"theme\" "
                           "(next-themes) start in it. No theme menu to click on each site."),
     ] = None,
+    show_pointer: Annotated[
+        bool,
+        Field(description="Record the mouse pointer (default true): it shows where a click lands in a "
+                          "click-through demo. false for a storyboard film, where a pointer parked on "
+                          "the page is only a stray arrow in every frame."),
+    ] = True,
     beats: Annotated[
         list[Beat] | None,
         Field(description="Your script, in order: [{\"line\": <the exact narration>, \"label\": "
@@ -2002,7 +2008,7 @@ async def start_session(
     )
     session = await BrowserSession.create(
         start_url, width, height, voice, selected_provider, selected_output_size,
-        render_config, mask_selectors=mask, color_scheme=color_scheme,
+        render_config, mask_selectors=mask, color_scheme=color_scheme, show_pointer=show_pointer,
     )
     session.touch()
     others = [other for other in sessions if other != session.session_id]
@@ -2038,7 +2044,7 @@ async def start_session(
         "accent": accent, "cta_url": cta_url, "cta_text": cta_text, "music": music,
         "transitions": transitions, "title_background": title_background, "closing_qr": closing_qr,
         "subtitles": subtitles, "subtitle_style": subtitle_style, "mask": mask,
-        "color_scheme": color_scheme,
+        "color_scheme": color_scheme, "show_pointer": show_pointer,
     })
     result: dict = {"session_id": session.session_id}
     if planned_beats:

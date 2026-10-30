@@ -629,6 +629,7 @@ class BrowserSession:
         render_config: RenderConfig | None = None,
         mask_selectors: list[str] | None = None,
         color_scheme: str | None = None,
+        show_pointer: bool = True,
     ) -> "BrowserSession":
         session_id = uuid.uuid4().hex
         mask_css = mask_stylesheet(mask_selectors)
@@ -713,7 +714,7 @@ class BrowserSession:
         # of an agent's video. Recording starts after it.
         await asyncio.sleep(FULLSCREEN_NOTICE_SECONDS)
         recorder = start_recording(
-            display, *geometry["record_size"], directory / "screen.mp4"
+            display, *geometry["record_size"], directory / "screen.mp4", draw_mouse=show_pointer
         )
         # Give ffmpeg one frame before t0 is recorded.
         await asyncio.sleep(0.4)
