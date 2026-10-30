@@ -923,3 +923,22 @@ def test_leave_out_drops_a_recorded_step_from_the_live_timeline():
 def test_cookie_information_is_a_known_consent_manager():
     """upphandlingsmyndigheten.se's banner covered a source beat (2026-10-30)."""
     assert "#cookie-information-template-wrapper" in boards.CONSENT_MANAGERS
+
+
+def test_a_swedish_film_is_marked_and_timed_in_swedish():
+    """"Source:" over a Swedish film, and a plan of 55 s that cut at 72 s
+    (Agentanbud, 2026-10-30)."""
+    swedish = [{"shot": "highlight", "line": "Och den hittar det du missar.", "text": "60 inget",
+                "url": "https://news.example/vvs", "source": "https://news.example/vvs"},
+               {"shot": "card", "line": "Förut var upphandling för den som hade råd.", "text": "Förut",
+                "source": "https://news.example/vvs"}]
+    english = [{"shot": "card", "line": "You cannot approve what you cannot see.", "text": "See"}]
+    assert boards.film_language(swedish) == "sv" and boards.film_language(english) == "en"
+    assert boards.line_seconds("ett två tre fyra fem sex sju åtta nio tio", "sv") > \
+        boards.line_seconds("one two three four five six seven eight nine ten", "en")
+    planned = check(swedish)["beats"]
+    assert {beat["language"] for beat in planned} == {"sv"}
+    mark = next(op for op in boards.recipe(planned[0]) if op.get("action", {}).get("type") == "annotate")
+    assert "Källa: news.example" in str(mark)
+    page = urllib.parse.unquote(boards.card_page("Förut", source="https://news.example/vvs", language="sv"))
+    assert "Källa: news.example" in page and "Source:" not in page

@@ -30,6 +30,13 @@ RUN mkdir -p reel_studio && touch reel_studio/__init__.py \
     && python3 -m pip uninstall -y --break-system-packages reel-studio \
     && rm -rf reel_studio build *.egg-info
 
+# The faces the cards ask for: without them a card fell back to DejaVu
+# (2026-10-30). Inter for the cards, IBM Plex Mono for source stamps. Its own
+# layer, after the browser, so adding a font never reinstalls Chromium.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-inter fonts-ibm-plex \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY README.md ./
 COPY reel_studio ./reel_studio
 COPY examples ./examples

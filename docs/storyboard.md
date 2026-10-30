@@ -13,7 +13,7 @@ shot before.
 director_guide()                       ← this handbook
 plan_storyboard(beats=[...])           → plan_id, checklist, estimated_seconds
   fix every item marked "fix", plan_storyboard(beats, plan_id=...) again
-start_session(start_url=<first beat's url>, title=..., subtitles=true, ...)
+start_session(start_url=<first beat's url>, title=..., subtitles=true, show_pointer=false, ...)
 shoot_storyboard(session_id, plan_id=...)   → per beat: ok, or failed and why
   call again while "to_come" is not empty (one call records a few minutes)
   status "shooting"? shoot_status(session_id) until status is "done"

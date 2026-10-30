@@ -39,13 +39,15 @@ class RenderConfig:
     closing_qr: bool = True
 
 
-def start_recording(display: str, width: int, height: int, output: Path) -> subprocess.Popen[bytes]:
+def start_recording(
+    display: str, width: int, height: int, output: Path, draw_mouse: bool = True
+) -> subprocess.Popen[bytes]:
     output.parent.mkdir(parents=True, exist_ok=True)
     return subprocess.Popen(
         [
             "ffmpeg", "-loglevel", "error", "-nostats", "-y", "-f", "x11grab",
             "-video_size", f"{width}x{height}",
-            "-framerate", "25", "-i", f"{display}.0", "-draw_mouse", "1",
+            "-framerate", "25", "-i", f"{display}.0", "-draw_mouse", "1" if draw_mouse else "0",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
             "-threads", "0", "-pix_fmt", "yuv420p", str(output),
         ],
@@ -1162,14 +1164,19 @@ def _assemble_smooth(
     segment_joins = choose_transitions(segment_paths, pages, temporary)
     if cards:
         for index in range(1, len(segment_paths)):
-            if cards[index] or cards[index - 1]:
+            if cards[index] and cards[index - 1]:
+                # Text over text: a dissolve shows both cards at once.
+                segment_joins[index - 1] = 0.0
+            elif cards[index] or cards[index - 1]:
                 segment_joins[index - 1] = CARD_FADE
     joins.extend(segment_joins)
     if config.cta_url.strip():
         outro = temporary / "outro.mp4"
         _closing_card(outro, width, height, config, outro_background, temporary)
         parts.append((outro, None))
-        joins.append(CARD_FADE)
+        # A film that ends on a card cuts to the closing card: a fade laid
+        # one card's text over the other's (Agentanbud, 1:08, 2026-10-30).
+        joins.append(0.0 if cards and cards[-1] else CARD_FADE)
 
     kinds: list[tuple[str, int | None]] = []
     if config.title.strip():

@@ -276,3 +276,24 @@ def test_subtitle_style_is_kept_and_rerender_changes_it(mods, monkeypatch, tmp_p
     # A rerender without it keeps the style.
     asyncio.run(server.rerender(sid))
     assert burned == ["solid", "solid"]
+
+
+@media
+def test_a_film_that_ends_on_a_card_cuts_to_the_closing_card(tmp_path):
+    """A fade laid the last card's text over the closing card's: both read
+    at once, muddy (Agentanbud, 1:08, 2026-10-30). Two cards meet in a cut."""
+    video = _video(tmp_path / "screen.mp4")
+    render.record_card(tmp_path, 3.0, "Regi: Hermes", "#ff0000")
+    render.record_card(tmp_path, 5.0, "Second card", "#00ff00")
+    voice = tmp_path / "line.m4a"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                    str(voice)], check=True)
+    result = render.segmented_render(
+        video, [(1.0, None, 0.0), (3.0, voice, 2.0), (5.0, voice, 2.0)], tmp_path / "video.mp4",
+        None, render.RenderConfig(cta_url="https://example.org"), lead_in=False,
+    )
+    parts = {part["step"]: part for part in result.timeline if part["kind"] == "step"}
+    outro = next(part for part in result.timeline if part["kind"] == "outro")
+    first, second = parts[1], parts[2]
+    assert second["start"] == pytest.approx(first["start"] + first["duration"] - render.CUT_FRAME, abs=0.06)
+    assert outro["start"] == pytest.approx(second["start"] + second["duration"] - render.CUT_FRAME, abs=0.06)
