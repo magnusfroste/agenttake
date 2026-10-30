@@ -482,6 +482,7 @@ class StandInSession:
         self.slow = slow
         self.calls: list[tuple] = []
         self.fits: list[bool] = []
+        self.left_out: list[float] = []
 
     def touch(self):
         pass
@@ -504,7 +505,8 @@ class StandInSession:
         for text in (action.wait_for_text, action.text if action.type == "scroll_to_text" else None):
             if text and text in self.missing:
                 return {"ok": False, "error": {"type": "text_not_found", "message": f"Visible text not found: {text}"}}, None
-        result = {"ok": True, "url": action.url or "https://page.example", "narration_duration": 1.0 if narration else 0}
+        result = {"ok": True, "url": action.url or "https://page.example", "narration_duration": 1.0 if narration else 0,
+                  "offset_seconds": float(len(self.calls))}
         # Only a site covers its text: AgentTake's own cards have no dialogs.
         if narration and action.wait_for_text in self.covered and not self.url.startswith("data:"):
             result["focus_cover"] = {"points": 15, "covered": 12, "text": action.wait_for_text,
@@ -525,6 +527,9 @@ class StandInSession:
 
     async def form_fields(self):
         return {"username": "input:email", "password": "input:password", "message": "textarea:ask"}
+
+    def leave_out(self, offsets):
+        self.left_out.extend(offsets)
 
     async def dismiss_consent(self, refuse, managers=(), notice=()):
         self.consent_asked = (refuse, managers, notice)
@@ -679,6 +684,9 @@ def test_a_beat_whose_page_is_covered_is_shown_as_a_source_card(server):
     # Spoken twice, played once: over the card, the covered take left out.
     assert [step["offscreen"] for step in spoken] == [1, 0]
     assert first["steps"] == [spoken[1]["idx"]]
+    # finish renders from the live timeline: the covered take leaves it too
+    # (Agentanbud take 4 still played it before the card, 2026-10-30).
+    assert session.left_out == [spoken[0]["offset_seconds"]]
     cards = [url for url in session.gotos if url.startswith("data:")]
     assert "news.example/shadow-ai" in urllib.parse.unquote(cards[0])
     assert [beat["ok"] for beat in shot["beats"][1:]] == [True, True, True, True]
@@ -892,3 +900,26 @@ def test_a_fresh_take_starts_like_the_first_and_shoots_the_same_plan(server, mon
 def test_a_fresh_take_needs_a_storyboard(server):
     start(server, "s-acted", StandInSession())
     assert asyncio.run(server.fresh_take("s-acted"))["error"]["type"] == "no_storyboard"
+
+
+def test_leave_out_drops_a_recorded_step_from_the_live_timeline():
+    from types import SimpleNamespace
+    from reel_studio.engine import BrowserSession
+
+    live = SimpleNamespace(
+        timeline=[(1.0, None, 2.0), (5.5, None, 3.0), (9.25, None, 2.0)],
+        timeline_pages=["a", "b", "c"], timeline_floors=[1.0, 1.0, 1.0], timeline_speeds=[1.0, 1.0, 1.0],
+        timeline_glides=[None, None, None], timeline_cards=[False, False, False],
+        narrations=[(1.0, "one.mp3", "one"), (5.5, "two.mp3", "two")], offscreen_first=False,
+    )
+    BrowserSession.leave_out(live, [5.5])
+    assert [entry[0] for entry in live.timeline] == [1.0, 9.25]
+    assert live.timeline_pages == ["a", "c"] and len(live.timeline_cards) == 2
+    assert live.narrations == [(1.0, "one.mp3", "one")] and live.offscreen_first is False
+    BrowserSession.leave_out(live, [1.0])
+    assert live.timeline_pages == ["c"] and live.offscreen_first is True
+
+
+def test_cookie_information_is_a_known_consent_manager():
+    """upphandlingsmyndigheten.se's banner covered a source beat (2026-10-30)."""
+    assert "#cookie-information-template-wrapper" in boards.CONSENT_MANAGERS

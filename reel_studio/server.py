@@ -2521,9 +2521,14 @@ async def _shoot_beat(session_id: str, plan: dict, beat: dict, retake: bool,
         # left out and the beat is shown as a card quoting it. The first
         # Sluss film played 22 s of source beats under a consent dialog.
         covered = outcome["reason"]
+        left_out = []
         for step in (store.get_session(session_id) or {}).get("steps", []):
             if step["idx"] >= before and step.get("ok") and not step.get("offscreen"):
                 store.edit_step(session_id, step["idx"], hidden=True)
+                if step.get("offset_seconds") is not None:
+                    left_out.append(float(step["offset_seconds"]))
+        # finish renders from the live timeline, not the store.
+        live.leave_out(left_out)
         outcome = await boards.run_ops(live, session_id, boards.recipe(card), _run_action)
         fallback = "source_card"
         if outcome["ok"]:
