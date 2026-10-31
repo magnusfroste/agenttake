@@ -967,4 +967,3 @@ def test_a_swedish_film_is_marked_and_timed_in_swedish():
     assert "Källa: news.example" in str(mark)
     page = urllib.parse.unquote(boards.card_page("Förut", source="https://news.example/vvs", language="sv"))
     assert "Källa: news.example" in page and "Source:" not in page
-
