@@ -3,7 +3,14 @@ import subprocess
 
 import pytest
 
-from reel_studio.render import burn_subtitles, subtitle_cues, subtitles_ass
+from reel_studio.render import (
+    SUBTITLE_MAX_WORDS,
+    SUBTITLE_STRETCH_WORDS,
+    burn_subtitles,
+    phrase_chunks,
+    subtitle_cues,
+    subtitles_ass,
+)
 
 
 PARTS = [
@@ -24,8 +31,9 @@ def test_cues_follow_the_storyboard_and_split_long_lines():
     # Steps 0 and 2 say nothing, and the card is not a step.
     assert all(1.9 <= start < end <= 7.9 + 0.01 for start, end, _ in cues)
     assert " ".join(text for _, _, text in cues) == LINES[1]
-    assert all(len(text.split()) <= 8 for _, _, text in cues)
-    assert all(len(text.split()) > 2 for _, _, text in cues), "no orphaned last word"
+    assert all(len(text.split()) <= SUBTITLE_MAX_WORDS + SUBTITLE_STRETCH_WORDS for _, _, text in cues)
+    # No orphaned last word: a chunk of one or two words is a whole phrase.
+    assert all(len(text.split()) > 2 or text[-1] in ".,;:?!" for _, _, text in cues)
     assert cues[0][0] == 1.9 and abs(cues[-1][1] - 7.9) < 0.02
 
 
@@ -83,3 +91,16 @@ def test_a_line_ends_where_the_next_part_begins():
     first_end = max(end for start, end, text in cues if "checkout" in text or "broken" in text)
     second_start = min(start for start, end, text in cues if "colleague" in text)
     assert first_end <= second_start <= 12.2 + 0.01
+
+
+def test_a_chunk_ends_where_the_line_pauses():
+    """Cut every eight words, "98 procent av sökningarna görs" / "inte av
+    människor." broke a sentence mid-breath (Agentanbud, 2026-10-30)."""
+    assert phrase_chunks("Agentanbud i oktober: 98 procent av sökningarna görs inte av människor. "
+                         "De görs av program.") == [
+        "Agentanbud i oktober:", "98 procent av sökningarna görs inte av människor.", "De görs av program."]
+    # A number with a decimal comma is one word, not a pause.
+    assert phrase_chunks("I genomsnitt 4,6 anbud per upphandling.") == ["I genomsnitt 4,6 anbud per upphandling."]
+    # A phrase too long for one chunk is cut into even parts.
+    long = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen."
+    assert [len(chunk.split()) for chunk in phrase_chunks(long)] == [7, 7]

@@ -75,6 +75,33 @@ def elevenlabs_configured() -> bool:
     return bool(os.environ.get("ELEVENLABS_API_KEY"))
 
 
+async def elevenlabs_characters_left() -> int | None:
+    """Characters the ElevenLabs account has left this period, or None when it
+    cannot tell (no key, the subscription endpoint did not answer).
+
+    A free-tier account ran out two beats into the Agentanbud film and the
+    take died with seven beats unspoken (2026-10-30): the voice check before
+    recording costs one word, so it passed.
+    """
+    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    if not api_key:
+        return None
+
+    def fetch() -> dict:
+        request = urllib.request.Request(
+            "https://api.elevenlabs.io/v1/user/subscription",
+            headers={"xi-api-key": api_key, "Accept": "application/json", "User-Agent": "agenttake"},
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode())
+
+    try:
+        data = await asyncio.to_thread(fetch)
+        return max(0, int(data["character_limit"]) - int(data["character_count"]))
+    except Exception:
+        return None
+
+
 async def list_elevenlabs_voices() -> list[dict]:
     """The voices on the ElevenLabs account the host's key belongs to."""
     api_key = os.environ.get("ELEVENLABS_API_KEY")

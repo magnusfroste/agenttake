@@ -50,6 +50,7 @@ from . import storyboard as boards
 from .schema import secret_names, ACTION_CONTRACT, ACTION_TYPES, FRAMINGS, Action, action_json_schema, mask_stylesheet
 from .tts import (
     TTSProviderError,
+    elevenlabs_characters_left,
     elevenlabs_configured,
     list_elevenlabs_voices,
     normalize_provider,
@@ -2637,9 +2638,43 @@ async def shoot_storyboard(
     if error:
         return error
     assert plan is not None
+    shortfall = await _voice_quota_shortfall(session_id, plan)
+    if shortfall:
+        return shortfall
     sessions[session_id].touch()
     return await _await_shoot(_start_shoot(
         session_id, "storyboard", lambda job: _shoot_storyboard_now(session_id, plan, job)))
+
+
+async def _voice_quota_shortfall(session_id: str, plan: dict) -> dict | None:
+    """Refuse a shoot the ElevenLabs account cannot speak to the end.
+
+    Counts the characters of the beats still to shoot whose line has no clip
+    yet in this voice (a reused clip costs nothing), against what the account
+    has left. None when it fits, or when ElevenLabs cannot tell.
+    """
+    session = store.get_session(session_id) or {}
+    if (session.get("provider") or "edge") != "elevenlabs":
+        return None
+    voice = session.get("voice") or ""
+    needed = sum(
+        len(beat.get("line") or "") for beat in plan["beats"]
+        if _beat_state(beat)["status"] == "planned" and (beat.get("line") or "").strip()
+        and store.spoken_clip(beat["line"], voice, "elevenlabs") is None
+    )
+    if not needed:
+        return None
+    left = await elevenlabs_characters_left()
+    if left is None or left >= needed:
+        return None
+    return {
+        "ok": False,
+        "error": {"type": "voice_quota",
+                  "message": f"ElevenLabs has {left} characters left this period; the beats still to "
+                             f"shoot need about {needed}. Nothing was recorded."},
+        "hint": "Ask the operator to top up the ElevenLabs plan, or start a session with a voice from "
+                "list_voices() on the free Edge provider.",
+    }
 
 
 async def _shoot_storyboard_now(session_id: str, plan: dict, job: ShootJob) -> dict:

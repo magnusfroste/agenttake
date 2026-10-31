@@ -1435,6 +1435,44 @@ SUBTITLE_MAX_WORDS = 8
 SUBTITLE_STYLES = {"soft": "&H96000000", "box": "&H40000000", "solid": "&H00000000"}
 
 
+# A phrase this short rides with the next one rather than flash alone, even
+# if that makes the chunk a little longer than SUBTITLE_MAX_WORDS.
+SUBTITLE_SHORT_PHRASE = 2
+SUBTITLE_STRETCH_WORDS = 3
+
+
+def phrase_chunks(text: str, max_words: int = SUBTITLE_MAX_WORDS) -> list[str]:
+    """The line in chunks that end where it pauses.
+
+    Cut every eight words, "98 procent av sökningarna görs" / "inte av
+    människor." broke the sentence where nobody would breathe (Agentanbud,
+    2026-10-30). A chunk now ends at a comma, a colon or a full stop
+    whenever the phrases fit; only a phrase longer than a chunk is cut
+    between words, into even parts.
+    """
+    phrases = [p for p in re.split(r"(?<=[.,;:?!])\s+", text.strip()) if p]
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    for phrase in phrases:
+        words = phrase.split()
+        if len(words) > max_words + SUBTITLE_STRETCH_WORDS:
+            if current:
+                chunks.append(current)
+                current = []
+            parts = -(-len(words) // max_words)
+            size = -(-len(words) // parts)
+            chunks.extend(words[i:i + size] for i in range(0, len(words), size))
+            continue
+        limit = max_words + (SUBTITLE_STRETCH_WORDS if len(current) <= SUBTITLE_SHORT_PHRASE else 0)
+        if current and len(current) + len(words) > limit:
+            chunks.append(current)
+            current = []
+        current += words
+    if current:
+        chunks.append(current)
+    return [" ".join(chunk) for chunk in chunks]
+
+
 def subtitle_cues(parts: Sequence[dict], narrations: dict, max_words: int = SUBTITLE_MAX_WORDS) -> list[tuple[float, float, str]]:
     """(start, end, text) per chunk, from the storyboard and each step's line."""
     cues: list[tuple[float, float, str]] = []
@@ -1455,13 +1493,7 @@ def subtitle_cues(parts: Sequence[dict], narrations: dict, max_words: int = SUBT
             duration = min(duration, following[0] - start)
         if duration <= 0.2:
             continue
-        words = text.split(" ")
-        chunks = [" ".join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
-        # Even out a short last chunk: "…the hotel" + "too." reads badly.
-        if len(chunks) > 1 and len(chunks[-1].split(" ")) <= 2:
-            merged = (chunks[-2] + " " + chunks[-1]).split(" ")
-            half = (len(merged) + 1) // 2
-            chunks[-2:] = [" ".join(merged[:half]), " ".join(merged[half:])]
+        chunks = phrase_chunks(text, max_words)
         total = sum(len(c) for c in chunks)
         at = start
         for chunk in chunks:
