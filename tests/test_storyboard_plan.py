@@ -942,3 +942,15 @@ def test_a_swedish_film_is_marked_and_timed_in_swedish():
     assert "Källa: news.example" in str(mark)
     page = urllib.parse.unquote(boards.card_page("Förut", source="https://news.example/vvs", language="sv"))
     assert "Källa: news.example" in page and "Source:" not in page
+
+
+def test_draw_mouse_is_an_input_option(monkeypatch, tmp_path):
+    """After -i, ffmpeg read -draw_mouse as an output option and ignored it:
+    show_pointer=false still recorded the pointer (Sluss, 2026-10-31)."""
+    from reel_studio import render
+
+    seen = []
+    monkeypatch.setattr(render.subprocess, "Popen", lambda args, **kwargs: seen.append(args))
+    render.start_recording(":99", 640, 360, tmp_path / "screen.mp4", draw_mouse=False)
+    args = seen[0]
+    assert args.index("-draw_mouse") < args.index("-i") and args[args.index("-draw_mouse") + 1] == "0"

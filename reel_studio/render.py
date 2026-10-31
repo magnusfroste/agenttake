@@ -47,7 +47,11 @@ def start_recording(
         [
             "ffmpeg", "-loglevel", "error", "-nostats", "-y", "-f", "x11grab",
             "-video_size", f"{width}x{height}",
-            "-framerate", "25", "-i", f"{display}.0", "-draw_mouse", "1" if draw_mouse else "0",
+            # An input option: after -i it was read as an output option and
+            # ignored, so show_pointer=false still drew the pointer (Sluss,
+            # 2026-10-31).
+            "-draw_mouse", "1" if draw_mouse else "0",
+            "-framerate", "25", "-i", f"{display}.0",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
             "-threads", "0", "-pix_fmt", "yuv420p", str(output),
         ],
@@ -1144,8 +1148,14 @@ def _assemble_smooth(
     width, height = output_size or probe_video_size(segment_paths[0])
     parts: list[tuple[Path, Path | None]] = []
     joins: list[float] = []
+    # A film that ends on a card takes the closing card's background from its
+    # last footage: blurred under its own text, the card read double behind
+    # the closing card (Sluss, 1:08, 2026-10-31).
+    last_footage = next(
+        (path for path, card in zip(reversed(segment_paths), reversed(cards)) if not card), segment_paths[-1]
+    ) if cards else segment_paths[-1]
     intro_background, outro_background = (
-        card_backgrounds(config, segment_paths[0], segment_paths[-1], temporary)
+        card_backgrounds(config, segment_paths[0], last_footage, temporary)
         if (config.title.strip() or config.cta_url.strip()) else (None, None)
     )
     if config.title.strip():

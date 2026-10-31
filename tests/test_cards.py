@@ -297,3 +297,21 @@ def test_a_film_that_ends_on_a_card_cuts_to_the_closing_card(tmp_path):
     first, second = parts[1], parts[2]
     assert second["start"] == pytest.approx(first["start"] + first["duration"] - render.CUT_FRAME, abs=0.06)
     assert outro["start"] == pytest.approx(second["start"] + second["duration"] - render.CUT_FRAME, abs=0.06)
+
+
+@media
+def test_a_closing_card_after_a_card_sits_on_the_last_footage(tmp_path):
+    """Its "auto" background was a blurred still of the card before it, so the
+    closing card read over a ghost of that card's text (Sluss, 1:08, 2026-10-31)."""
+    video = _video(tmp_path / "screen.mp4", source="color=c=blue:")
+    render.record_card(tmp_path, 5.0, "Directed by Hermes", "#ff0000")
+    voice = tmp_path / "line.m4a"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                    str(voice)], check=True)
+    result = render.segmented_render(
+        video, [(1.0, voice, 2.0), (5.0, voice, 2.0)], tmp_path / "video.mp4",
+        None, render.RenderConfig(cta_url="https://example.org", closing_qr=False), lead_in=False,
+    )
+    outro = next(part for part in result.timeline if part["kind"] == "outro")
+    red, green, blue = _rgb(result.path, outro["start"] + outro["duration"] / 2, "iw*0.2:ih*0.2:0:0")
+    assert blue > red, "the closing card sits on the blue footage, not on the red card"
