@@ -567,6 +567,31 @@ def test_a_plan_with_fixes_is_not_shot(server):
     assert server.sessions["s-unready"].calls == []
 
 
+def test_a_shoot_the_voice_quota_cannot_finish_is_refused(server, monkeypatch):
+    """A free ElevenLabs account ran dry two beats into the Agentanbud film:
+    seven beats unspoken, the take lost (2026-10-30)."""
+    from reel_studio import store
+
+    store.create_session("s-quota", ARTICLE, "voice-x", 1920, 1080, "/tmp", "elevenlabs")
+    server.sessions["s-quota"] = StandInSession()
+    plan = asyncio.run(server.plan_storyboard(good_plan(), session_id="s-quota"))
+    assert plan["ready"]
+
+    async def left_ten():
+        return 10
+
+    monkeypatch.setattr(server, "elevenlabs_characters_left", left_ten)
+    shot = asyncio.run(server.shoot_storyboard("s-quota"))
+    assert shot["ok"] is False and shot["error"]["type"] == "voice_quota"
+    assert "10 characters left" in shot["error"]["message"] and server.sessions["s-quota"].calls == []
+
+    async def plenty():
+        return 1_000_000
+
+    monkeypatch.setattr(server, "elevenlabs_characters_left", plenty)
+    assert asyncio.run(server._voice_quota_shortfall("s-quota", store.get_storyboard(plan["plan_id"]))) is None
+
+
 def test_shoot_reports_each_beat_and_a_retake_goes_where_it_belongs(server, tmp_path):
     from reel_studio import review, store
 

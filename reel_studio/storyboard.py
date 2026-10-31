@@ -107,6 +107,7 @@ CONSENT_REFUSE = (
     "Do not consent", "Continue without accepting", "Only essential", "Essential only",
     "Only essential cookies", "Only necessary", "Necessary only", "Necessary cookies only",
     "Use necessary cookies only", "Endast nödvändiga", "Neka alla", "Avvisa alla",
+    "Tillåt nödvändiga", "Tillåt endast nödvändiga",  # SVT (2026-10-31)
     "Alle ablehnen", "Nur notwendige", "Tout refuser", "Continuer sans accepter",
 )
 CONSENT_MANAGERS = (
@@ -115,6 +116,7 @@ CONSENT_MANAGERS = (
     "#didomi-host", ".qc-cmp2-container", "[id^='sp_message_container']",
     "#truste-consent-track", ".truste_box_overlay", "#cmpbox", "#cmpbox2",
     "#cookie-information-template-wrapper", "#coiOverlay",  # Cookie Information (upphandlingsmyndigheten.se)
+    "dialog.CookieConsent__root",                         # SVT
     "iframe[title*='consent' i]",
 )
 CONSENT_NOTICE = ("Got it", "OK", "Okay", "I understand", "Dismiss")
