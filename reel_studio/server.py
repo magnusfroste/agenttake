@@ -503,8 +503,16 @@ def og_image_path() -> Path:
 
 
 def video_url(session_id: str) -> str:
-    """Return the public relative URL for a finished session video."""
-    return f"/videos/{session_id}/video.mp4"
+    """Return the public relative URL for a finished session video.
+
+    Versioned by the file's mtime, like the poster: a rerender writes the
+    same path, and Cloudflare kept serving the old MP4 under the bare URL
+    (take 2 of the Sluss film shipped the old line for a while)."""
+    path = output_root() / session_id / "video.mp4"
+    try:
+        return f"/videos/{session_id}/video.mp4?v={int(path.stat().st_mtime)}"
+    except OSError:
+        return f"/videos/{session_id}/video.mp4"
 
 
 def narrations_by_part(session: dict) -> dict[int, str]:
@@ -647,7 +655,7 @@ def video_refresh_script(container_id: str, featured: bool = False) -> str:
         const player = document.createElement("video");
         player.controls = true;
         player.preload = "metadata";
-        player.src = `/videos/${{item.id}}/video.mp4`;
+        player.src = item.video_url || `/videos/${{item.id}}/video.mp4`;
         const body = document.createElement("div");
         body.className = "video-card-body";
         const heading = document.createElement("h3");
@@ -1546,6 +1554,7 @@ async def videos_api(request: Request) -> Response:
                 "title": display_title_for(video),
                 "duration_seconds": video["duration_seconds"],
                 "finished_at": video["finished_at"],
+                "video_url": video_url(video["id"]),
             }
             for video in store.list_finished_sessions()
         ]
@@ -2946,6 +2955,8 @@ async def list_sessions(limit: int = 20) -> list[dict]:
     sessions_found = store.list_sessions(limit)
     for session in sessions_found:
         session["start_url"] = sanitize_public_url(session.get("start_url"))
+        if session.get("video_url"):
+            session["video_url"] = public_video_url(session["id"]) or session["video_url"]
     return sessions_found
 
 
@@ -2955,6 +2966,8 @@ async def get_session(session_id: str) -> dict:
     session = store.get_session(session_id)
     if session is None:
         raise KeyError(f"Unknown session_id: {session_id}")
+    if session.get("video_url"):
+        session["video_url"] = public_video_url(session_id) or session["video_url"]
     return session
 
 
@@ -4000,8 +4013,9 @@ async def _render_and_publish(job: FinishJob, session: Any) -> dict:
     except Exception:
         pass
     sessions.pop(session_id, None)
-    return {"ok": True, "status": "done", "video_path": str(video_path), "video_url": video_url,
-            "review": review}
+    # After subtitles: burning them rewrites the file, and the URL is versioned by it.
+    return {"ok": True, "status": "done", "video_path": str(video_path),
+            "video_url": public_video_url(session_id) or video_url, "review": review}
 
 
 @mcp.tool()
@@ -4151,7 +4165,10 @@ async def download_video(request: Request) -> Response:
     video_path = output_root() / session_id / "video.mp4"
     if not video_path.is_file():
         return JSONResponse({"detail": "Video not found"}, status_code=404)
-    return FileResponse(video_path, media_type="video/mp4")
+    # A ?v= URL names one render and never changes; the bare link (already
+    # shared, or typed) must pick up a rerender within a minute.
+    cache = "public, max-age=31536000, immutable" if request.query_params.get("v") else "public, max-age=60"
+    return FileResponse(video_path, media_type="video/mp4", headers={"Cache-Control": cache})
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
