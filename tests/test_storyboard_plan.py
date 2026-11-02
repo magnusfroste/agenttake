@@ -233,13 +233,33 @@ def test_highlight_recipe_marks_the_words_above_the_subtitles():
     assert retake[0]["action"]["type"] == "goto" and retake[0]["action"]["url"] == ARTICLE
 
 
-def test_page_tour_glides_to_the_footer_for_as_long_as_its_line():
+def test_page_tour_glides_at_a_pace_you_can_follow_for_as_long_as_its_line():
     beat = check(good_plan())["beats"][3]
     ops = boards.recipe(beat)
     glide = ops[-1]
-    assert glide["action"]["type"] == "scroll" and glide["action"]["dy"] == 99999
-    assert boards.GLIDE_MIN_MS <= glide["action"]["ms"] <= boards.GLIDE_MAX_MS
+    ms = glide["action"]["ms"]
+    assert boards.GLIDE_MIN_MS <= ms <= boards.GLIDE_MAX_MS
+    # Not to the footer in the line's time: sluss.eu went by at 2,000 px a
+    # second (take 2, 2026-11-02).
+    assert glide["action"]["type"] == "scroll"
+    assert glide["action"]["dy"] == round(ms / 1000 * boards.PAGE_TOUR_PX_PER_SECOND)
     assert glide["narration"] == beat["line"]
+
+
+def test_page_tour_stops_at_its_until_text():
+    beat = check([{"shot": "page_tour", "url": PRODUCT, "until_text": "Classify → Route by policy → Prove.",
+                   "line": "Sluss classifies every prompt, routes it by policy, and proves where it went."}])["beats"][0]
+    glide = boards.recipe(beat)[-1]["action"]
+    assert glide["text"] == "Classify → Route by policy → Prove." and "dy" not in glide
+    assert "until_text" in boards.beats_json_schema()["properties"]
+
+
+def test_a_tour_whose_until_text_is_not_on_the_page_is_warned():
+    beat = {"number": 1, "label": "tour", "shot": "page_tour", "until_text": "How it works"}
+    page = {"status": 200, "text": boards.loose_text("Pricing Book a demo")}
+    assert [item["category"] for item in boards._url_items(beat, "url", PRODUCT, page)] == ["until_text_not_on_page"]
+    page["text"] = boards.loose_text("How it works Pricing")
+    assert boards._url_items(beat, "url", PRODUCT, page) == []
 
 
 def test_login_recipe_signs_in_offscreen_with_the_secret():

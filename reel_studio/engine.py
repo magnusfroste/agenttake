@@ -27,6 +27,8 @@ from playwright.async_api import (
 from .render import (
     CARD_DURATION,
     CARD_TEXT_MAX,
+    GLIDE_RAMP_IN,
+    GLIDE_RAMP_OUT,
     GLIDES_FILE,
     QUIET_FLOOR,
     SEGMENT_FLOOR,
@@ -294,6 +296,9 @@ _POINTER_PARK_JS = """([x, y]) => {
 # Resolves with [distance moved, whether it moved the document, where it
 # started, the viewport's height, the name of what moved].
 GLIDE_SCROLL_MAX_MS = 20000
+# A glide to a text (scroll with ms and text) stops with the text this far
+# down the viewport: a heading near the top, its section below it.
+GLIDE_TEXT_TOP = 0.18
 
 # How far set_shot(lift=True) moves the frame's centre below its focus, as a
 # share of the frame's height: the focus sits at about a third of the frame,
@@ -367,7 +372,7 @@ _DESCRIBE_SCROLLER_JS = """(el) => {
     const label = el.getAttribute('aria-label') || el.getAttribute('role');
     return label ? `${name} (${label})` : name;
   }"""
-_GLIDE_SCROLL_JS = """([dy, ms, anchor]) => new Promise((resolve) => {
+_GLIDE_SCROLL_JS = """([dy, ms, anchor, rampIn, rampOut]) => new Promise((resolve) => {
   const describe = """ + _DESCRIBE_SCROLLER_JS + """;
   const scrolls = (el) => {
     const s = getComputedStyle(el).overflowY;
@@ -399,7 +404,11 @@ _GLIDE_SCROLL_JS = """([dy, ms, anchor]) => new Promise((resolve) => {
   const start = box.scrollTop;
   const dist = Math.max(-start, Math.min(dy, box.scrollHeight - box.clientHeight - start));
   let last = performance.now(), clock = 0;
-  const ease = (x) => x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+  // render.glide_ease: slow in, a steady middle, a short landing.
+  const v = 1 / (1 - rampIn / 2 - rampOut / 2);
+  const ease = (x) => x < rampIn ? v * x * x / (2 * rampIn)
+    : x <= 1 - rampOut ? v * (rampIn / 2 + x - rampIn)
+    : 1 - v * (1 - x) * (1 - x) / (2 * rampOut);
   const frame = (now) => {
     clock += Math.min(now - last, 50);
     last = now;
@@ -1756,9 +1765,21 @@ class BrowserSession:
                         anchor = await self.page.locator(self.refs[action.ref]).first.element_handle(
                             timeout=5000
                         )
+                    dy = action.dy
+                    if action.text and action.text.strip():
+                        # Glide until the text sits near the top: a tour that
+                        # stops at the section its line is about.
+                        target = await self._visible_text_target(action.text)
+                        box = await target.bounding_box() if target is not None else None
+                        if box is None:
+                            return await self.error_result(
+                                "text_not_found", f"Visible text not found: {action.text}"
+                            )
+                        view_height = (self.page.viewport_size or {"height": 1080})["height"]
+                        dy = round(box["y"] - view_height * GLIDE_TEXT_TOP)
                     glide_started_at = time.monotonic() - self.t0
                     moved, on_document, glide_from, view_height, mover = await self.page.evaluate(
-                        _GLIDE_SCROLL_JS, [action.dy, glide_ms, anchor]
+                        _GLIDE_SCROLL_JS, [dy, glide_ms, anchor, GLIDE_RAMP_IN, GLIDE_RAMP_OUT]
                     )
                     scrolled = (round(moved), mover)
                     # The glide is the footage: the step holds for all of it,

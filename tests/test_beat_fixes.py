@@ -350,3 +350,45 @@ def test_a_quick_render_answers_with_the_video_as_before(mods, monkeypatch, tmp_
     assert result["status"] == "done", result
     assert result["video_path"].endswith("video.mp4")
     assert "review" in result and "s-quick" not in server.sessions
+
+
+def test_a_glide_starts_slow_and_never_rushes():
+    from reel_studio.render import glide_ease, glide_ease_expression
+
+    xs = [i / 200 for i in range(201)]
+    ys = [glide_ease(x) for x in xs]
+    assert ys[0] == 0 and abs(ys[-1] - 1) < 1e-9
+    assert all(b >= a for a, b in zip(ys, ys[1:]))
+    # Slow at first: a tenth of the time covers under 3 % of the way (the old
+    # ease in and out covered 2 %, then peaked at twice the average speed).
+    assert glide_ease(0.1) < 0.03
+    peak = max((b - a) * 200 for a, b in zip(ys, ys[1:]))
+    assert 1.3 < peak < 1.45
+    # The render pans the same curve: its ffmpeg expression, read as Python.
+    expression = glide_ease_expression("X")
+    python = (expression.replace("if(", "_if(").replace("lte(", "_lte(").replace("lt(", "_lt(")
+              .replace("pow(", "_pow("))
+    env = {"_if": lambda c, a, b: a if c else b, "_lt": lambda a, b: a < b, "_lte": lambda a, b: a <= b,
+           "_pow": pow}
+    for x in xs:
+        assert abs(eval(python, {**env, "X": x}) - glide_ease(x)) < 1e-6
+
+
+def test_a_glide_to_a_text_stops_with_it_near_the_top(tmp_path):
+    from reel_studio.engine import GLIDE_TEXT_TOP
+    from reel_studio.schema import Action
+
+    html = """<body style="margin:0"><div style="height:2500px">hero</div>
+      <h2>How it works</h2><div style="height:3000px">more</div></body>"""
+
+    async def scenario(page):
+        session = _browser_session(page, tmp_path)
+        result, _ = await session.act(Action(type="scroll", text="How it works", ms=300, settle_ms=0))
+        top = await page.evaluate("document.querySelector('h2').getBoundingClientRect().top")
+        missing, _ = await session.act(Action(type="scroll", text="No such heading", ms=300, settle_ms=0))
+        return result, top, missing
+
+    result, top, missing = _in_browser(html, scenario)
+    assert result["ok"]
+    assert abs(top - 600 * GLIDE_TEXT_TOP) <= 2
+    assert missing["error"]["type"] == "text_not_found"

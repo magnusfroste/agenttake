@@ -50,7 +50,7 @@ contact_sheet(session_id)              ← look at the film before you share it
 | `source_card` | `source`, `text` (the headline or a short quote, word for word), `publication` optional (default: the site's name), `date` optional | The quote on a clean card, as a television documentary shows a source: the publication and the date above, the quote large, the address below. For a source the camera cannot show: behind a paywall, answering 403, or buried under dialogs and ads. The real page when it can be read, the card when it cannot. |
 | `card` | `text` (`\n` for a second line), `background` optional, `source` when it states a number | A full-screen text card: `auto` follows the session's colour scheme; or a colour (`#0f1420`, `navy`), or an https image dimmed under the text. A sourced card names its source in the corner. |
 | `image` | `url` (an https image), `caption` optional | The still with a slow Ken Burns drift; `caption` is a lower third, above the subtitles. |
-| `page_tour` | `url`, `wait_for_text` optional | A glide from the hero to the footer, as long as the line. **Once per page**: a second tour of it, from whatever anchor, glides over the same sections again. |
+| `page_tour` | `url`, `wait_for_text` optional, `until_text` optional | A glide down from the hero, as long as the line: slow at first, then a steady pace a viewer can follow. With `until_text` (a heading further down, as the page shows it) it stops with that heading near the top; without, it goes about 400 px a second and stops where the line ends, not at the footer. **Once per page**: a second tour of it glides over the same sections again. |
 | `login` | `url`, `username`, `password_secret`, `wait_for_text` | Signs in offscreen and lands on the page after it. `password_secret` is the NAME of a secret AgentTake has (start_session lists them); the password never passes through you. `wait_for_text` is something the page after sign-in shows. The line is optional. |
 | `system` | `url`, `wait_for_text`, `zoom` optional | A page in the product, or one section of any page, held with a gentle push-in on `wait_for_text` (the section's heading). `zoom` (0.5–2) makes small text readable. |
 | `live_answer` | `input_text`, `wait_for_text` optional, `timeout` (seconds, default 120), `url` optional | Types the question and sends it offscreen, reads the page until the answer has stopped growing for 3 s (minutes if need be), then shows it close, above the subtitles. With `wait_for_text` (words only the answer has) the answer must contain them and is framed on them; without, it is framed on its first words. |
@@ -95,9 +95,9 @@ Six movements, about ten beats, about 150 words.
 3. **The turn** (20–25 s) — a `card`: "What if …?", "There is another way."
 4. **The solution** (25–40 s) — a `system` shot of the product's hero, then
    one for each section a line names (its heading as `wait_for_text`), so
-   the picture is what the voice is talking about. A `page_tour` sweeps
-   past every section and the next shots show them again: keep it for a
-   film where the page as a whole is the point.
+   the picture is what the voice is talking about. A `page_tour` with
+   `until_text` set to the section the line is about glides from the hero
+   past the sections leading up to it — the way in, not the whole page.
 5. **Proof, in the system** (40–55 s) — `login`, then `system` and a
    `live_answer`: the product doing it, live.
 6. **Call to action** (55–60 s) — `cta`.

@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.7.0
+version: 0.7.1
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -76,9 +76,9 @@ Don't use for:
 5. **Write the beats.** Follow the template: hook, problem with a source, the
    turn, solution, proof in the system, CTA. That is about ten beats and 150
    words for a minute. Each line is one thought and at most 35 words, spoken
-   once, naming what is on screen. A `page_tour` glides over a whole page,
-   past every section, so give each page at most one, and in a 60 s film
-   usually none. Open the product on a `system` shot of its hero, then one
+   once, naming what is on screen. A `page_tour` glides down from the hero,
+   slow at first; give it `until_text`, the heading of the section the line
+   is about, so it stops there instead of rushing on. At most one per page. Open the product on a `system` shot of its hero, then one
    `system` shot per section a line names, with the section's heading as
    `wait_for_text`. Save them with `write_file` to
    `storyboard.json` in your working directory. Retakes must reuse identical
