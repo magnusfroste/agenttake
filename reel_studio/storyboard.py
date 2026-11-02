@@ -47,7 +47,8 @@ SHOT_FIELDS: dict[str, str] = {
                    "a page covered by dialogs)",
     "card": "text, background optional (auto, brand, blur, a colour, or an https image), source when it states a number",
     "image": "url (an https image), caption optional (a lower third): a slow Ken Burns drift over the still",
-    "page_tour": "url, wait_for_text optional: a glide from the hero to the footer, once per page",
+    "page_tour": "url, wait_for_text optional, until_text optional (a heading further down): a glide from the "
+                 "hero, slow at first, to until_text or as far as a readable pace gets in the line, once per page",
     "login": "url (the sign-in page), username, password_secret (a secret's NAME), wait_for_text (what the "
              "page after sign-in shows): signs in offscreen, line optional",
     "system": "url, wait_for_text, zoom optional (page zoom 0.5-2, for readable text): a page, or one "
@@ -88,6 +89,11 @@ LONG_QUOTE_CHARS = 200
 
 GLIDE_MIN_MS = 6000
 GLIDE_MAX_MS = 20000
+# How fast a tour moves on average with no until_text, in CSS px a second.
+# A tour used to glide to the footer in its line's time: sluss.eu is 13,700 px
+# and went by at 2,000 px a second, too fast to follow (take 2, 2026-11-02).
+# At this pace a six-second line covers about two and a half screens.
+PAGE_TOUR_PX_PER_SECOND = 400
 OPEN_TIMEOUT_MS = 30000
 # A live answer has landed when the page's new text, the question left out,
 # has stopped growing this long; under ANSWER_MIN_CHARS it is a "thinking"
@@ -138,6 +144,7 @@ class StoryBeat(BaseModel):
     password_secret: str | None = None
     zoom: float | None = Field(default=None, ge=0.5, le=2.0)
     input_text: str | None = None
+    until_text: str | None = Field(default=None, description="page_tour: the heading the glide stops at.")
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
 
 
@@ -153,7 +160,7 @@ def beats_json_schema() -> dict[str, Any]:
         "timeout": {"type": "number", "minimum": 1, "maximum": OFFSCREEN_WAIT_MAX_MS / 1000},
     }
     for name in ("url", "wait_for_text", "text", "background", "caption", "publication", "date", "username",
-                 "password_secret", "input_text"):
+                 "password_secret", "input_text", "until_text"):
         properties[name] = {"type": "string"}
     return {"type": "object", "required": ["shot"], "properties": properties}
 
@@ -570,6 +577,11 @@ def _url_items(beat: dict, name: str, url: str, answer: dict) -> list[dict]:
         found.append(_item(number, label, "warn", "paywall",
                            f"{name} {url} looks paywalled: show the headline only, find an open source, "
                            "or show it as a source_card"))
+    if (shot == "page_tour" and name == "url" and beat.get("until_text") and answer.get("text")
+            and not quote_on_page(beat["until_text"], answer["text"])):
+        found.append(_item(number, label, "warn", "until_text_not_on_page",
+                           f"until_text is not in the text of {url}: copy the heading as the page shows it, "
+                           "or the tour fails (a page its scripts build may still have it)"))
     if shot == "image" and name == "url" and status and not str(answer.get("content_type", "")).startswith("image/"):
         found.append(_item(number, label, "warn", "not_an_image",
                            f"url answers {answer.get('content_type') or 'no content type'}, not an image"))
@@ -830,10 +842,13 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             _say(line, IMAGE_READY),
         ]
     if shot == "page_tour":
-        return [
-            *_open(beat["url"], wait_text),
-            _act({"type": "scroll", "dy": 99999, "ms": glide_ms(line, beat.get("language", "en"))}, line),
-        ]
+        ms = glide_ms(line, beat.get("language", "en"))
+        glide: dict[str, Any] = {"type": "scroll", "ms": ms}
+        if beat.get("until_text"):
+            glide["text"] = beat["until_text"]
+        else:
+            glide["dy"] = round(ms / 1000 * PAGE_TOUR_PX_PER_SECOND)
+        return [*_open(beat["url"], wait_text), _act(glide, line)]
     if shot == "login":
         ops = [*_open(beat["url"], None), {"op": "observe"}]
         if beat.get("username"):

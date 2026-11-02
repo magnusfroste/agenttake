@@ -597,6 +597,38 @@ def load_glides(directory: Path) -> dict[float, dict]:
     }
 
 
+# A glide starts slow, cruises, and lands: speed ramps up over the first
+# GLIDE_RAMP_IN of its time and down over the last GLIDE_RAMP_OUT. The ease
+# in and out it had peaked at twice the average speed halfway, so a tour of
+# sluss.eu was a blur in its middle; this one peaks at 1.4 times it, and the
+# hero stays readable while the line begins (Magnus, 2026-11-02: "börja
+# långsamt och öka lite, men det ska gå att följa med"). The browser glide
+# (engine._GLIDE_SCROLL_JS) moves on the same curve.
+GLIDE_RAMP_IN = 0.35
+GLIDE_RAMP_OUT = 0.2
+
+
+def glide_ease(x: float) -> float:
+    """Where a glide is, 0 to 1, at x of its time."""
+    a, d = GLIDE_RAMP_IN, GLIDE_RAMP_OUT
+    v = 1 / (1 - a / 2 - d / 2)
+    x = min(1.0, max(0.0, x))
+    if x < a:
+        return v * x * x / (2 * a)
+    if x <= 1 - d:
+        return v * (a / 2 + x - a)
+    return 1 - v * (1 - x) ** 2 / (2 * d)
+
+
+def glide_ease_expression(x: str) -> str:
+    """glide_ease as an ffmpeg expression of x."""
+    a, d = GLIDE_RAMP_IN, GLIDE_RAMP_OUT
+    v = 1 / (1 - a / 2 - d / 2)
+    return (f"if(lt({x},{a}),{v:.6f}*{x}*{x}/{2 * a},"
+            f"if(lte({x},{1 - d}),{v:.6f}*({a / 2}+{x}-{a}),"
+            f"1-{v:.6f}*pow(1-{x},2)/{2 * d}))")
+
+
 def _render_glide_pan(
     image: Path,
     glide: dict,
@@ -605,8 +637,8 @@ def _render_glide_pan(
     output_size: tuple[int, int] | None,
 ) -> Path:
     """The glide as a pan down the full-page image: the viewport's window
-    moves from where the glide started by its distance, eased in and out
-    over its ms, then holds."""
+    moves from where the glide started by its distance on glide_ease over
+    its ms, then holds."""
     # The image is at the capture density; the glide was measured in CSS px.
     scale = float(glide.get("scale") or 1.0)
     view = round(float(glide["view_height"]) * scale / 2) * 2
@@ -614,7 +646,7 @@ def _render_glide_pan(
     distance = float(glide["distance"]) * scale
     seconds = max(0.1, float(glide["ms"]) / 1000)
     x = f"min(t/{seconds:.3f},1)"
-    ease = f"if(lt({x},0.5),2*{x}*{x},1-pow(-2*{x}+2,2)/2)"
+    ease = glide_ease_expression(x)
     filters = [f"crop=iw:{view}:0:'{top:.1f}+{distance:.1f}*{ease}'"]
     if output_size is not None:
         filters.append(f"scale={output_size[0]}:{output_size[1]}")
