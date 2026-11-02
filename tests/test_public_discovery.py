@@ -181,3 +181,45 @@ def test_the_brand_mark_is_the_at_monogram_and_its_files_are_versioned():
     assert ">AT</text>" in server.FAVICON_SVG
     assert server.ASSET_VERSION in server.favicon_png_path().name
     assert server.ASSET_VERSION in server.og_image_path().name
+
+
+def test_a_rerender_gets_a_new_video_url_and_the_link_is_cached_briefly(tmp_path, monkeypatch):
+    # Cloudflare kept serving the old MP4 after a rerender: the URL never
+    # changed and the response had no Cache-Control.
+    import os
+    monkeypatch.setenv("REEL_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv("REEL_DB_PATH", str(tmp_path / "cache.db"))
+    monkeypatch.setenv("REEL_PUBLIC_BASE_URL", "https://take.example.com")
+    from starlette.testclient import TestClient
+    from reel_studio import server, store
+
+    session_id = "cafe01"
+    out = tmp_path / session_id
+    out.mkdir()
+    video = out / "video.mp4"
+    video.write_bytes(b"first render")
+    os.utime(video, (1_000_000, 1_000_000))
+    store.init_schema()
+    store.create_session(session_id, "https://example.com", "en-US-JennyNeural", 1920, 1080, str(out))
+    store.finish_session(session_id, str(video), f"https://take.example.com/videos/{session_id}/video.mp4", 5.0)
+
+    first = server.public_video_url(session_id)
+    assert first == f"https://take.example.com/videos/{session_id}/video.mp4?v=1000000"
+    video.write_bytes(b"second render")
+    os.utime(video, (2_000_000, 2_000_000))
+    second = server.public_video_url(session_id)
+    assert second != first and second.endswith("?v=2000000")
+    assert store.get_session(session_id)["video_url"].endswith("video.mp4")  # stored bare
+    import asyncio
+    assert asyncio.run(server.get_session(session_id))["video_url"] == second
+    assert asyncio.run(server.list_sessions())[0]["video_url"] == second
+    assert f'src="/videos/{session_id}/video.mp4?v=2000000"' in server.watch_page(session_id)
+
+    client = TestClient(server.BearerAuthMiddleware(server.mcp.streamable_http_app(), "secret"))
+    versioned = client.get(f"/videos/{session_id}/video.mp4?v=2000000")
+    assert versioned.status_code == 200 and versioned.content == b"second render"
+    assert "immutable" in versioned.headers["cache-control"]
+    bare = client.get(f"/videos/{session_id}/video.mp4")
+    assert bare.headers["cache-control"] == "public, max-age=60"
+    feed = client.get("/api/videos").json()
+    assert feed[0]["video_url"] == f"/videos/{session_id}/video.mp4?v=2000000"
