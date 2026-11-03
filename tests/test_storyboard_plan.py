@@ -254,6 +254,15 @@ def test_page_tour_stops_at_its_until_text():
     assert "until_text" in boards.beats_json_schema()["properties"]
 
 
+def test_a_cta_scrolls_to_its_text_and_stays_put_without_one():
+    beat = check([{"shot": "cta", "url": PRODUCT, "wait_for_text": "Take back control.",
+                   "line": "Read more at sluss dot E U."}])["beats"][0]
+    scrolls = [op["action"] for op in boards.recipe(beat) if op["op"] == "act" and op["action"]["type"] == "scroll_to_text"]
+    assert scrolls == [{"type": "scroll_to_text", "text": "Take back control.", "offscreen": True}]
+    bare = check([{"shot": "cta", "url": PRODUCT, "line": "Try the demo."}])["beats"][0]
+    assert not [op for op in boards.recipe(bare) if op["op"] == "act" and op["action"]["type"] == "scroll_to_text"]
+
+
 def test_a_tour_whose_until_text_is_not_on_the_page_is_warned():
     beat = {"number": 1, "label": "tour", "shot": "page_tour", "until_text": "How it works"}
     page = {"status": 200, "text": boards.loose_text("Pricing Book a demo")}

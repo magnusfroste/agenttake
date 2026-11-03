@@ -54,7 +54,7 @@ contact_sheet(session_id)              ← look at the film before you share it
 | `login` | `url`, `username`, `password_secret`, `wait_for_text` | Signs in offscreen and lands on the page after it. `password_secret` is the NAME of a secret AgentTake has (start_session lists them); the password never passes through you. `wait_for_text` is something the page after sign-in shows. The line is optional. |
 | `system` | `url`, `wait_for_text`, `zoom` optional | A page in the product, or one section of any page, held with a gentle push-in on `wait_for_text` (the section's heading). `zoom` (0.5–2) makes small text readable. |
 | `live_answer` | `input_text`, `wait_for_text` optional, `timeout` (seconds, default 120), `url` optional | Types the question and sends it offscreen, reads the page until the answer has stopped growing for 3 s (minutes if need be), then shows it close, above the subtitles. With `wait_for_text` (words only the answer has) the answer must contain them and is framed on them; without, it is framed on its first words. |
-| `cta` | `url`, `wait_for_text` optional | The page the viewer should go to. Pair it with start_session's `cta_url` for the closing card and its QR code. |
+| `cta` | `url`, `wait_for_text` optional | The page the viewer should go to; with `wait_for_text` the shot scrolls to it and pushes in there. Pair it with start_session's `cta_url` for the closing card and its QR code. |
 
 Every narrated step waits for its text before the line plays, so a page that
 has not loaded is a failed beat with a reason, not a blank frame in the film.
