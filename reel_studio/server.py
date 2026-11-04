@@ -1495,14 +1495,14 @@ def docs_page(base_url: str = "/") -> str:
       This requires <code>confirm=true</code>. Active sessions are protected
       unless <code>force=true</code> is passed, which aborts any live runtime
       and removes stale sessions orphaned by a restart.</p>
-      <p><strong>HTTP:</strong> <code>DELETE /api/videos/{session_id}?confirm=true</code>
+      <p><strong>HTTP:</strong> <code>DELETE /api/videos/{{session_id}}?confirm=true</code>
       performs the same deletion with the same bearer token and returns
       <code>{{"deleted": true, "session_id": ...}}</code>. The theater's
       <em>Manage videos</em> mode uses this endpoint.</p>
     </div>
     <div class="tool card"><h3><code>act_batch(session_id, steps)</code></h3>
       <p>Run up to 20 actions in one call. Each step is
-      <code>{"action": ..., "narration": ...}</code> with the same contract as
+      <code>{{"action": ..., "narration": ...}}</code> with the same contract as
       <code>act</code>. Steps execute in order and stop at the first failure,
       returning one result per executed step plus the final screenshot.</p>
     </div>
