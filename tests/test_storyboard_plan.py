@@ -233,6 +233,45 @@ def test_highlight_recipe_marks_the_words_above_the_subtitles():
     assert retake[0]["action"]["type"] == "goto" and retake[0]["action"]["url"] == ARTICLE
 
 
+def test_a_highlight_after_an_image_opens_the_article_again():
+    # Shooting the image opens the image's page: a highlight that went on
+    # looking where the browser was searched it for the quote (Perch Scan,
+    # 2026-11-04).
+    report = check([
+        {"shot": "source", "url": ARTICLE, "wait_for_text": "Shadow AI is here",
+         "line": "Employees use AI tools their employer never approved."},
+        {"shot": "image", "url": "https://news.example/chart.png", "line": "Usage doubled in a year."},
+        {"shot": "highlight", "text": "the fastest-growing blind spot", "line": "Analysts call it a blind spot."},
+        {"shot": "highlight", "text": "Shadow AI is here", "line": "And it is already here."},
+    ], probe=answers({"https://news.example/chart.png": {"content_type": "image/png"}}))
+    assert report["ready"] is True
+    after_image, next_one = report["beats"][2], report["beats"][3]
+    assert after_image["source"] == ARTICLE and after_image["reopens"] is True
+    ops = boards.recipe(after_image)
+    assert ops[0]["action"]["type"] == "goto" and ops[0]["action"]["url"] == ARTICLE
+    assert acts(ops)[-3:] == [("act", "scroll_to_text"), ("shot", None), ("act", "annotate")]
+    # Back on the article, the next highlight stays there.
+    assert "reopens" not in next_one and acts(boards.recipe(next_one))[0] == ("act", "scroll_to_text")
+
+
+def test_only_a_card_shot_as_a_page_leaves_the_article():
+    def after(card):
+        beats = check([
+            {"shot": "source", "url": ARTICLE, "wait_for_text": "Shadow AI is here",
+             "line": "Employees use AI tools their employer never approved."},
+            {"shot": "card", "line": "Blocking does not work.", **card},
+            {"shot": "live_answer", "input_text": "What is shadow AI?", "line": "Ask it yourself."},
+        ])["beats"]
+        return beats[2]
+
+    # The render cuts a brand card in; the browser stays on the article.
+    assert "reopens" not in after({"text": "You can't block it."})
+    # A card with an image behind it is a page of its own.
+    behind = after({"text": "You can't block it.", "background": "https://news.example/bg.jpg"})
+    assert behind["reopens"] is True
+    assert boards.recipe(behind)[0]["action"]["url"] == ARTICLE
+
+
 def test_page_tour_glides_at_a_pace_you_can_follow_for_as_long_as_its_line():
     beat = check(good_plan())["beats"][3]
     ops = boards.recipe(beat)

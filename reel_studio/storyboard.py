@@ -238,7 +238,9 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
     Every beat comes back, broken ones included, so the checklist can name
     them all at once; a beat that does not parse at all is left out. A beat
     that may stay on the page before gets that page's url as ``page_url``,
-    and a highlight on a page a source beat opened inherits its source.
+    and a highlight on a page a source beat opened inherits its source. If an
+    image or a card shot as a page came between, the browser is no longer on
+    that page, and the beat gets ``reopens`` to open it again.
     """
     beats: list[dict] = []
     items: list[dict] = []
@@ -246,6 +248,8 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
     seen_tours: dict[str, int] = {}
     page_url: str | None = None
     page_source: str | None = None
+    # Whether the browser has left page_url for a page of the video's own.
+    left_page = False
     for number, entry in enumerate(raw or [], start=1):
         try:
             parsed = entry if isinstance(entry, StoryBeat) else StoryBeat.model_validate(entry)
@@ -296,6 +300,8 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
                                    f"a {shot} shot without url stays on the page before, and there is none"))
             beat["page_url"] = page_url
             beat["inherits_url"] = True
+            if left_page and page_url:
+                beat["reopens"] = True
         if shot in CLAIM_SHOTS and not beat.get("source"):
             # The page a quote is on is its source: the article a source shot
             # or the highlight itself opens. A highlight on a page some other
@@ -337,9 +343,19 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
             # stays on the page names its url, so a retake can go back to it.
             # A source card leaves the browser on the card.
             page_url = page_source = None
+            left_page = False
         elif beat.get("url") and shot not in ("card", "image"):
             page_url = beat["url"]
             page_source = beat.get("source") if shot == "source" else None
+            left_page = False
+        elif shot == "image" or (shot == "card" and beat.get("text") and render_card_action(beat) is None):
+            # Planning kept the article for the highlight after an image, but
+            # shooting the image opened the image's page, and the highlight
+            # looked for its quote there (Perch Scan, 2026-11-04). A card the
+            # render cuts in leaves the browser where it was.
+            left_page = True
+        elif beat.get("reopens"):
+            left_page = False
         beats.append(beat)
     return beats, items
 
@@ -782,11 +798,12 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
     """The ops that shoot one beat.
 
     ``retake``: the beat is shot again at the end of the session, so a beat
-    that normally stays on the page before opens that page itself.
+    that normally stays on the page before opens that page itself, as it does
+    when an image or a card page came between (``reopens``).
     """
     shot, line = beat["shot"], beat.get("line", "")
     wait_text = beat.get("wait_for_text")
-    reopen = retake and beat.get("inherits_url") and beat.get("page_url")
+    reopen = (retake or beat.get("reopens")) and beat.get("inherits_url") and beat.get("page_url")
     if shot == "source":
         return [
             *_open(beat["url"], wait_text),
