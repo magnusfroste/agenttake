@@ -30,6 +30,7 @@ from .render import (
     GLIDE_RAMP_IN,
     GLIDE_RAMP_OUT,
     GLIDES_FILE,
+    PAGE_CHANGING_ACTIONS,
     QUIET_FLOOR,
     SEGMENT_FLOOR,
     card_background,
@@ -574,6 +575,9 @@ class BrowserSession:
     # Each timeline step's minimum length in the video: QUIET_FLOOR for a step
     # silent on purpose, SEGMENT_FLOOR otherwise.
     timeline_floors: list[float] = field(default_factory=list)
+    # When each page-changing action began, visible or offscreen: the shot
+    # before it ends there (render.plan_segments cuts).
+    timeline_cuts: list[float] = field(default_factory=list)
     # A step done offscreen before anything was shown: the video then opens on
     # the first visible step rather than on the page it was set up from.
     offscreen_first: bool = False
@@ -1485,6 +1489,9 @@ class BrowserSession:
                 duration = probe_duration(clip)
             except Exception as exc:
                 return await self.error_result("narration_failed", str(exc))
+        # The line is synthesized first, so the screen starts changing here,
+        # not when act was called.
+        action_started_at = time.monotonic() - self.t0
         try:
             action_type = action.type
             if action_type == "caption":
@@ -1884,6 +1891,8 @@ class BrowserSession:
         # when act was called: the narration is synthesized in between, and
         # take 4 opened on four seconds of a still page and lost the end of
         # the glide (2026-10-24).
+        if action_type in PAGE_CHANGING_ACTIONS:
+            self.timeline_cuts.append(action_started_at)
         glide = action_type == "scroll" and bool(action.ms)
         if glide and glide_started_at is not None:
             offset = glide_started_at
@@ -1988,6 +1997,7 @@ class BrowserSession:
             result["settled_by"] = settled_by
         if action_completed_at is not None:
             result["settled_at_seconds"] = round(action_completed_at, 3)
+        result["started_at_seconds"] = round(action_started_at, 3)
         if action_type == "scroll_to_text":
             result.update({"box": action_box, "in_viewport": action_in_viewport})
         if scrolled is not None:
@@ -2036,7 +2046,7 @@ class BrowserSession:
         segments, _ = plan_segments(
             self.timeline, max(elapsed, 0.001), self.timeline_floors,
             not self.offscreen_first, self.timeline_speeds, None, self.timeline_glides,
-            cards=self.timeline_cards,
+            cards=self.timeline_cards, cuts=self.timeline_cuts,
         )
         cards = CARD_DURATION * (
             bool(self.render_config.title.strip())
@@ -2066,7 +2076,7 @@ class BrowserSession:
                 video, self.timeline, final, self.output_size,
                 self.render_config, self.camera, self.timeline_pages,
                 self.timeline_floors, not self.offscreen_first, self.timeline_speeds,
-                self.timeline_glides,
+                self.timeline_glides, cuts=self.timeline_cuts,
             )
             write_storyboard(self.directory, final, result.timeline)
         else:

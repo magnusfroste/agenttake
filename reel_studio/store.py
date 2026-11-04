@@ -159,6 +159,10 @@ def init_schema() -> None:
             connection.execute("ALTER TABLE steps ADD COLUMN focus_cover TEXT")
         if "position" not in columns:
             connection.execute("ALTER TABLE steps ADD COLUMN position INTEGER")
+        if "started_seconds" not in columns:
+            # When the action began changing the page; offset_seconds is when
+            # it settled. NULL on a take recorded before this.
+            connection.execute("ALTER TABLE steps ADD COLUMN started_seconds REAL")
         session_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
@@ -290,6 +294,7 @@ def append_step(
     speed: float = 1.0,
     open_overlays: dict[str, int] | None = None,
     focus_cover: dict | None = None,
+    started_seconds: float | None = None,
 ) -> None:
     init_schema()
     with _lock, _connect() as connection:
@@ -303,8 +308,8 @@ def append_step(
                 (session_id, idx, action_type, target, url, title, narration_text,
                  voice, narration_duration, offset_seconds, screenshot_path, ok,
                  error_type, created_at, quiet, offscreen, annotation_seconds, narration_clip, speed,
-                 open_overlays, focus_cover)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 open_overlays, focus_cover, started_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -328,6 +333,7 @@ def append_step(
                 float(speed or 1.0),
                 json.dumps(open_overlays) if open_overlays is not None else None,
                 json.dumps(focus_cover) if focus_cover is not None else None,
+                started_seconds,
             ),
         )
 

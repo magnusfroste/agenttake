@@ -30,6 +30,7 @@ from . import store
 from . import retention
 from .render import (
     FONT_PATH,
+    PAGE_CHANGING_ACTIONS,
     RenderConfig,
     probe_duration,
     rerender_narration,
@@ -2216,6 +2217,7 @@ async def _run_action(
         parsed_action.speed,
         payload.get("open_overlays"),
         payload.get("focus_cover"),
+        started_seconds=payload.get("started_at_seconds"),
     )
     return payload, screenshot
 
@@ -3422,6 +3424,7 @@ async def rerender(
     render_speeds: list[float] = []
     render_glides: list[float | None] = []
     render_order: list[int] = []
+    render_cuts: list[float] = []
     lead_in = wants_lead_in(session["steps"])
     steps = session["steps"]
     # Where each step plays (edit_step position); the steps themselves stay in
@@ -3454,6 +3457,11 @@ async def rerender(
             clips.append((offset, clip))
         else:
             duration = float(step.get("narration_duration") or 0.0)
+        if step.get("action_type") in PAGE_CHANGING_ACTIONS:
+            # Where the shot before this action ends. A take recorded before
+            # starts were stored has only the settle time, which is later.
+            started = step.get("started_seconds")
+            render_cuts.append(float(offset if started is None else started))
         if step.get("offscreen"):
             continue
         render_steps.append((offset, clip, step_hold_seconds(step, duration)))
@@ -3477,7 +3485,7 @@ async def rerender(
             segmented_render, source_video, render_steps, video_path, output_size,
             render_config, Camera.load(output_dir), render_pages,
             render_floors, lead_in, render_speeds, render_glides,
-            order=render_order,
+            order=render_order, cuts=render_cuts,
         )
         await asyncio.to_thread(write_storyboard, output_dir, video_path, getattr(result, "timeline", []) or [])
         warnings = result.warnings

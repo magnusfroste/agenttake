@@ -145,6 +145,36 @@ def test_edit_step_moves_a_beat_and_rerender_plays_that_order(mods, monkeypatch,
     assert captured["order"] == [2, 1, 0]
 
 
+@ffmpeg
+def test_rerender_ends_each_shot_where_the_next_action_began(mods, monkeypatch, tmp_path):
+    server, store = mods
+    session_dir = tmp_path / "s-cuts"
+    session_dir.mkdir()
+    _video(session_dir / "screen.mp4", size="64x36")
+    shutil.copy(session_dir / "screen.mp4", session_dir / "video.mp4")
+    _new_session(store, "s-cuts", session_dir)
+    store.append_step("s-cuts", "wait", None, "https://a.example", "t", "", 0.0, 1.0, None, True, None)
+    # The offscreen goto settled at 6 s but began loading the page at 4 s.
+    store.append_step("s-cuts", "goto", "https://b.example", "https://b.example", "t", "", 0.0, 6.0,
+                      None, True, None, offscreen=True, started_seconds=4.0)
+    store.append_step("s-cuts", "wait", None, "https://b.example", "t", "", 0.0, 7.0, None, True, None)
+    # Recorded before starts were stored: its settle time is the cut.
+    store.append_step("s-cuts", "click", "button:x", "https://b.example", "t", "", 0.0, 9.0,
+                      None, True, None, offscreen=True)
+    store.finish_session("s-cuts", str(session_dir / "video.mp4"), None, 10.0)
+
+    captured = {}
+
+    def fake_render(source, steps, video_path, *args, **kwargs):
+        captured["steps"], captured["cuts"] = steps, kwargs.get("cuts")
+        return SimpleNamespace(warnings=[], duration=8.0, timeline=[])
+
+    monkeypatch.setattr(server, "segmented_render", fake_render)
+    assert asyncio.run(server.rerender("s-cuts"))["ok"]
+    assert [offset for offset, _, _ in captured["steps"]] == [1.0, 7.0]
+    assert captured["cuts"] == [4.0, 9.0]
+
+
 def test_a_finished_session_without_moves_plays_as_recorded(mods):
     _, store = mods
     steps = [{"idx": 0, "position": None}, {"idx": 1, "position": None}, {"idx": 2, "position": None}]
