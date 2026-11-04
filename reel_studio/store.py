@@ -15,6 +15,10 @@ from .engine import output_root
 
 _lock = threading.Lock()
 BACKLOG_STATUSES = ("open", "planned", "in_progress", "shipped", "wont_fix")
+BACKLOG_COLUMNS = (
+    "id, title, detail, category, severity, session_id, status, "
+    "note, updated_at, created_at, issue_url"
+)
 
 
 def db_path() -> Path:
@@ -212,6 +216,9 @@ def init_schema() -> None:
             connection.execute("ALTER TABLE backlog ADD COLUMN note TEXT")
         if "updated_at" not in backlog_columns:
             connection.execute("ALTER TABLE backlog ADD COLUMN updated_at TEXT")
+        if "issue_url" not in backlog_columns:
+            # The upstream issue the item was filed as; NULL until it is.
+            connection.execute("ALTER TABLE backlog ADD COLUMN issue_url TEXT")
         connection.execute(
             "UPDATE backlog SET updated_at = created_at WHERE updated_at IS NULL"
         )
@@ -638,18 +645,35 @@ def create_backlog(
         "note": None,
         "updated_at": _now(),
         "created_at": _now(),
+        "issue_url": None,
     }
     with _lock, _connect() as connection:
         connection.execute(
             """
             INSERT INTO backlog
                 (id, title, detail, category, severity, session_id, status,
-                 note, updated_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 note, updated_at, created_at, issue_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             tuple(item.values()),
         )
     return item
+
+
+def set_backlog_issue(item_id: str, issue_url: str) -> dict[str, Any] | None:
+    """Record the upstream issue an item was filed as (server.file_upstream_issue)."""
+    init_schema()
+    with _lock, _connect() as connection:
+        cursor = connection.execute(
+            "UPDATE backlog SET issue_url = ?, updated_at = ? WHERE id = ?",
+            (issue_url, _now(), item_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+        row = connection.execute(
+            f"SELECT {BACKLOG_COLUMNS} FROM backlog WHERE id = ?", (item_id,)
+        ).fetchone()
+    return dict(row)
 
 
 def list_backlog(
@@ -672,8 +696,7 @@ def list_backlog(
         parameters.append(limit)
         rows = connection.execute(
             f"""
-            SELECT id, title, detail, category, severity, session_id, status,
-                   note, updated_at, created_at
+            SELECT {BACKLOG_COLUMNS}
             FROM backlog
             {where}
             ORDER BY created_at DESC
@@ -705,12 +728,7 @@ def update_backlog(
         if cursor.rowcount == 0:
             return None
         row = connection.execute(
-            """
-            SELECT id, title, detail, category, severity, session_id, status,
-                   note, updated_at, created_at
-            FROM backlog WHERE id = ?
-            """,
-            (item_id,),
+            f"SELECT {BACKLOG_COLUMNS} FROM backlog WHERE id = ?", (item_id,)
         ).fetchone()
     return dict(row)
 

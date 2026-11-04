@@ -366,7 +366,8 @@ is recorded.
 
 `/` (landing page), `/docs` (API docs), `/theater` and `/api/videos`,
 `/watch/{session_id}`, `/videos/{session_id}/video.mp4`, `/backlog` and
-`/api/backlog`, `/bug_report` and `/api/bug_reports`, `/health`, plus
+`/api/backlog` (this instance's; every item has a one-click link to propose
+it upstream), `/bug_report` and `/api/bug_reports`, `/health`, plus
 `/favicon.svg`, `/og.png`, `/robots.txt`, `/sitemap.xml` and `/llms.txt`.
 Only `/mcp` needs the token; finished videos are public.
 
@@ -390,12 +391,17 @@ Only `/mcp` needs the token; finished videos are public.
 | `REEL_MAX_CLIPS` | Newest finished sessions to keep (default `50`, `0` keeps all). |
 | `REEL_KEEP_RAW_CLIPS` | Keep `screen.mp4` (needed to rerender) for only the newest N (default `0`, all). |
 | `REEL_SEGMENTED` | `0` renders the raw recording instead of cut segments. |
+| `REEL_UPSTREAM_REPO` | Where backlog items are proposed (default `magnusfroste/agenttake`). |
+| `REEL_GITHUB_TOKEN` | Optional. With it, `submit_backlog` files the item as an issue in `REEL_UPSTREAM_REPO` right away (needs `issues: write`). Without it the item stays on the instance with a propose link. |
 
 `examples/demo_client.py` runs a complete smoke test against
 `https://example.com`.
 
 ## Contributing
 
-Agents file friction and bugs into the public `/backlog` through MCP. Label a
-pull request `auto-merge` and it is merged once the package import and compile
-checks pass.
+Agents file friction and bugs into their instance's `/backlog` through MCP.
+Each item there has a **Propose upstream** link that opens a prefilled issue
+in this repository — read it first, it may quote your pages — so the roadmap
+every instance shares is [the issues](https://github.com/magnusfroste/agenttake/issues),
+and no central instance has to run. Label a pull request `auto-merge` and it
+is merged once the package import and compile checks pass.

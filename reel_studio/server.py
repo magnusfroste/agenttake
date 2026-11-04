@@ -28,6 +28,12 @@ from starlette.types import ASGIApp
 from .engine import BrowserSession, output_root
 from . import store
 from . import retention
+
+# Every instance keeps its own backlog; the roadmap they share is the
+# upstream project's issue tracker. An item is proposed there with a
+# prefilled link, or filed outright when REEL_GITHUB_TOKEN is set.
+UPSTREAM_REPO = os.environ.get("REEL_UPSTREAM_REPO", "magnusfroste/agenttake").strip().strip("/")
+UPSTREAM_URL = f"https://github.com/{UPSTREAM_REPO}"
 from .render import (
     FONT_PATH,
     PAGE_CHANGING_ACTIONS,
@@ -242,7 +248,7 @@ def page_shell(
 </head>
 <body>
   <main>
-    <nav><strong>AgentTake</strong><span><a href="/">Home</a> · <a href="/theater">Theater</a> · <a href="/backlog">Backlog</a> · <a href="/bug_report">Bug reports</a> · <a href="/docs">Docs</a></span></nav>
+    <nav><strong>AgentTake</strong><span><a href="/">Home</a> · <a href="/theater">Theater</a> · <a href="/backlog">Backlog</a> · <a href="/bug_report">Bug reports</a> · <a href="/docs">Docs</a> · <a href="{UPSTREAM_URL}" rel="noopener">GitHub ↗</a></span></nav>
     {content}
   </main>
 </body>
@@ -336,7 +342,7 @@ token-protected `prune` tool to clean old finished sessions manually.
 ## Public resources
 
 - `/theater` — finished narrated videos
-- `/backlog` and `/bug_report` — public roadmap and bug reports
+- `/backlog` and `/bug_report` — this instance's backlog and bug reports, each item proposable upstream as a GitHub issue
 - `/docs` — detailed API documentation
 - `/api/videos`, `/api/backlog`, `/api/bug_reports` — JSON feeds
 
@@ -1051,6 +1057,55 @@ def theater_page(base_url: str = "/") -> str:
     )
 
 
+def _issue_body(item: dict) -> str:
+    detail = (item.get("detail") or "").strip() or "(no detail)"
+    return (
+        f"{detail}\n\n"
+        f"Category: {item['category']} · Severity: {item['severity']}\n"
+        "Filed by a directing agent through AgentTake's `submit_backlog`."
+    )
+
+
+def upstream_issue_url(item: dict) -> str:
+    """A prefilled new-issue link for a backlog item: the instance owner reads
+    it, then proposes it upstream with one click and no token. Nothing about
+    the instance goes along, and the text is theirs to edit before sending —
+    an agent's detail can quote their pages."""
+    query = urllib.parse.urlencode(
+        {"title": item["title"], "body": _issue_body(item), "labels": "from-take"}
+    )
+    return f"{UPSTREAM_URL}/issues/new?{query}"
+
+
+async def file_upstream_issue(item: dict) -> tuple[str | None, str | None]:
+    """Open the item as an upstream issue when REEL_GITHUB_TOKEN is set, so the
+    maintainer's own instances need no click. Returns (issue_url, error): no
+    token gives (None, None); a refusal leaves the item local with its
+    propose link and says why. Never raises."""
+    token = os.environ.get("REEL_GITHUB_TOKEN", "").strip()
+    if not token:
+        return None, None
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                f"https://api.github.com/repos/{UPSTREAM_REPO}/issues",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "agenttake",
+                },
+                json={"title": item["title"], "body": _issue_body(item), "labels": ["from-take"]},
+            )
+    except Exception as exc:  # noqa: BLE001 - the backlog entry must survive any failure here
+        return None, f"GitHub unreachable: {type(exc).__name__}"
+    if response.status_code != 201:
+        return None, f"GitHub answered {response.status_code}"
+    url = str(response.json().get("html_url") or "")
+    return (url or None), (None if url else "GitHub returned no issue URL")
+
+
 def backlog_item(item: dict) -> str:
     title = html.escape(item["title"])
     detail = html.escape(item["detail"])
@@ -1066,6 +1121,12 @@ def backlog_item(item: dict) -> str:
     note = html.escape(item.get("note") or "")
     updated_at = html.escape(item.get("updated_at") or created_at)
     muted = " backlog-item-muted" if status_key in {"shipped", "wont_fix"} else ""
+    if item.get("issue_url"):
+        upstream = (f'<p><a href="{html.escape(item["issue_url"], quote=True)}" rel="noopener">'
+                    'Filed upstream ↗</a></p>')
+    else:
+        upstream = (f'<p><a class="button secondary" href="{html.escape(upstream_issue_url(item), quote=True)}" '
+                    'rel="noopener">Propose upstream →</a></p>')
     return f"""
     <article class="backlog-item card{muted}" data-backlog-id="{html.escape(item["id"], quote=True)}">
       <h3>{title}</h3>
@@ -1076,6 +1137,7 @@ def backlog_item(item: dict) -> str:
       </div>
       <p>{detail or '<span class="muted">No additional detail.</span>'}</p>
       {f'<p class="muted">Note: {note}</p>' if note else ''}
+      {upstream}
       <p class="muted">Updated {updated_at}</p>
     </article>"""
 
@@ -1100,10 +1162,12 @@ def backlog_page(base_url: str = "/") -> str:
         cards = '<div class="placeholder"><p>No backlog items yet. Agents can submit the next improvement through MCP.</p></div>'
     content = f"""
     <section class="hero" style="padding-bottom: 28px;">
-      <div class="eyebrow">Open-source roadmap</div>
+      <div class="eyebrow">This instance's backlog</div>
       <h1>Agent backlog.</h1>
-    <p class="lede">A public list of the improvements agents ask for while
-      directing real product stories.</p>
+    <p class="lede">What agents asked for while directing on this instance.
+      Read an item, then propose it to the AgentTake project with one click;
+      the roadmap every instance shares is
+      <a href="{UPSTREAM_URL}/issues" rel="noopener">its issues on GitHub</a>.</p>
     <div class="status-summary">{backlog_status_summary(items)}</div>
     </section>
     <div class="theater-grid">
@@ -1113,7 +1177,7 @@ def backlog_page(base_url: str = "/") -> str:
     return page_shell(
         "Agent backlog",
         content,
-        "Explore the open roadmap of improvements requested by directing agents.",
+        "Improvements directing agents asked for on this instance, each one a click from the AgentTake project's issues.",
         "/backlog",
         base_url,
     )
@@ -1127,10 +1191,12 @@ def bug_report_page(base_url: str = "/") -> str:
         cards = '<div class="placeholder"><p>No bug reports yet. Agents can submit one through MCP.</p></div>'
     content = f"""
     <section class="hero" style="padding-bottom: 28px;">
-      <div class="eyebrow">Open-source bug reports</div>
+      <div class="eyebrow">This instance's bug reports</div>
       <h1>Bug reports.</h1>
-    <p class="lede">Known product and directing-agent problems submitted from
-      real recording sessions.</p>
+    <p class="lede">Problems agents hit while recording on this instance.
+      Read one, then propose it to the AgentTake project with one click; known
+      bugs across instances are
+      <a href="{UPSTREAM_URL}/issues" rel="noopener">its issues on GitHub</a>.</p>
     <div class="status-summary">{backlog_status_summary(items)}</div>
     </section>
     <div class="theater-grid">
@@ -1372,12 +1438,16 @@ def docs_page(base_url: str = "/") -> str:
       <p>Submit a tool-improvement request when the agent hits friction.
       Categories are <code>feature</code>, <code>bug</code>, or
       <code>friction</code>; severities are <code>low</code>,
-      <code>normal</code>, or <code>high</code>. Requests are stored in the
-      public roadmap.</p></div>
+      <code>normal</code>, or <code>high</code>. Requests are stored in this
+      instance's backlog, where each has a one-click link to propose it to the
+      AgentTake project (<code>propose_url</code> in the result); with
+      <code>REEL_GITHUB_TOKEN</code> set it is filed as an issue upstream right
+      away and the result carries <code>issue_url</code>.</p></div>
     <div class="tool card"><h3><code>list_backlog(limit=50, status?)</code></h3>
       <p>List recent agent backlog requests, optionally filtered by status.
-      The public roadmap is available at <a href="/backlog">/backlog</a> and
-      its JSON feed at <code>/api/backlog</code>.</p></div>
+      This instance's backlog is at <a href="/backlog">/backlog</a> with a
+      JSON feed at <code>/api/backlog</code>; the shared roadmap is
+      <a href="{UPSTREAM_URL}/issues">the project's issues</a>.</p></div>
     <div class="tool card"><h3><code>update_backlog(id, status, note?)</code></h3>
       <p>Move a backlog item through <code>open</code>, <code>planned</code>,
       <code>in_progress</code>, <code>shipped</code>, or
@@ -3534,7 +3604,12 @@ async def submit_backlog(
     severity: str = "normal",
     session_id: str | None = None,
 ) -> dict:
-    """Submit an agent tool-improvement request to the public backlog."""
+    """Submit an agent tool-improvement request to this instance's backlog.
+
+    The result carries propose_url, a prefilled link the instance owner can
+    open to file it upstream — or, with REEL_GITHUB_TOKEN set, issue_url of
+    the issue filed right away.
+    """
     title = title.strip()
     if not title:
         raise ValueError("title must not be empty")
@@ -3544,13 +3619,20 @@ async def submit_backlog(
     severity = severity.strip().lower()
     if severity not in {"low", "normal", "high"}:
         severity = "normal"
-    return store.create_backlog(
+    item = store.create_backlog(
         title,
         detail.strip(),
         category,
         severity,
         session_id,
     )
+    issue_url, error = await file_upstream_issue(item)
+    if issue_url:
+        return store.set_backlog_issue(item["id"], issue_url) or item
+    item["propose_url"] = upstream_issue_url(item)
+    if error:
+        item["upstream_error"] = error
+    return item
 
 
 @mcp.tool()

@@ -223,3 +223,66 @@ def test_a_rerender_gets_a_new_video_url_and_the_link_is_cached_briefly(tmp_path
     assert bare.headers["cache-control"] == "public, max-age=60"
     feed = client.get("/api/videos").json()
     assert feed[0]["video_url"] == f"/videos/{session_id}/video.mp4?v=2000000"
+
+
+def _own_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("REEL_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv("REEL_DB_PATH", str(tmp_path / "reel-studio.db"))
+    monkeypatch.delenv("REEL_GITHUB_TOKEN", raising=False)
+
+
+def test_a_backlog_item_can_be_proposed_upstream_with_one_click(tmp_path, monkeypatch):
+    """Each instance keeps its own backlog, so what agents ask for never
+    reached the project unless a central instance ran. The roadmap they share
+    is the upstream issue tracker; an item gets there with a prefilled link
+    the instance owner reads first (2026-11-04)."""
+    import asyncio
+    import html
+
+    from reel_studio import server
+
+    _own_store(tmp_path, monkeypatch)
+    item = asyncio.run(server.submit_backlog(
+        "Hold a result longer", "edit_step hold_seconds tops out at 20 s", "friction", "low",
+    ))
+    assert item["issue_url"] is None and "upstream_error" not in item
+    assert item["propose_url"].startswith("https://github.com/magnusfroste/agenttake/issues/new?")
+    assert "title=Hold+a+result+longer" in item["propose_url"]
+    assert "labels=from-take" in item["propose_url"]
+    assert "Severity%3A+low" in item["propose_url"]
+    # Without a token nothing is sent anywhere.
+    assert asyncio.run(server.file_upstream_issue(item)) == (None, None)
+
+    page = server.backlog_page("https://example.test")
+    assert "Propose upstream" in page and html.escape(item["propose_url"]) in page
+    assert 'href="https://github.com/magnusfroste/agenttake/issues"' in page
+    assert 'href="https://github.com/magnusfroste/agenttake" rel="noopener">GitHub' in page  # the nav
+
+
+def test_with_a_token_the_item_is_filed_upstream_and_a_refusal_keeps_it_local(tmp_path, monkeypatch):
+    import asyncio
+
+    from reel_studio import server, store
+
+    _own_store(tmp_path, monkeypatch)
+    posted = []
+
+    async def accepted(item):
+        posted.append(item["title"])
+        return "https://github.com/magnusfroste/agenttake/issues/7", None
+
+    monkeypatch.setattr(server, "file_upstream_issue", accepted)
+    item = asyncio.run(server.submit_backlog("Mux dies on finish", "SIGABRT in xfade", "bug", "high"))
+    assert posted == ["Mux dies on finish"]
+    assert item["issue_url"].endswith("/issues/7") and "propose_url" not in item
+    assert store.list_backlog(category="bug")[0]["issue_url"].endswith("/issues/7")
+    page = server.bug_report_page()
+    assert "Filed upstream" in page and "Propose upstream" not in page
+
+    async def refused(item):
+        return None, "GitHub answered 401"
+
+    monkeypatch.setattr(server, "file_upstream_issue", refused)
+    kept = asyncio.run(server.submit_backlog("Second", "", "friction", "normal"))
+    assert kept["issue_url"] is None and kept["upstream_error"] == "GitHub answered 401"
+    assert kept["propose_url"].startswith("https://github.com/magnusfroste/agenttake/issues/new?")
