@@ -286,3 +286,21 @@ def test_with_a_token_the_item_is_filed_upstream_and_a_refusal_keeps_it_local(tm
     kept = asyncio.run(server.submit_backlog("Second", "", "friction", "normal"))
     assert kept["issue_url"] is None and kept["upstream_error"] == "GitHub answered 401"
     assert kept["propose_url"].startswith("https://github.com/magnusfroste/agenttake/issues/new?")
+
+
+def test_every_public_page_renders(tmp_path, monkeypatch):
+    """The pages an installer and a directing agent read must answer, not 500.
+    /docs had answered 500 since 2026-08-30: its f-string carried an unescaped
+    ``{session_id}`` in the delete endpoint's HTTP line, and no test opened it."""
+    _own_store(tmp_path, monkeypatch)
+    from starlette.testclient import TestClient
+    from reel_studio import server, store
+
+    store.init_schema()
+    client = TestClient(server.BearerAuthMiddleware(server.mcp.streamable_http_app(), "secret"))
+    for path in ("/", "/docs", "/theater", "/backlog", "/bug_report", "/llms.txt"):
+        answer = client.get(path)
+        assert answer.status_code == 200, (path, answer.status_code)
+    docs = client.get("/docs").text
+    assert "DELETE /api/videos/{session_id}?confirm=true" in docs
+    assert '{"action": ..., "narration": ...}' in docs
