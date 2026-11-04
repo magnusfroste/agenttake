@@ -503,6 +503,12 @@ SEGMENT_FLOOR = 1.0
 QUIET_FLOOR = 0.6
 SEGMENT_TAIL_PAD = 0.4
 LEAD_IN_CAP = 1.0
+# The actions that change what is on screen from the moment they begin: a
+# shot before one of them ends where it began, not where it settled.
+PAGE_CHANGING_ACTIONS = frozenset({
+    "goto", "click", "click_and_wait", "type", "select_option", "press_key",
+    "scroll", "scroll_to_text",
+})
 
 
 @dataclass(frozen=True)
@@ -795,6 +801,7 @@ def plan_segments(
     stalls: Callable[[float, float], list[tuple[float, float]]] | None = None,
     order: Sequence[float] | None = None,
     cards: Sequence[bool] | None = None,
+    cuts: Sequence[float] | None = None,
 ) -> tuple[list[Segment], list[dict]]:
     """The windows of the recording a segmented render keeps, in order.
 
@@ -831,6 +838,13 @@ def plan_segments(
     ``cards`` marks the steps that are mid-film cards: generated, not cut
     from the recording, so a card lasts card_seconds of its line whatever
     footage follows it.
+
+    ``cuts`` are the recording times at which an action, visible or not,
+    began changing the page. A step's footage ends at the first cut after
+    it: its offset is when an action settled, but the screen changed when it
+    began, so a shot before an offscreen goto ran into the next page loading
+    (a white heise.de, a fresh chat page: Sluss take 5, 2026-11-03). A line
+    longer than that footage holds the last frame, and is no warning.
     """
     ordered = sorted(
         (offset, index, clip, max(0.0, duration))
@@ -846,6 +860,10 @@ def plan_segments(
         next_offset = (
             ordered[index + 1][0] if index + 1 < len(ordered) else video_duration
         )
+        later_cuts = [cut for cut in (cuts or ()) if offset < cut < next_offset]
+        cut_short = bool(later_cuts)
+        if cut_short:
+            next_offset = min(later_cuts)
         available = max(0.0, next_offset - offset)
         if available <= 0:
             continue
@@ -882,11 +900,12 @@ def plan_segments(
         )
         keep_duration = min(available, target)
         if narration_duration > available:
-            warnings.append({
-                "index": index,
-                "needed_seconds": round(narration_duration, 3),
-                "available_seconds": round(available, 3),
-            })
+            if not cut_short:
+                warnings.append({
+                    "index": index,
+                    "needed_seconds": round(narration_duration, 3),
+                    "available_seconds": round(available, 3),
+                })
             keep_duration = narration_duration + SEGMENT_TAIL_PAD
         segments.append(Segment(
             f"{index:04d}", offset, min(available, keep_duration), keep_duration, clip,
@@ -915,14 +934,16 @@ def segmented_render(
     speeds: Sequence[float] | None = None,
     glides: Sequence[float | None] | None = None,
     order: Sequence[float] | None = None,
+    cuts: Sequence[float] | None = None,
 ) -> SegmentedRenderResult:
     """Render kept step windows from the original continuous recording.
 
     ``pages`` is the URL each step ended on, in the order of ``steps``; with
     transitions "smooth" it tells a page change (a hard cut) from a jump on
     the same page (a dissolve). ``order`` plays the steps in another order
-    than they were recorded in (see plan_segments). A step with a card in
-    cards.json beside the recording plays as that card (render_card_segment).
+    than they were recorded in, and ``cuts`` are where actions began changing
+    the page (both: see plan_segments). A step with a card in cards.json
+    beside the recording plays as that card (render_card_segment).
     """
     config = config or RenderConfig()
     if camera is not None:
@@ -935,6 +956,7 @@ def segmented_render(
         (lambda start, end: active_seconds(video_path, start, end)) if lapsing else None,
         glides, lambda start, end: frozen_spans(video_path, start, end), order,
         [round(offset, 3) in cards for offset, _, _ in steps] if cards else None,
+        cuts,
     )
     pans = load_glides(video_path.parent) if glides is not None else {}
     if pans:

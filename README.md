@@ -33,8 +33,9 @@ filmed and cut it with AgentTake.
   content is on screen. Free Edge voices by default, ElevenLabs optional, and
   `list_voices` lets the agent cast its own narrator.
 - ✂️ **No dead air** — the minutes an agent spends thinking between steps are
-  cut; long waits can play as a labelled time-lapse that ends when the screen
-  goes still.
+  cut, and a shot ends where the next action starts changing the page (a line
+  that runs longer holds the last frame); long waits can play as a labelled
+  time-lapse that ends when the screen goes still.
 - 👀 **The director sees** — `preview_shot` shows the exact frame before a beat
   is recorded; `storyboard` shows the finished film as a contact sheet, part by
   part, and `contact_sheet` the whole video as one picture, a frame every 2 s.

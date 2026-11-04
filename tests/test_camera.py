@@ -158,6 +158,35 @@ def test_plan_segments_cuts_the_thinking_time():
     assert warnings[0]["needed_seconds"] == 3.0
 
 
+def test_a_shot_ends_where_the_next_action_began_and_holds_its_last_frame():
+    """A step's offset is when its action settled; the screen changed when the
+    action began. Without the cut, the MS Learn shot ran into heise.de loading
+    white, and the PII proof into the fresh chat page typed offscreen (Sluss
+    take 5, 2026-11-03)."""
+    steps = [(10.0, None, 6.0), (30.0, None, 2.0)]
+    plain, _ = render.plan_segments(steps, 60.0, lead_in=False)
+    assert plain[0].source_duration == pytest.approx(6.4)
+    # The offscreen goto began at 14 s and settled at 30 s; the cut at 9 s is
+    # this shot's own action and does not count.
+    cut, warnings = render.plan_segments(steps, 60.0, lead_in=False, cuts=[9.0, 14.0])
+    assert cut[0].source_duration == pytest.approx(4.0)
+    assert cut[0].output_duration == pytest.approx(6.4)  # the line plays on over the last frame
+    assert warnings == []  # held on purpose, not a step that ran out of footage
+    assert cut[1].source_duration == pytest.approx(2.4)
+
+
+def test_the_start_of_an_action_is_taken_after_its_line_is_synthesized():
+    # TTS runs before the browser action, so the screen starts changing after
+    # it; the cut taken at the top of act fell seconds early.
+    import inspect
+    from reel_studio.engine import BrowserSession
+
+    source = inspect.getsource(BrowserSession.act)
+    started = source.index("action_started_at = time.monotonic() - self.t0")
+    assert source.index("clip = await synthesize(") < started < source.index("action_type = action.type")
+    assert "self.timeline_cuts.append(action_started_at)" in source
+
+
 def test_the_length_estimate_is_the_render_plan_not_the_clock():
     from types import SimpleNamespace
     from reel_studio.engine import BrowserSession
@@ -167,7 +196,7 @@ def test_the_length_estimate_is_the_render_plan_not_the_clock():
         timeline=[(10.0, None, 2.0), (400.0, None, 3.0)],
         render_config=RenderConfig(title="T", cta_url="https://example.com"),
         timeline_floors=[1.0, 1.0], timeline_speeds=[1.0, 1.0], timeline_glides=[None, None],
-        timeline_cards=[False, False],
+        timeline_cards=[False, False], timeline_cuts=[],
         offscreen_first=False,
     )
     estimate = BrowserSession.estimated_length(fake, 800.0)
