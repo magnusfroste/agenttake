@@ -11,11 +11,14 @@ import tempfile
 from typing import TYPE_CHECKING, Callable, Sequence, cast
 import textwrap
 
+from . import signature as sig
+
 if TYPE_CHECKING:
     from .camera import Camera
+    from .signature import Signature
 
 
-FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT_PATH = sig.FALLBACK_FONT
 CARD_DURATION = 3.0
 
 
@@ -262,32 +265,84 @@ def card_backgrounds(
     )
 
 
+def card_filters(
+    width: int,
+    height: int,
+    lines: Sequence[tuple[str, int] | tuple[str, int, str]],
+    text_colour: str,
+    on_image: bool,
+    signature: "Signature | None" = None,
+    rule: bool = False,
+    small_print: Sequence[str] = (),
+) -> list[str]:
+    """The drawtext (and drawbox) filters of a card: its lines centred, each
+    in the display face, or in the face its tuple names; an accent rule
+    under the first line when the signature asks for one; small print along
+    the bottom in the mono face. Separate from _card so a test can read what
+    a card says without rendering it."""
+    signature = signature or sig.current()
+    display = sig.font_file(signature.display_font)
+    mono = sig.font_file(signature.mono_font, "regular")
+    filters: list[str] = []
+    expanded_lines: list[tuple[str, int, str]] = []
+    for entry in lines:
+        text, size = entry[0], entry[1]
+        face = entry[2] if len(entry) > 2 else display
+        wrapped = wrap_card_text(text, max_chars=28 if size >= 36 else 54)
+        expanded_lines.extend((line, size, face) for line in wrapped)
+    center_offset = (len(expanded_lines) - 1) * 0.7
+    colour = "white" if on_image else text_colour
+    for index, (text, size, face) in enumerate(expanded_lines):
+        filters.append(
+            "drawtext="
+            f"fontfile={face}:text='{_escape_drawtext(text)}':"
+            f"fontcolor={colour}:fontsize={size}:"
+            + ("shadowcolor=black@0.55:shadowx=2:shadowy=2:" if on_image else "")
+            + f"x=(w-text_w)/2:y=(h-text_h)/2+{index * 1.4 - center_offset}*{size}"
+        )
+    if rule and expanded_lines:
+        # The signature's mark: a short rule in the accent under the text,
+        # where a headline's underline would be. drawbox has no text_h, so a
+        # line's height is taken as three quarters of its size, which is
+        # what a display face measures.
+        last = len(expanded_lines) - 1
+        last_size = expanded_lines[last][1]
+        bottom_of_text = (height - 0.75 * last_size) / 2 + (last * 1.4 - center_offset) * last_size + 0.75 * last_size
+        length = max(48, width // 12)
+        thickness = max(3, height // 180)
+        filters.append(
+            f"drawbox=x=(iw-{length})/2:y={round(bottom_of_text + 0.6 * last_size)}:w={length}:h={thickness}:"
+            f"color={signature.accent}@0.95:t=fill"
+        )
+    bottom = max(20, height // 24)
+    size = max(16, height // 40)
+    for index, text in enumerate(line for line in small_print if line.strip()):
+        filters.append(
+            "drawtext="
+            f"fontfile={mono}:text='{_escape_drawtext(text)}':"
+            f"fontcolor={colour}@0.78:fontsize={size}:"
+            + ("shadowcolor=black@0.55:shadowx=1:shadowy=1:" if on_image else "")
+            + f"x=(w-text_w)/2:y=h-{bottom}-{(index + 1) * size * 1.5:.0f}"
+        )
+    return filters
+
+
 def _card(
     output_path: Path,
     width: int,
     height: int,
     accent: str,
-    lines: Sequence[tuple[str, int]],
+    lines: Sequence[tuple[str, int] | tuple[str, int, str]],
     background: Path | None = None,
     duration: float = CARD_DURATION,
     text_colour: str = "white",
+    rule: bool = False,
+    small_print: Sequence[str] = (),
 ) -> None:
-    if not Path(FONT_PATH).is_file():
+    signature = sig.current()
+    if not Path(sig.font_file(signature.display_font)).is_file():
         raise RuntimeError(f"Title-card font is missing: {FONT_PATH}")
-    drawtext = []
-    expanded_lines: list[tuple[str, int]] = []
-    for text, size in lines:
-        wrapped = wrap_card_text(text, max_chars=28 if size >= 36 else 54)
-        expanded_lines.extend((line, size) for line in wrapped)
-    center_offset = (len(expanded_lines) - 1) * 0.7
-    for index, (text, size) in enumerate(expanded_lines):
-        drawtext.append(
-            "drawtext="
-            f"fontfile={FONT_PATH}:text='{_escape_drawtext(text)}':"
-            f"fontcolor={text_colour if background is None else 'white'}:fontsize={size}:"
-            + ("shadowcolor=black@0.55:shadowx=2:shadowy=2:" if background else "")
-            + f"x=(w-text_w)/2:y=(h-text_h)/2+{index * 1.4 - center_offset}*{size}"
-        )
+    drawtext = card_filters(width, height, lines, text_colour, background is not None, signature, rule, small_print)
     if background is not None:
         # A hero section: the image fills the frame, drifts in a little over
         # the card, and is blurred and dimmed just enough for the text to read
@@ -361,13 +416,22 @@ def _overlay_qr(card: Path, qr: Path, width: int, height: int) -> None:
 
 
 def _closing_card(outro: Path, width: int, height: int, config: RenderConfig, background: Path | None, temporary: Path) -> None:
+    signature = sig.current()
     _card(
-        outro, width, height, config.accent,
+        outro, width, height, (signature.ink or config.accent) if background is None else config.accent,
         [
             (config.cta_text.strip() or "Learn more", max(28, width // 32)),
-            (config.cta_url.strip(), max(22, width // 44)),
+            # A house sets the address in its mono face; the default keeps
+            # the one face it always had.
+            (config.cta_url.strip(), max(22, width // 44))
+            if signature.is_default
+            else (config.cta_url.strip(), max(22, width // 44), sig.font_file(signature.mono_font, "regular")),
         ],
         background,
+        text_colour=signature.paper,
+        # The house signs its film: its line and the AI label, small, at
+        # the foot of the closing card, on every film the instance makes.
+        small_print=[line for line in (signature.ai_label, signature.signature_line) if line],
     )
     if config.closing_qr:
         qr = make_qr(config.cta_url.strip(), temporary / "closing-qr.png")
@@ -393,13 +457,17 @@ def _compose_video(
     )
     if config.title.strip():
         intro = temporary / "intro.mp4"
+        signature = sig.current()
         _card(
-            intro, width, height, config.accent,
+            intro, width, height, (signature.ink or config.accent) if intro_background is None else config.accent,
             [(config.title.strip(), max(36, width // 22)),
              (config.subtitle.strip(), max(20, width // 48))]
             if config.subtitle.strip()
             else [(config.title.strip(), max(36, width // 22))],
             intro_background,
+            text_colour=signature.paper,
+            # A house with a signature underlines its title in the accent.
+            rule=not signature.is_default,
         )
         parts.append(intro)
         intro_duration = CARD_DURATION
@@ -752,13 +820,15 @@ def render_card_segment(
     over a flat colour. Built like the title card; dark text on a light
     colour, so it reads."""
     width, height = size
+    signature = sig.current()
     background = card_background(card.get("background")) or "brand"
-    colour = accent if background in {"brand", "blur"} else background
+    # "brand" is the house's ink when it has one, else this film's accent.
+    colour = ((signature.ink or accent) if background == "brand" else accent) if background in {"brand", "blur"} else background
     lines = [(line, max(36, width // 26)) for line in card_text_lines(card["text"])]
     _card(
         output_path, width, height, colour, lines,
         still if background == "blur" else None, duration,
-        "#111111" if _light(colour) else "white",
+        "#111111" if _light(colour) else (signature.paper if background == "brand" else "white"),
     )
     return output_path
 
@@ -1578,12 +1648,15 @@ def subtitles_ass(cues: Sequence[tuple[float, float, str]], width: int, height: 
     box = SUBTITLE_STYLES.get(style, SUBTITLE_STYLES["soft"])
     size = max(18, round(min(width, height) / 22))
     margin = max(24, round(height * 0.07))
+    # The house's text face, by name: libass finds it through fontconfig,
+    # and falls back to a face it has when the name is not installed.
+    face = sig.current().text_font.replace(",", " ")
     escape = lambda t: t.replace("\\", "\\\\").replace("{", "(").replace("}", ")").replace("\n", " ")
     lines = [
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}", "WrapStyle: 0", "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,DejaVu Sans,{size},&H00FFFFFF,&H00FFFFFF,{box},{box},1,0,0,0,100,100,0,0,3,{max(6, size // 3)},0,2,{round(width * 0.08)},{round(width * 0.08)},{margin},1",
+        f"Style: Default,{face},{size},&H00FFFFFF,&H00FFFFFF,{box},{box},1,0,0,0,100,100,0,0,3,{max(6, size // 3)},0,2,{round(width * 0.08)},{round(width * 0.08)},{margin},1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for start, end, text in cues:

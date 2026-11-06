@@ -335,8 +335,9 @@ refuses to publish until every shot is verified.
 - **Cards** — `title`/`subtitle` add an intro card, `cta_url`/`cta_text` a
   closing card with a QR code of the link (`closing_qr`); `title_background`
   `auto` builds them on blurred stills from the video. A `card` step adds one
-  mid-film. `accent` sets the
-  colour; `music="subtle"` adds a quiet generated bed.
+  mid-film. The instance's [signature](#signature) sets the colours and the
+  type; `accent` overrides the colour for one film; `music="subtle"` adds a
+  quiet generated bed.
 - **Storyboard** — every render records where each part landed and a still of
   it; the watch page shows the storyboard, and clicking a step plays from there.
 - **Re-voicing** — `update_step_narration` edits one line and `rerender`
@@ -361,6 +362,39 @@ refuses to publish until every shot is verified.
 id; `REEL_TTS_PROVIDER=elevenlabs` makes it the default. `start_session`
 speaks one word first and refuses a voice that cannot speak, before anything
 is recorded.
+
+### Signature
+
+A web agency is hired for a look nobody else has; a film an agent directs is
+no different. The **signature** (Swedish: *signalement*) is the house style
+every film an instance makes carries: its colours, its type, the line it signs
+with, the voice it speaks in and the rules its director writes by. The director
+never decides styling. `director_guide` ends with the signature, so the agent
+writes in the house voice; the cards, captions, source cards and the closing
+card are set from it.
+
+It is one JSON file, `signature.json` under `REEL_OUTPUT_DIR` (or the path in
+`REEL_SIGNATURE`), read again whenever it changes:
+
+| Key | |
+|---|---|
+| `name` | The house's name, e.g. `hermes`. |
+| `accent` | The brand colour: the rule under the title, quote marks on source cards, the strip under a hero card. |
+| `ink`, `paper` | The ground solid cards are set on and the text colour on it. `ink` empty uses the accent, the look before signatures. |
+| `display_font`, `text_font`, `mono_font` | Fontconfig family names for cards, captions and addresses. The image ships Inter, IBM Plex Mono and DejaVu; a name that is not installed falls back to DejaVu. |
+| `signature_line`, `ai_label` | Small print at the foot of the closing card: *Directed by Hermes · AgentHotel* and the AI label the EU AI Act (art. 50) asks a viewer be shown. |
+| `voice` | The house voice: `start_session` uses it unless a voice is asked for. |
+| `tone` | Writing rules, one per line, quoted to the director in `director_guide`. |
+
+`get_signature` shows it; `set_signature(document, note)` replaces it, bumps
+the version and keeps the note in a changelog. Each film records the signature
+version it was shot with in its start arguments. An agent that finds friction
+with the look or the voice files `submit_backlog(category="signature")`; the
+owner changes the signature, and the next film shows it. That is the loop a
+house style evolves by: shoot, look at the contact sheet, note, bump, shoot.
+[docs/signatures/hermes.json](docs/signatures/hermes.json) is a complete
+example; [hermes-sheet.png](docs/signatures/hermes-sheet.png) shows the
+default cards above and the same cards in that signature below.
 
 ### Public pages
 
@@ -391,6 +425,7 @@ Only `/mcp` needs the token; finished videos are public.
 | `REEL_MAX_CLIPS` | Newest finished sessions to keep (default `50`, `0` keeps all). |
 | `REEL_KEEP_RAW_CLIPS` | Keep `screen.mp4` (needed to rerender) for only the newest N (default `0`, all). |
 | `REEL_SEGMENTED` | `0` renders the raw recording instead of cut segments. |
+| `REEL_SIGNATURE` | The signature file (default `signature.json` under `REEL_OUTPUT_DIR`). See [Signature](#signature). |
 | `REEL_UPSTREAM_REPO` | Where backlog items are proposed (default `magnusfroste/agenttake`). |
 | `REEL_GITHUB_TOKEN` | Optional. With it, `submit_backlog` files the item as an issue in `REEL_UPSTREAM_REPO` right away (needs `issues: write`). Without it the item stays on the instance with a propose link. |
 

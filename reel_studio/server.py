@@ -28,6 +28,7 @@ from starlette.types import ASGIApp
 from .engine import BrowserSession, output_root
 from . import store
 from . import retention
+from . import signature
 
 # Every instance keeps its own backlog; the roadmap they share is the
 # upstream project's issue tracker. An item is proposed there with a
@@ -343,6 +344,7 @@ token-protected `prune` tool to clean old finished sessions manually.
 
 - `/theater` — finished narrated videos
 - `/backlog` and `/bug_report` — this instance's backlog and bug reports, each item proposable upstream as a GitHub issue
+- `get_signature` / `set_signature` — the house style (colours, type, sign-off, AI label, voice, writing rules) every film carries, versioned; the director reads it at the end of `director_guide`
 - `/docs` — detailed API documentation
 - `/api/videos`, `/api/backlog`, `/api/bug_reports` — JSON feeds
 
@@ -1283,7 +1285,8 @@ def _render_config(
 ) -> RenderConfig:
     normalized_accent = accent.strip()
     if not re.fullmatch(r"#?[0-9a-fA-F]{6}", normalized_accent):
-        normalized_accent = "#1f2a44"
+        # Not given, or not a colour: the house's accent, from the signature.
+        normalized_accent = signature.current().accent
     elif not normalized_accent.startswith("#"):
         normalized_accent = f"#{normalized_accent}"
     normalized_music = music.strip().lower()
@@ -1436,13 +1439,30 @@ def docs_page(base_url: str = "/") -> str:
       past the original video.</p></div>
     <div class="tool card"><h3><code>submit_backlog(title, detail?, category?, severity?, session_id?)</code></h3>
       <p>Submit a tool-improvement request when the agent hits friction.
-      Categories are <code>feature</code>, <code>bug</code>, or
-      <code>friction</code>; severities are <code>low</code>,
+      Categories are <code>feature</code>, <code>bug</code>,
+      <code>friction</code> or <code>signature</code> (the look or the voice
+      of the house style); severities are <code>low</code>,
       <code>normal</code>, or <code>high</code>. Requests are stored in this
       instance's backlog, where each has a one-click link to propose it to the
       AgentTake project (<code>propose_url</code> in the result); with
       <code>REEL_GITHUB_TOKEN</code> set it is filed as an issue upstream right
       away and the result carries <code>issue_url</code>.</p></div>
+    <div class="tool card"><h3><code>get_signature()</code></h3>
+      <p>This instance's <strong>signature</strong>: the house style every
+      film it makes carries — accent, ink and paper colours, the display, text
+      and mono faces, the closing card's sign-off line and AI label, the house
+      voice, and the rules narration is written by — with its version and
+      changelog. The director never picks a look; <code>director_guide</code>
+      ends with the signature, and a film records the version it was shot
+      with. Set it as a file (<code>REEL_SIGNATURE</code>, or
+      <code>signature.json</code> under <code>REEL_OUTPUT_DIR</code>) or with
+      <code>set_signature</code>.</p></div>
+    <div class="tool card"><h3><code>set_signature(document, note?)</code></h3>
+      <p>Replace the signature. The version goes up by one and the note joins
+      the changelog. A colour or font that does not parse keeps its default
+      and is named under <code>problems</code>. The owner's tool; an agent
+      that finds friction with the look files
+      <code>submit_backlog(category="signature")</code>.</p></div>
     <div class="tool card"><h3><code>list_backlog(limit=50, status?)</code></h3>
       <p>List recent agent backlog requests, optionally filtered by status.
       This instance's backlog is at <a href="/backlog">/backlog</a> with a
@@ -1965,7 +1985,11 @@ async def start_session(
     output_size: str | None = None,
     title: str = "",
     subtitle: str = "",
-    accent: str = "#1f2a44",
+    accent: Annotated[
+        str,
+        Field(description="A hex colour for the cards. Left out, the instance's signature decides "
+                          "(get_signature); before a signature is set that is #1f2a44."),
+    ] = "",
     cta_url: str = "",
     cta_text: str = "Learn more",
     music: str = "none",
@@ -2066,6 +2090,10 @@ async def start_session(
         planned_beats = plan_beats(beats)
     except ValueError as exc:
         return {"ok": False, "error": {"type": "invalid_beats", "message": str(exc)}}
+    house = signature.current()
+    if house.voice and voice == "en-US-JennyNeural":
+        # The schema's default voice means "whatever the house speaks in".
+        voice = house.voice
     # Speak one word in the chosen voice before anything records. A take
     # whose voice failed mid-way cost an agent 18 minutes for 71 seconds and
     # came back with lines missing (2026-10-10); failing here costs nothing.
@@ -2126,6 +2154,9 @@ async def start_session(
         "transitions": transitions, "title_background": title_background, "closing_qr": closing_qr,
         "subtitles": subtitles, "subtitle_style": subtitle_style, "mask": mask,
         "color_scheme": color_scheme, "show_pointer": show_pointer,
+        # Which house style this film was shot in, so a later film can be
+        # read against it after the signature has moved on.
+        "signature": {"name": house.name, "version": house.version},
     })
     result: dict = {"session_id": session.session_id}
     if planned_beats:
@@ -2862,7 +2893,9 @@ async def fresh_take(
                 "error": {"type": "no_start_settings",
                           "message": f"{session_id} was started before AgentTake kept a session's settings"},
                 "hint": "start_session again with the same settings, then plan_storyboard(beats) and shoot_storyboard."}
-    started = await start_session(**start_args)
+    # The signature a film was shot in is a record, not a setting: the fresh
+    # take is shot in the house style of today, and records that.
+    started = await start_session(**{key: value for key, value in start_args.items() if key != "signature"})
     if not started.get("session_id"):
         return started
     new_id = started["session_id"]
@@ -2961,16 +2994,66 @@ def director_guide_text() -> str:
     for candidate in (Path(__file__).resolve().parent.parent / "docs" / "storyboard.md",
                       Path.cwd() / "docs" / "storyboard.md"):
         if candidate.is_file():
-            return candidate.read_text(encoding="utf-8")
-    return "The director handbook (docs/storyboard.md) is not installed with this AgentTake."
+            handbook = candidate.read_text(encoding="utf-8")
+            break
+    else:
+        handbook = "The director handbook (docs/storyboard.md) is not installed with this AgentTake."
+    # The house style comes last: the director reads the shot menu and the
+    # rules, then the voice this instance's films speak in.
+    return handbook.rstrip() + "\n\n" + signature.guide_section(signature.current())
 
 
 @mcp.tool()
 async def director_guide() -> str:
     """The director handbook for storyboards: the shot menu, a 60-second story
     template and the rules (a source for every claim, headlines and short
-    quotes only, never a synthetic real person). Read it before plan_storyboard."""
+    quotes only, never a synthetic real person), and this instance's house
+    style: the voice to write in. Read it before plan_storyboard."""
     return director_guide_text()
+
+
+@mcp.tool()
+async def get_signature() -> dict:
+    """This instance's signature: the house style every film it makes carries
+    (colours, type, the closing card's sign-off and AI label, the house voice,
+    the rules narration is written by) with its version and changelog. The
+    director does not choose a look; it writes in this voice. A film records
+    the signature version it was shot with."""
+    current = signature.current()
+    _, problems = signature.load()
+    result = current.to_dict()
+    result["path"] = str(signature.signature_path())
+    result["is_default"] = current.is_default
+    if problems:
+        result["problems"] = problems
+    return result
+
+
+@mcp.tool()
+async def set_signature(
+    document: Annotated[
+        dict,
+        Field(description="The whole signature as JSON: name, accent, ink (empty: the accent), paper, "
+                          "display_font, text_font, mono_font (fontconfig family names), signature_line, "
+                          "ai_label, voice, tone (a list of writing rules). Keys left out keep the default."),
+    ],
+    note: Annotated[
+        str,
+        Field(description="What changed and why, for the changelog: one line."),
+    ] = "",
+) -> dict:
+    """Replace this instance's signature. The version goes up by one and the
+    note joins the changelog, so films shot before and after can be told
+    apart. A colour or font that does not parse keeps its default and is named
+    under problems; the save still happens. The owner's tool: an agent that
+    finds friction with the look files it with submit_backlog(category="signature")
+    instead."""
+    saved, problems = signature.save(document, note)
+    result = saved.to_dict()
+    result["path"] = str(signature.signature_path())
+    if problems:
+        result["problems"] = problems
+    return result
 
 
 @mcp.prompt(name="storyboard", description="How to write a storyboard AgentTake shoots: the shot menu, a 60-second template, the rules")
@@ -3614,7 +3697,7 @@ async def submit_backlog(
     if not title:
         raise ValueError("title must not be empty")
     category = category.strip().lower()
-    if category not in {"feature", "bug", "friction"}:
+    if category not in {"feature", "bug", "friction", "signature"}:
         category = "feature"
     severity = severity.strip().lower()
     if severity not in {"low", "normal", "high"}:

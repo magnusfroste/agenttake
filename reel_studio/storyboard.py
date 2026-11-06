@@ -24,6 +24,7 @@ from typing import Any, Awaitable, Callable, Literal, get_args
 
 from pydantic import BaseModel, Field, ValidationError
 
+from . import signature as sig
 from .review import describe_cover, focus_covered, normalize_line
 from .schema import OFFSCREEN_WAIT_MAX_MS, secret_names
 
@@ -658,14 +659,16 @@ def card_page(text: str, background: str | None = None, source: str | None = Non
     paragraphs = "".join(f"<p>{html.escape(part)}</p>" for part in text.split("\n") if part.strip())
     label = SOURCE_LABEL.get(language, SOURCE_LABEL["en"])
     credit = (f'<div class="credit">{label}: {html.escape(domain(source))}</div>' if source else "")
+    signature = sig.current()
     document = _PAGE_BASE + """<style>
-body{display:flex;align-items:center;justify-content:center}
+body{display:flex;align-items:center;justify-content:center;font-family:__DISPLAY__,Inter,"Segoe UI",system-ui,sans-serif}
 .card{max-width:72vw;text-align:center;font-weight:700;font-size:clamp(40px,4.6vw,92px);line-height:1.15;
 letter-spacing:-.01em}
 .card p{margin:.15em 0}
 .credit{position:fixed;right:5vw;top:5vh;font-size:22px;opacity:.75;font-weight:500}
 </style></head><body style="__STYLE__"><div class="card">__TEXT__</div>__CREDIT__</body></html>"""
-    return _data_url(document.replace("__STYLE__", style).replace("__TEXT__", paragraphs).replace("__CREDIT__", credit))
+    return _data_url(document.replace("__STYLE__", style).replace("__TEXT__", paragraphs)
+                     .replace("__CREDIT__", credit).replace("__DISPLAY__", _css_family(signature.display_font)))
 
 
 def source_display(url: str, limit: int = 64) -> str:
@@ -688,9 +691,11 @@ def source_card_page(quote: str, source: str, publication: str | None = None, da
     quote = quote.replace("\n", " ").strip()
     size = "clamp(34px,3.6vw,68px)" if len(quote) <= 110 else "clamp(26px,2.7vw,50px)"
     dated = f'<div class="date">{html.escape(date)}</div>' if date else ""
+    signature = sig.current()
     document = _PAGE_BASE + """<style>
-:root{--accent:#c8102e;--rule:rgba(127,127,127,.35)}
-body{display:flex;flex-direction:column;justify-content:center;padding:0 9vw;box-sizing:border-box}
+:root{--accent:__ACCENT__;--rule:rgba(127,127,127,.35)}
+body{display:flex;flex-direction:column;justify-content:center;padding:0 9vw;box-sizing:border-box;
+font-family:__DISPLAY__,Inter,"Segoe UI",system-ui,sans-serif}
 .head{position:fixed;left:9vw;top:9vh;border-left:6px solid var(--accent);padding-left:18px}
 .pub{font-size:clamp(20px,1.9vw,34px);font-weight:800;letter-spacing:.08em;text-transform:uppercase}
 .date{margin-top:6px;font-size:clamp(16px,1.3vw,24px);color:var(--muted)}
@@ -699,14 +704,24 @@ margin:0;position:relative}
 .quote::before{content:"\\201C";position:absolute;left:-.55em;top:-.05em;color:var(--accent)}
 .quote::after{content:"\\201D";color:var(--accent)}
 .url{position:fixed;left:9vw;right:9vw;bottom:20vh;padding-top:14px;border-top:1px solid var(--rule);
-font:500 clamp(15px,1.15vw,22px) ui-monospace,"DejaVu Sans Mono",monospace;color:var(--muted)}
+font:500 clamp(15px,1.15vw,22px) __MONO__,ui-monospace,"DejaVu Sans Mono",monospace;color:var(--muted)}
 </style></head><body><div class="head"><div class="pub">__PUB__</div>__DATE__</div>
 <p class="quote">__QUOTE__</p><div class="url">__URL__</div></body></html>"""
+    # The accent the house signs with marks the quote; the default signature
+    # keeps the documentary red the source card has always had.
+    accent = "#c8102e" if signature.is_default else signature.accent
     return _data_url(
         document.replace("__SIZE__", size).replace("__PUB__", html.escape(publication))
         .replace("__DATE__", dated).replace("__QUOTE__", html.escape(quote))
         .replace("__URL__", html.escape(source_display(source)))
+        .replace("__ACCENT__", accent).replace("__DISPLAY__", _css_family(signature.display_font))
+        .replace("__MONO__", _css_family(signature.mono_font))
     )
+
+
+def _css_family(name: str) -> str:
+    """A font family name as CSS quotes it."""
+    return '"' + name.replace('"', "").replace("\\", "") + '"'
 
 
 def source_card_beat(beat: dict) -> dict | None:
