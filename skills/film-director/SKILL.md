@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.7.1
+version: 0.8.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -56,8 +56,14 @@ Don't use for:
    the one action down in one sentence. *Done when* it fits in one sentence
    and the film's length is set (60 s unless asked).
 2. **Read the handbook once.** Call `director_guide()`. It has the shot menu,
-   the fields of each shot, the 60-second template and the rules. *Done when*
-   you know which shots the story needs.
+   the fields of each shot, the 60-second template and the rules, and it ends
+   with the house style: the **signature** this instance's films carry. The
+   look (colours, type, the closing card's sign-off and AI label) is the
+   instance's and not yours, so pass no `accent`; the signature's writing
+   rules are yours to write by, and its voice is the default voice. Friction
+   with the look or the voice goes to `submit_backlog(category="signature")`,
+   never into the storyboard. *Done when* you know which shots the story needs
+   and the rules you write by.
 3. **Research the claims.** Use `web_search` and then `web_extract` on each
    source. For each claim, keep three things: the URL, the headline exactly as
    the page shows it (this becomes `wait_for_text`), and the quote copied
