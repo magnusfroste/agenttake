@@ -2893,7 +2893,9 @@ async def fresh_take(
                 "error": {"type": "no_start_settings",
                           "message": f"{session_id} was started before AgentTake kept a session's settings"},
                 "hint": "start_session again with the same settings, then plan_storyboard(beats) and shoot_storyboard."}
-    started = await start_session(**start_args)
+    # The signature a film was shot in is a record, not a setting: the fresh
+    # take is shot in the house style of today, and records that.
+    started = await start_session(**{key: value for key, value in start_args.items() if key != "signature"})
     if not started.get("session_id"):
         return started
     new_id = started["session_id"]
