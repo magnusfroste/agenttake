@@ -34,6 +34,7 @@ from .render import (
     QUIET_FLOOR,
     SEGMENT_FLOOR,
     card_background,
+    clean_card_text,
     mux_narration,
     plan_segments,
     probe_duration,
@@ -1523,7 +1524,7 @@ class BrowserSession:
             elif action_type == "card":
                 # Nothing happens in the browser: the render cuts a card in
                 # here instead of this step's footage.
-                text = "\n".join(line.strip() for line in (action.text or "").strip().splitlines())
+                text = clean_card_text(action.text)
                 background = card_background(action.background)
                 if not text:
                     return await self.error_result("invalid_action", "card requires text")

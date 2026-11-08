@@ -22,6 +22,19 @@ FONT_PATH = sig.FALLBACK_FONT
 CARD_DURATION = 3.0
 
 
+def run_media(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+    """subprocess.run with check=True for ffmpeg, once more if a signal killed
+    it. The first mux of Sluss take 5 died with SIGABRT and the same command
+    went through on the next finish (2026-11-03). An ffmpeg that exits with an
+    error of its own would only fail the same way again."""
+    try:
+        return subprocess.run(command, check=True, **kwargs)
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode >= 0:
+            raise
+        return subprocess.run(command, check=True, **kwargs)
+
+
 @dataclass(frozen=True)
 class RenderConfig:
     title: str = ""
@@ -107,14 +120,13 @@ def mux_narration(
         if output_size is None:
             video_path.replace(output_path)
         else:
-            subprocess.run(
+            run_media(
                 [
                     "ffmpeg", "-loglevel", "error", "-y", "-i", str(video_path),
                     "-vf", f"scale={output_size[0]}:{output_size[1]}",
                     "-an", "-c:v", "libx264", "-preset", "veryfast",
                     "-pix_fmt", "yuv420p", str(output_path),
                 ],
-                check=True,
             )
         return output_path
 
@@ -149,7 +161,7 @@ def _render_video_only(
     else:
         command.extend(["-c:v", "copy"])
     command.extend(["-an", str(output_path)])
-    subprocess.run(command, check=True)
+    run_media(command)
 
 
 def _has_branding(config: RenderConfig) -> bool:
@@ -188,11 +200,10 @@ CARD_URL_MAX_BYTES = 10 * 1024 * 1024
 def _still(video: Path, at_end: bool, output: Path) -> Path | None:
     """One full-size frame from the start or the end of a video."""
     try:
-        subprocess.run(
+        run_media(
             ["ffmpeg", "-loglevel", "error", "-y",
              *(["-sseof", "-0.12"] if at_end else ["-ss", "0.3"]),
              "-i", str(video), "-frames:v", "1", str(output)],
-            check=True,
         )
     except subprocess.CalledProcessError:
         return None
@@ -374,7 +385,7 @@ def _card(
         if result.returncode == 0 and output_path.is_file():
             return
         # An image ffmpeg cannot read: the solid card below.
-    subprocess.run(
+    run_media(
         [
             "ffmpeg", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i",
@@ -383,7 +394,6 @@ def _card(
             "-an", "-c:v", "libx264", "-preset", "veryfast",
             "-pix_fmt", "yuv420p", str(output_path),
         ],
-        check=True,
     )
 
 
@@ -479,12 +489,11 @@ def _compose_video(
     base = temporary / "branded-base.mp4"
     concat = temporary / "branded.txt"
     concat.write_text("".join(f"file '{path}'\n" for path in parts))
-    subprocess.run(
+    run_media(
         [
             "ffmpeg", "-loglevel", "error", "-y", "-f", "concat",
             "-safe", "0", "-i", str(concat), "-c", "copy", str(base),
         ],
-        check=True,
     )
     shifted = [
         (offset + intro_duration, clip)
@@ -561,7 +570,7 @@ def _mux_segment_audio(
         "-t", f"{duration:.3f}", "-c:v", "copy", "-c:a", "aac",
         str(output_path),
     ])
-    subprocess.run(command, check=True)
+    run_media(command)
 
 
 SEGMENT_FLOOR = 1.0
@@ -725,11 +734,10 @@ def _render_glide_pan(
     if output_size is not None:
         filters.append(f"scale={output_size[0]}:{output_size[1]}")
     filters.append("format=yuv420p")
-    subprocess.run(
+    run_media(
         ["ffmpeg", "-loglevel", "error", "-y", "-loop", "1", "-framerate", "25",
          "-t", f"{output_duration:.3f}", "-i", str(image), "-vf", ",".join(filters),
          "-an", "-c:v", "libx264", "-preset", "veryfast", "-r", "25", str(output_path)],
-        check=True,
     )
     return output_path
 
@@ -772,6 +780,28 @@ def load_cards(directory: Path) -> dict[float, dict]:
     except (OSError, ValueError):
         return {}
     return {round(float(card["offset"]), 3): card for card in cards if str(card.get("text") or "").strip()}
+
+
+def read_cards(directory: Path) -> list[dict]:
+    """The mid-film cards, in the order they were recorded."""
+    cards = load_cards(directory)
+    return [cards[offset] for offset in sorted(cards)]
+
+
+def clean_card_text(text: str | None) -> str:
+    return "\n".join(line.strip() for line in (text or "").strip().splitlines())
+
+
+def change_card(directory: Path, offset: float, **changes: str) -> None:
+    """Change the card recorded at this step offset (edit_cards)."""
+    record = directory / CARDS_FILE
+    cards = json.loads(record.read_text())
+    for card in cards:
+        if round(float(card["offset"]), 3) == offset:
+            card.update(changes)
+    temporary = record.with_suffix(".tmp")
+    temporary.write_text(json.dumps(cards))
+    temporary.replace(record)
 
 
 def record_card(directory: Path, offset: float, text: str, background: str) -> None:
@@ -1142,13 +1172,12 @@ def segmented_render(
         concat_list.write_text(
             "".join(f"file '{path}'\n" for path in segment_paths)
         )
-        subprocess.run(
+        run_media(
             [
                 "ffmpeg", "-loglevel", "error", "-y", "-f", "concat",
                 "-safe", "0", "-i", str(concat_list), "-c", "copy",
                 str(joined),
             ],
-            check=True,
         )
         if _has_branding(config) or config.music == "subtle":
             _compose_video(
@@ -1189,11 +1218,10 @@ BIG_CHANGE_DB = 24.0
 def _edge_frame(video: Path, at_end: bool, directory: Path) -> Path:
     frame = directory / f"{video.stem}.{'end' if at_end else 'start'}.png"
     if not frame.exists():
-        subprocess.run(
+        run_media(
             ["ffmpeg", "-loglevel", "error", "-y",
              *(["-sseof", "-0.08"] if at_end else []), "-i", str(video),
              "-frames:v", "1", "-vf", "scale=480:270,format=gray", str(frame)],
-            check=True,
         )
     return frame
 
@@ -1351,7 +1379,7 @@ def _assemble_smooth(
     )
     command += ["-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
                 "-r", "25", str(body)]
-    subprocess.run(command, check=True)
+    run_media(command)
     _mux_segment_audio(body, audio, output_path, end, config.music)
     return placed
 
@@ -1382,10 +1410,10 @@ def write_storyboard(directory: Path, video: Path, timeline: Sequence[dict]) -> 
         at = storyboard_still_at(part)
         name: str | None = f"part-{number:03d}.jpg"
         try:
-            subprocess.run(
+            run_media(
                 ["ffmpeg", "-loglevel", "error", "-y", "-ss", f"{at:.3f}", "-i", str(video),
                  "-frames:v", "1", "-vf", "scale=480:270", "-q:v", "4", str(frames_dir / name)],
-                check=True, timeout=30,
+                timeout=30,
             )
         except (OSError, subprocess.SubprocessError):
             name = None
@@ -1459,7 +1487,7 @@ def _render_video_segment(
         "-an", "-c:v", "libx264", "-preset", "veryfast",
         "-pix_fmt", "yuv420p", str(output_path),
     ])
-    subprocess.run(command, check=True)
+    run_media(command)
     return output_path
 
 
@@ -1494,7 +1522,7 @@ def rerender_narration(
               if output_size is not None else ["-c:v", "copy"]),
             str(temp_path),
         ]
-        subprocess.run(command, check=True)
+        run_media(command)
         if _has_branding(config) or config.music == "subtle":
             _compose_video(
                 temp_path, clips, output_path, video_duration,
@@ -1547,7 +1575,7 @@ def rerender_narration(
         "-map", video_map, "-map", "[a]",
         *video_codec, "-c:a", "aac", str(temp_path),
     ])
-    subprocess.run(command, check=True)
+    run_media(command)
     if _has_branding(config) or config.music == "subtle":
         _compose_video(
             temp_path, clips, output_path,
@@ -1672,11 +1700,11 @@ def burn_subtitles(video: Path, cues: Sequence[tuple[float, float, str]], style:
     script = video.with_name("subtitles.ass")
     script.write_text(subtitles_ass(cues, width, height, style), encoding="utf-8")
     temporary = video.with_name("video.subtitled.mp4")
-    subprocess.run(
+    run_media(
         ["ffmpeg", "-loglevel", "error", "-y", "-i", str(video), "-vf", f"ass={script.name}",
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
          "-c:a", "copy", "-movflags", "+faststart", str(temporary)],
-        check=True, cwd=str(video.parent), timeout=900,
+        cwd=str(video.parent), timeout=900,
     )
     temporary.replace(video)
     return True

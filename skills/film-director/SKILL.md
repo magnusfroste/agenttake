@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.8.0
+version: 0.8.1
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -144,8 +144,9 @@ Don't use for:
     `shoot_beat` no longer works on it. Mend a flaw in one of two ways:
     - **In the edit**, when the footage is right: hide a stray step with
       `edit_step(session_id, index, hidden=true)`, hold a result longer with
-      `hold_seconds`, change a line with `update_step_narration`, then
-      `rerender(session_id)` and look again.
+      `hold_seconds`, change a line with `update_step_narration` or a card
+      with `edit_cards`, then `rerender(session_id)`, follow `finish_status`
+      if it answers with a `job_id`, and look again.
     - **In a fresh take**, when the footage itself is wrong (a cropped quote,
       a page that never loaded). Call `fresh_take(session_id)`: a new
       session started like the first, with AgentTake's copy of the

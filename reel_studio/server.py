@@ -51,6 +51,11 @@ from .render import (
     STORYBOARD_DIR,
     QUIET_FLOOR,
     SEGMENT_FLOOR,
+    CARD_TEXT_MAX,
+    card_background,
+    change_card,
+    clean_card_text,
+    read_cards,
 )
 from .camera import MAX_OUTPUT_SCALE, MAX_ZOOM, Camera
 from . import review as checks
@@ -294,7 +299,7 @@ its progress and, when done, the video URL.
 After `finish`: `storyboard` shows the film part by part; `edit_step` hides a step,
 sets a hold or a speed, or gives it a `position` in the video (a beat recorded again
 at the end of the session plays where it belongs, with its camera and glide);
-`update_step_narration` rewrites a line; `rerender` applies them without recording
+`update_step_narration` rewrites a line, `edit_cards` a card; `rerender` applies them without recording
 again. Before sharing, `set_watch_page` gives the watch page a title, a description
 and the moment its link-preview image is taken from.
 `subtitles=true` (start_session or rerender) burns the narration in, for feeds that play muted;
@@ -1423,6 +1428,10 @@ def docs_page(base_url: str = "/") -> str:
       LinkedIn, X or Slack show: the title, a description, and the moment of the
       film the 1200x630 preview image is taken from. Nothing is re-rendered.</p>
       <p><strong>Returns:</strong> <code>{{"ok": true, "watch_url": "...", "poster_url": "..."}}</code></p></div>
+    <div class="tool card"><h3><code>edit_cards(session_id, card?, text?, background?, title?, subtitle?, cta_text?, cta_url?)</code></h3>
+      <p>Lists or changes a finished video's mid-film cards, title and closing
+      card. A change is also kept for a fresh take; <code>rerender</code> cuts
+      it in.</p></div>
     <div class="tool card"><h3><code>update_step_narration(session_id, index, narration, voice?)</code></h3>
       <p>Replace the narration text (and optionally the voice) for one step
       in a finished session. The recorded browser video is not changed.</p>
@@ -1874,7 +1883,7 @@ recipes. What follows is the hand-directed way, act by act.
 10. Run review_session and re-record what it flags. Then call finish once. A render
    longer than about a minute answers with status rendering and a job_id: follow
    it with finish_status every 30 s or so, never a second finish. Narration
-   wording is fixed after finish: update_step_narration for each line, then rerender.
+   wording is fixed after finish: update_step_narration for each line, edit_cards for a card, then rerender. A long rerender answers with a job_id: follow it with finish_status.
    finish reviews the film too, and looks at the picture under every line: a
    page that had not loaded (blank_frame) or a menu, listbox or popover left
    open from an earlier step (overlay_left_open) keeps it from "excellent".
@@ -2540,9 +2549,27 @@ def _attach_storyboard(plan_id: str, session_id: str, beats: list[dict]) -> None
     """Shoot this plan in this session, and let the review hold the take
     against its lines."""
     store.attach_storyboard(plan_id, session_id)
-    store.update_session_beats(session_id, [
-        {"line": beat["line"], "label": beat["label"]} for beat in beats if beat.get("line")
-    ])
+    store.update_session_beats(session_id, _planned_lines(beats))
+
+
+def _planned_lines(beats: list[dict]) -> list[dict]:
+    return [{"line": beat["line"], "label": beat["label"]} for beat in beats if beat.get("line")]
+
+
+def _keep_in_storyboard(session_id: str, step_index: int, **fields: Any) -> bool:
+    """Write a correction made after finish into the storyboard, on the beat
+    whose last take recorded this step, so a fresh take starts from it. Take
+    5's two corrected lines were in the film and not in its storyboard
+    (found 2026-11-08). The review holds the film against the same lines."""
+    plan = store.session_storyboard(session_id)
+    for beat in (plan or {}).get("beats", []):
+        attempts = beat.get("state", {}).get("attempts") or []
+        if attempts and step_index in (attempts[-1].get("steps") or []):
+            beat.update(fields)
+            store.update_storyboard_beats(plan["plan_id"], plan["beats"])
+            store.update_session_beats(session_id, _planned_lines(plan["beats"]))
+            return True
+    return False
 
 
 def _beat_identity(beat: dict) -> tuple:
@@ -3420,6 +3447,14 @@ def _editable_session(session_id: str) -> tuple[dict | None, dict | None]:
                 "message": f"Unknown session_id: {session_id}",
             },
         }
+    if _finishing(session_id):
+        # A rerender reads the lines when it starts and stores them as it
+        # goes: an edit made meanwhile would be lost.
+        return None, {
+            "ok": False,
+            "error": {"type": "session_busy", "message": f"{session_id} is still rendering"},
+            "hint": "finish_status(job_id) until it is done, then edit and rerender.",
+        }
     video_path = Path(session["video_path"]) if session.get("video_path") else None
     if session["status"] != "finished" or video_path is None or not video_path.is_file():
         return None, {
@@ -3442,7 +3477,11 @@ async def update_step_narration(
     narration: str,
     voice: str | None = None,
 ) -> dict:
-    """Update one finished session's storyboard narration."""
+    """Change one line of a finished video; rerender then speaks it.
+
+    The line is also written into the session's storyboard, so a fresh_take
+    starts from it: in_storyboard says whether it was.
+    """
     session, error = _editable_session(session_id)
     if error:
         return error
@@ -3457,7 +3496,96 @@ async def update_step_narration(
     updated = store.update_step_narration(
         session_id, index, narration.strip(), voice.strip() if voice else None
     )
-    return {"ok": True, "step": updated}
+    kept = bool(narration.strip()) and _keep_in_storyboard(session_id, index, line=narration.strip())
+    return {"ok": True, "step": updated, "in_storyboard": kept}
+
+
+BRANDING_FIELDS = ("title", "subtitle", "cta_text", "cta_url")
+
+
+def _cards_report(session_id: str, session: dict) -> dict:
+    directory = Path(session["video_path"]).parent
+    steps = {round(float(step["offset_seconds"]), 3): step["idx"] for step in session.get("steps", [])
+             if step.get("action_type") == "card" and step.get("offset_seconds") is not None}
+    return {
+        "cards": [{"card": number, "step": steps.get(round(float(card["offset"]), 3)),
+                   "text": card["text"], "background": card.get("background") or "brand"}
+                  for number, card in enumerate(read_cards(directory))],
+        **{field: session.get(field) or "" for field in BRANDING_FIELDS},
+    }
+
+
+@mcp.tool()
+async def edit_cards(
+    session_id: str,
+    card: Annotated[int | None, Field(description="Which mid-film card to change, from 0, as the reply lists them.")] = None,
+    text: Annotated[str | None, Field(description="The card's new text: one or two lines, 140 characters at most.")] = None,
+    background: Annotated[str | None, Field(description="The card's new background: brand, blur or a hex colour such as #0b1320.")] = None,
+    title: Annotated[str | None, Field(description="The title card's text. An empty string leaves the title card out.")] = None,
+    subtitle: Annotated[str | None, Field(description="The small line under the title.")] = None,
+    cta_text: Annotated[str | None, Field(description="The closing card's words.")] = None,
+    cta_url: Annotated[str | None, Field(description="The closing card's address, and its QR code.")] = None,
+) -> dict:
+    """See or change the cards of a finished video.
+
+    With only session_id it lists them: every mid-film card, the title and
+    the closing card. A change goes into the session's storyboard and start
+    settings as well, so a fresh_take carries it. Call rerender to cut the
+    video with it. To change what is spoken over a card, use
+    update_step_narration.
+    """
+    session, error = _editable_session(session_id)
+    if error:
+        return error
+    assert session is not None
+    directory = Path(session["video_path"]).parent
+    branding = {field: value.strip() for field, value in
+                (("title", title), ("subtitle", subtitle), ("cta_text", cta_text), ("cta_url", cta_url))
+                if value is not None}
+    if branding.get("cta_url") and not re.fullmatch(r"https?://\S+", branding["cta_url"]):
+        return {"ok": False, "error": {"type": "invalid_edit", "message": "cta_url is an http(s) address"}}
+    in_storyboard: bool | None = None
+    if card is None and (text is not None or background is not None):
+        return {"ok": False, "error": {"type": "invalid_edit", "message": "Say which card: card=0 is the first"},
+                **_cards_report(session_id, session)}
+    if card is not None:
+        cards = read_cards(directory)
+        if not 0 <= card < len(cards):
+            return {"ok": False, "error": {"type": "unknown_card", "message": f"No card {card}: this film has {len(cards)}"},
+                    **_cards_report(session_id, session)}
+        if text is None and background is None:
+            return {"ok": False, "error": {"type": "invalid_edit", "message": "Give the card a new text or background"}}
+        changes: dict[str, str] = {}
+        if text is not None:
+            cleaned = clean_card_text(text)
+            if not cleaned or len(cleaned) > CARD_TEXT_MAX:
+                return {"ok": False, "error": {"type": "invalid_edit",
+                                               "message": f"A card's text is 1-{CARD_TEXT_MAX} characters: one or two lines"}}
+            changes["text"] = cleaned
+        if background is not None:
+            colour = card_background(background)
+            if colour is None:
+                return {"ok": False, "error": {"type": "invalid_edit",
+                                               "message": "A card's background is brand, blur or a hex colour such as #0b1320"}}
+            changes["background"] = colour
+        offset = round(float(cards[card]["offset"]), 3)
+        change_card(directory, offset, **changes)
+        step = next((step["idx"] for step in session.get("steps", [])
+                     if step.get("action_type") == "card" and step.get("offset_seconds") is not None
+                     and round(float(step["offset_seconds"]), 3) == offset), None)
+        in_storyboard = step is not None and _keep_in_storyboard(session_id, step, **changes)
+    if branding:
+        store.update_session_branding(session_id, branding)
+        if session.get("start_args"):
+            store.update_session_start_args(session_id, {**session["start_args"], **branding})
+    changed = card is not None or bool(branding)
+    current = store.get_session(session_id) or session
+    result: dict = {"ok": True, **_cards_report(session_id, current)}
+    if in_storyboard is not None:
+        result["in_storyboard"] = in_storyboard
+    result["hint"] = ("Call rerender(session_id) to cut the video with this."
+                      if changed else "edit_cards(session_id, card=0, text=...) changes a card.")
+    return result
 
 
 @mcp.tool()
@@ -3532,10 +3660,39 @@ async def rerender(
     With voice (and provider), every line is spoken again in that voice — the
     same take with another narrator, no re-recording. Without, lines that
     have not changed reuse their recorded audio.
+
+    A render that takes longer than about a minute answers with status
+    rendering and a job_id: follow it with finish_status, and do not call
+    rerender again. It runs to the end, subtitles included, even when this
+    call is cut off.
     """
+    job = finish_jobs.get(session_id)
+    if job is not None and job.running():
+        return await _await_finish(job)
     session, error = _editable_session(session_id)
     if error:
         return error
+    assert session is not None
+    job = FinishJob(session_id, Path(session["video_path"]).parent, 0, tool="rerender")
+    job.task = asyncio.create_task(_run_rerender(job, session, voice, provider, subtitles, subtitle_style))
+    finish_jobs[session_id] = job
+    return await _await_finish(job)
+
+
+async def _run_rerender(job: "FinishJob", session: dict, voice: str | None, provider: str | None,
+                        subtitles: bool | None, subtitle_style: str | None) -> dict:
+    """rerender's work, run as a job: a call cut off at the client's timeout
+    used to stop it before the subtitles (Sluss takes 4 and 5, 2026-11-03)."""
+    try:
+        return await _rerender(job, session, voice, provider, subtitles, subtitle_style)
+    except Exception as exc:  # a job's failure is reported, never lost
+        return {"ok": False, "status": "failed",
+                "error": {"type": "rerender_failed", "message": str(exc)}}
+
+
+async def _rerender(job: "FinishJob", session: dict, voice: str | None, provider: str | None,
+                    subtitles: bool | None, subtitle_style: str | None) -> dict:
+    session_id = job.session_id
     new_voice = (voice or "").strip() or None
     new_provider = None
     if new_voice:
@@ -3663,13 +3820,18 @@ async def rerender(
         store.update_session_subtitles(session_id, subtitles)
     if subtitle_style is not None:
         store.update_session_subtitle_style(session_id, subtitle_style)
+    job.stage = "subtitles"
     try:
         subtitled = await asyncio.to_thread(apply_subtitles, session_id)
     except Exception as exc:
         subtitled = False
         warnings = list(warnings) + [f"Subtitles could not be added: {exc}"]
+    else:
+        if not subtitled and (store.get_session(session_id) or {}).get("subtitles"):
+            warnings = list(warnings) + ["This film has subtitles on, but no line matched a part: the video has none."]
     return {
         "ok": True,
+        "status": "done",
         "subtitles": subtitled,
         "duration": round(duration, 3),
         # From the address the service has now, not the one stored at finish:
@@ -3974,12 +4136,14 @@ FINISH_WAIT_SECONDS = 55.0
 
 
 class FinishJob:
-    """A finish running in the background, kept until the process ends."""
+    """A finish or a rerender running in the background, kept until the
+    process ends: it goes on when the call that started it is cut off."""
 
-    def __init__(self, session_id: str, directory: Path | None, planned_parts: int) -> None:
+    def __init__(self, session_id: str, directory: Path | None, planned_parts: int, tool: str = "finish") -> None:
         self.session_id = session_id
         self.directory = directory
         self.planned_parts = planned_parts
+        self.tool = tool
         self.started = time.monotonic()
         self.stage = "rendering"
         self.task: asyncio.Task | None = None
@@ -4024,20 +4188,20 @@ async def _await_finish(job: FinishJob) -> dict:
             "ok": True,
             **job.progress(),
             "hint": "The video is still rendering. Call finish_status(job_id) about every 30 s "
-            "until status is done; it then gives the video URL and the review. Do not call "
-            "finish again: it would only report this same job.",
+            f"until status is done; it then gives the video URL{' and the review' if job.tool == 'finish' else ''}. "
+            f"Do not call {job.tool} again: it would only report this same job.",
         }
 
 
 @mcp.tool()
 async def finish_status(
-    job_id: Annotated[str, Field(description="The job_id finish answered with (the session id).")],
+    job_id: Annotated[str, Field(description="The job_id finish or rerender answered with (the session id).")],
 ) -> dict:
-    """Follow a finish that was still rendering when it answered.
+    """Follow a finish or a rerender that was still rendering when it answered.
 
     status is rendering (with the stage, seconds so far and parts rendered),
-    done (with video_url and the review, as finish gives them), or failed
-    (with the error).
+    done (with video_url, and the review after a finish), or failed (with
+    the error).
     """
     job = finish_jobs.get(job_id)
     if job is None:
