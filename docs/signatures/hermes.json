@@ -4,6 +4,7 @@
   "accent": "#E3A23B",
   "ink": "#0B1B2B",
   "paper": "#F6F1E7",
+  "cards": "solid",
   "display_font": "Inter",
   "text_font": "Inter",
   "mono_font": "IBM Plex Mono",

@@ -261,10 +261,12 @@ def card_backgrounds(
 
     "auto" takes the first frame of the video for the title and its last
     frame for the close — the product itself, as a hero image. An image URL
-    is used for both; one that cannot be fetched falls back to "auto".
+    is used for both; one that cannot be fetched falls back to "auto". A
+    house whose signature sets its cards solid turns "auto" into "solid": the
+    look is the instance's, not the director's. A film's own image still wins.
     """
     choice = (config.title_background or "auto").strip()
-    if choice == "solid":
+    if choice == "solid" or (choice == "auto" and sig.current().cards == "solid"):
         return None, None
     if choice.startswith("https://"):
         image = _download_image(choice, temporary / "card-background")
@@ -425,6 +427,21 @@ def _overlay_qr(card: Path, qr: Path, width: int, height: int) -> None:
         out.replace(card)
 
 
+def _title_card(intro: Path, width: int, height: int, config: RenderConfig, background: Path | None) -> None:
+    signature = sig.current()
+    _card(
+        intro, width, height, (signature.ink or config.accent) if background is None else config.accent,
+        [(config.title.strip(), max(36, width // 22)),
+         (config.subtitle.strip(), max(20, width // 48))]
+        if config.subtitle.strip()
+        else [(config.title.strip(), max(36, width // 22))],
+        background,
+        text_colour=signature.paper,
+        # A house with a signature underlines its title in the accent.
+        rule=not signature.is_default,
+    )
+
+
 def _closing_card(outro: Path, width: int, height: int, config: RenderConfig, background: Path | None, temporary: Path) -> None:
     signature = sig.current()
     _card(
@@ -467,18 +484,7 @@ def _compose_video(
     )
     if config.title.strip():
         intro = temporary / "intro.mp4"
-        signature = sig.current()
-        _card(
-            intro, width, height, (signature.ink or config.accent) if intro_background is None else config.accent,
-            [(config.title.strip(), max(36, width // 22)),
-             (config.subtitle.strip(), max(20, width // 48))]
-            if config.subtitle.strip()
-            else [(config.title.strip(), max(36, width // 22))],
-            intro_background,
-            text_colour=signature.paper,
-            # A house with a signature underlines its title in the accent.
-            rule=not signature.is_default,
-        )
+        _title_card(intro, width, height, config, intro_background)
         parts.append(intro)
         intro_duration = CARD_DURATION
     parts.append(body_path)
@@ -859,6 +865,9 @@ def render_card_segment(
         output_path, width, height, colour, lines,
         still if background == "blur" else None, duration,
         "#111111" if _light(colour) else (signature.paper if background == "brand" else "white"),
+        # The house's mark, on the house's ground: a brand card is often the
+        # only card a film has, when it opens straight on a question.
+        rule=background == "brand" and not signature.is_default,
     )
     return output_path
 
@@ -1312,14 +1321,7 @@ def _assemble_smooth(
     )
     if config.title.strip():
         intro = temporary / "intro.mp4"
-        _card(
-            intro, width, height, config.accent,
-            [(config.title.strip(), max(36, width // 22)),
-             (config.subtitle.strip(), max(20, width // 48))]
-            if config.subtitle.strip()
-            else [(config.title.strip(), max(36, width // 22))],
-            intro_background,
-        )
+        _title_card(intro, width, height, config, intro_background)
         parts.append((intro, None))
         joins.append(CARD_FADE)
     parts.extend(zip(segment_paths, clips))

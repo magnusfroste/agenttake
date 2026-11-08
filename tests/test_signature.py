@@ -146,3 +146,51 @@ def test_the_closing_card_renders_with_the_house_sign_off(house, tmp_path):
     render._closing_card(out, 640, 360, config, None, tmp_path)
     assert out.is_file() and out.stat().st_size > 0
     assert render.probe_video_size(out) == (640, 360)
+
+
+def _capture_card(monkeypatch):
+    seen = []
+    monkeypatch.setattr(render, "_card", lambda *args, **kwargs: seen.append((args, kwargs)))
+    return seen
+
+
+def test_a_brand_card_carries_the_house_rule_and_only_a_house_has_one(house, monkeypatch, tmp_path):
+    seen = _capture_card(monkeypatch)
+    render.render_card_segment({"text": "Measure first.", "background": "brand"}, 3.0, tmp_path / "a.mp4", (640, 360), "#1f2a44")
+    assert seen[-1][1]["rule"] is False
+    sig.save(HERMES, "set")
+    render.render_card_segment({"text": "Measure first.", "background": "brand"}, 3.0, tmp_path / "b.mp4", (640, 360), "#1f2a44")
+    assert seen[-1][1]["rule"] is True and seen[-1][0][3] == "#0B1B2B"
+    render.render_card_segment({"text": "On a colour.", "background": "#334455"}, 3.0, tmp_path / "c.mp4", (640, 360), "#1f2a44")
+    assert seen[-1][1]["rule"] is False
+
+
+def test_the_title_card_of_a_segmented_film_is_set_from_the_signature(house, monkeypatch, tmp_path):
+    sig.save(HERMES, "set")
+    seen = _capture_card(monkeypatch)
+    config = render.RenderConfig(title="Measure first", accent="#1f2a44")
+    render._title_card(tmp_path / "intro.mp4", 640, 360, config, None)
+    args, kwargs = seen[-1]
+    assert args[3] == "#0B1B2B" and kwargs["rule"] is True and kwargs["text_colour"] == "#F6F1E7"
+
+
+def test_a_solid_house_sets_title_and_closing_cards_on_ink(house, monkeypatch, tmp_path):
+    stills = []
+    monkeypatch.setattr(render, "_still", lambda video, at_end, out: stills.append(out) or out)
+    monkeypatch.setattr(render, "_download_image", lambda url, out: out)
+    first, last = tmp_path / "first.mp4", tmp_path / "last.mp4"
+
+    assert all(render.card_backgrounds(render.RenderConfig(), first, last, tmp_path))
+    assert len(stills) == 2  # no signature: the film's own frames, as before
+
+    sig.save(HERMES, "set")
+    assert sig.current().cards == "solid"
+    assert render.card_backgrounds(render.RenderConfig(), first, last, tmp_path) == (None, None)
+    assert len(stills) == 2
+    image = render.RenderConfig(title_background="https://example.org/hero.jpg")
+    assert all(render.card_backgrounds(image, first, last, tmp_path))  # a film's own image still wins
+
+
+def test_a_cards_value_that_is_neither_is_named():
+    parsed, problems = sig.parse({"name": "x", "cards": "marble"})
+    assert parsed.cards == "footage" and "cards" in problems[0]
