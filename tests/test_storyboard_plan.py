@@ -798,7 +798,9 @@ def test_a_live_answer_is_framed_by_its_first_words(server, monkeypatch):
     monkeypatch.setattr(boards, "ANSWER_QUIET_SECONDS", 0.0)
     monkeypatch.setattr(boards, "ANSWER_POLL_SECONDS", 0.0)
     answered = "Chat\nYou: Summarise customer 81121\nRouted to the local model: it holds personal data.\nSend"
-    session = StandInSession(pages=["Chat\nSend", answered])
+    # The chat's first page is read once more: the review keeps what the
+    # screen says under the opening line.
+    session = StandInSession(pages=["Chat\nSend", "Chat\nSend", answered])
     start(server, "s-answer", session)
     plan = asyncio.run(server.plan_storyboard(CHAT_PLAN))
     shot = asyncio.run(server.shoot_storyboard("s-answer", plan_id=plan["plan_id"]))

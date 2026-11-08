@@ -185,6 +185,10 @@ A beat that shot fine but could look better can be retaken the same way.
 
 `shoot_beat` only works before `finish`. A flaw you find on the contact
 sheet afterwards is mended in the edit when the footage is right
+`review_session` measures the film: each finding gives its beat, `at_seconds`,
+what it `measured` and a `fix`. `claims_to_check` lists lines stating a share,
+with the percentages on their screen: compare them yourself.
+
 (`edit_step`: `hidden`, `hold_seconds`, `position`; `update_step_narration`;
 `edit_cards` for a card, the title or the closing card; then `rerender`, and
 `finish_status` if it answers with a job_id), or in a fresh take when it is not.

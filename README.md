@@ -340,6 +340,12 @@ refuses to publish until every shot is verified.
   quiet generated bed.
 - **Storyboard** — every render records where each part landed and a still of
   it; the watch page shows the storyboard, and clicking a step plays from there.
+- **A review that measures** — after `finish`, `review_session` reads the film
+  frame by frame and each shot's frame against its page: an empty screen, a
+  picture changing under a line, a long still, text cut at the edge, a focus out
+  of frame or too small, a number the screen does not show. A finding gives its
+  beat, `at_seconds`, what it `measured` and a `fix`. `contact_sheet` carries the
+  picture in its reply, for an agent with no way to open a URL.
 - **Corrections last** — a line changed with `update_step_narration` and a card
   changed with `edit_cards` are written into the storyboard too, so `fresh_take`
   starts from them. A long `rerender` answers with a job id: follow it with

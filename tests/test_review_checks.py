@@ -456,13 +456,13 @@ def test_contact_sheet_tiles_the_finished_video(mods, monkeypatch):
                     "testsrc2=size=640x360:rate=25", "-t", "7", "-pix_fmt", "yuv420p", str(video)],
                    check=True)
     _new_session(store, session_id, output_dir=str(session_dir))
-    assert asyncio.run(server.contact_sheet(session_id))["error"]["type"] == "not_finished"
-    assert asyncio.run(server.contact_sheet("nope"))["error"]["type"] == "unknown_session"
+    assert asyncio.run(server.contact_sheet(session_id)).structuredContent["error"]["type"] == "not_finished"
+    assert asyncio.run(server.contact_sheet("nope")).structuredContent["error"]["type"] == "unknown_session"
     # The stored length is short of the file's: the sheet goes by the file.
     store.finish_session(session_id, str(video), None, 5.0)
     monkeypatch.setenv("REEL_PUBLIC_BASE_URL", "https://take.example.com/")
 
-    result = asyncio.run(server.contact_sheet(session_id, every_seconds=1))
+    result = asyncio.run(server.contact_sheet(session_id, every_seconds=1)).structuredContent
     assert result["ok"] and result["every_seconds"] == 1
     assert (result["tiles"], result["columns"], result["rows"]) == (8, 6, 2)
     assert result["url"].startswith(f"https://take.example.com/videos/{session_id}/storyboard/contact-sheet.jpg?v=")

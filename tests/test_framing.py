@@ -78,6 +78,9 @@ class ShotStandIn:
     async def _text_box(self, target, text):
         return dict(self.box)
 
+    async def _shot_facts(self, frame, box, target):
+        return None
+
 
 def test_set_shot_with_fit_frames_the_whole_quote():
     session = ShotStandIn(STANDFIRST)

@@ -2329,7 +2329,21 @@ async def _run_action(
         payload.get("focus_cover"),
         started_seconds=payload.get("started_at_seconds"),
     )
+    if narration.strip() and payload.get("ok") and not parsed_action.offscreen:
+        await _remember_page_text(session, session_id, parsed_action)
     return payload, screenshot
+
+
+async def _remember_page_text(session: Any, session_id: str, action: Action) -> None:
+    """What the screen says under this line, for the review's claim check. In
+    a file beside the film: get_session's reply should not carry every page."""
+    try:
+        text = (action.text or "") if action.type == "card" else await session.page_text()
+        record = {"step": store.next_step_index(session_id) - 1, "text": str(text)[:checks.PAGE_TEXT_MAX]}
+        with (Path(session.directory) / checks.PAGE_TEXT_FILE).open("a", encoding="utf-8") as out:
+            out.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, AttributeError, TypeError):
+        pass  # the film stands without its claim check
 
 
 @mcp.tool()
@@ -3322,21 +3336,22 @@ async def contact_sheet(
         Field(description="One frame every this many seconds (default 2, at least 0.5). A long "
                           "film is spaced out to at most 96 frames; the reply says the interval used."),
     ] = 2,
-) -> dict:
+) -> CallToolResult:
     """The whole finished video as one picture: a frame every few seconds,
     six to a row, each stamped with its time.
 
-    Returns the image's URL. Look at it before you share the film: a blank
-    page under a line, a menu left open, a beat that never happened all show
-    at a glance — storyboard has one still per part and can miss what
-    happens inside a part.
+    The reply carries the picture itself, scaled down, and the URL of the
+    full-size one. Look at it before you share the film: a blank page under a
+    line, a menu left open, a beat that never happened all show at a glance
+    — storyboard has one still per part and can miss what happens inside a
+    part.
     """
     session = store.get_session(session_id)
     if session is None:
-        return _unknown_session(session_id)
+        return feedback_result(_unknown_session(session_id))
     video_path_value = session.get("video_path")
     if not video_path_value or not Path(video_path_value).is_file():
-        return {"ok": False, "error": {"type": "not_finished", "message": "Finish the session first"}}
+        return feedback_result({"ok": False, "error": {"type": "not_finished", "message": "Finish the session first"}})
     video = Path(video_path_value)
     # The file's own length: the stored one can fall short of it (80.1 s
     # stored, 83 s in the file, for the last Nordbrygg take), and a sheet one
@@ -3350,11 +3365,12 @@ async def contact_sheet(
     sheet = frames_dir / CONTACT_SHEET_NAME
     layout = await asyncio.to_thread(checks.write_contact_sheet, video, sheet, duration, every_seconds)
     if layout is None:
-        return {"ok": False, "error": {"type": "contact_sheet_failed", "message": "ffmpeg could not tile the video"}}
+        return feedback_result({"ok": False, "error": {"type": "contact_sheet_failed", "message": "ffmpeg could not tile the video"}})
     base = os.environ.get("REEL_PUBLIC_BASE_URL", "").rstrip("/")
     # The version keeps a viewer from showing the sheet of an earlier render.
     url = f"{base}/videos/{session_id}/{STORYBOARD_DIR}/{CONTACT_SHEET_NAME}?v={int(sheet.stat().st_mtime)}"
-    return {"ok": True, "url": url, "path": str(sheet), "duration": round(duration, 2), **layout}
+    small = await asyncio.to_thread(checks.write_small_sheet, sheet, frames_dir / f"small-{CONTACT_SHEET_NAME}")
+    return feedback_result({"ok": True, "url": url, "path": str(sheet), "duration": round(duration, 2), **layout}, small)
 
 
 @mcp.tool()
@@ -3929,7 +3945,8 @@ def _extract_review_frames(session_id: str, video_path: Path, duration: float | 
     return frames
 
 
-BLOCKS_EXCELLENT = {"beat_missing", "beat_out_of_order", "blank_frame", "overlay_left_open", "focus_covered"}
+BLOCKS_EXCELLENT = {"beat_missing", "beat_out_of_order", "blank_frame", "overlay_left_open", "focus_covered",
+                    "blank_flash", "focus_cropped", "claim_contradicted"}
 
 
 @mcp.tool()
@@ -3937,9 +3954,13 @@ async def review_session(session_id: str) -> dict:
     """Analyze a recording or finished session for secrets, alignment, pacing, and review frames.
 
     With beats planned at start_session, every planned line must be recorded,
-    in order. After finish, the frame under each narrated line is checked for
-    a page that had not loaded (step_frames, with their paths); a menu or
-    popover left open from an earlier step under a line is flagged too.
+    in order. After finish, the film itself is measured: a screen that goes
+    empty, a picture that changes under a line, a long still, text the frame
+    cuts, what a line is about being too small or out of frame, a number the
+    screen does not show. A finding names its beat, at_seconds, what was
+    measured, and in `fix` what to do about it. claims_to_check lists the lines
+    that state a share ("nearly half") with the percentages on their screen:
+    compare them yourself.
     """
     session = store.get_session(session_id)
     if session is None:
@@ -4089,12 +4110,24 @@ async def review_session(session_id: str) -> dict:
     # 4. The picture under every line: a page that had not loaded plays as a
     # blank screen with a voice over it.
     step_frames: list[dict] = []
+    parts = read_storyboard(video_path.parent) if video_path is not None else []
     if video_path is not None and video_path.is_file():
         step_frames = await asyncio.to_thread(
-            checks.step_frames, video_path, read_storyboard(video_path.parent), steps,
+            checks.step_frames, video_path, parts, steps,
             video_path.parent / "review_frames",
         )
         findings.extend(checks.blank_frame_findings(step_frames))
+        # 5. The moving picture, measured frame by frame.
+        scanned = await asyncio.to_thread(checks.scan_frames, video_path)
+        findings.extend(await asyncio.to_thread(checks.film_findings, scanned, parts, steps))
+
+    # 6. What each shot framed, and what each line claims.
+    findings.extend(checks.shot_findings(camera, steps))
+    claims_to_check: list[dict] = []
+    if session.get("output_dir"):
+        claims, claims_to_check = checks.claim_findings(steps, checks.read_page_texts(Path(session["output_dir"])))
+        findings.extend(claims)
+    _place_findings(findings, session_id, steps, parts)
 
     # Pedagogical pacing score
     score = 100
@@ -4123,9 +4156,34 @@ async def review_session(session_id: str) -> dict:
         "step_frames": step_frames,
         "findings": findings,
     }
+    if claims_to_check:
+        result["claims_to_check"] = claims_to_check
     if comparison is not None:
         result["beats"] = comparison
     return result
+
+
+def _place_findings(findings: list[dict], session_id: str, steps: list[dict], parts: list[dict]) -> None:
+    """Say which beat a finding is on and where in the film it starts."""
+    plan = store.session_storyboard(session_id)
+    beats: dict[int, dict] = {}
+    for beat in (plan or {}).get("beats", []):
+        attempts = beat.get("state", {}).get("attempts") or []
+        for idx in (attempts[-1].get("steps") or []) if attempts else []:
+            beats[idx] = beat
+    visible = [step for step in steps if step.get("offset_seconds") is not None and not step.get("offscreen")]
+    starts = {int(visible[part["step"]].get("idx", 0)): float(part["start"]) for part in parts
+              if part.get("kind") == "step" and part.get("step") is not None and part["step"] < len(visible)}
+    for finding in findings:
+        match = re.fullmatch(r"step\[(\d+)\]", str(finding.get("location")))
+        if match:
+            idx = int(match.group(1))
+            if idx in beats:
+                finding["beat"], finding["label"] = beats[idx].get("number"), beats[idx].get("label")
+            if finding.get("at_seconds") is None and idx in starts:
+                finding["at_seconds"] = round(starts[idx], 2)
+        if finding.get("at_seconds") is None:
+            finding.pop("at_seconds", None)
 
 
 # A render can outlast what an MCP client waits for a reply: five-minute
