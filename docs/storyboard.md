@@ -186,7 +186,9 @@ A beat that shot fine but could look better can be retaken the same way.
 `shoot_beat` only works before `finish`. A flaw you find on the contact
 sheet afterwards is mended in the edit when the footage is right
 (`edit_step`: `hidden`, `hold_seconds`, `position`; `update_step_narration`;
-then `rerender`), or in a fresh take when it is not.
+`edit_cards` for a card, the title or the closing card; then `rerender`, and
+`finish_status` if it answers with a job_id), or in a fresh take when it is not.
+A corrected line or card stays in the storyboard, so a fresh take starts from it.
 `fresh_take(session_id)` starts a new session exactly as the first was
 started (size, voice, cards, subtitles, mask, colour scheme) with AgentTake's
 own copy of the storyboard, every beat still to shoot, and answers with the

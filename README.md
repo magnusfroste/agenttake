@@ -237,7 +237,7 @@ None of these can score `excellent`.
 | **Session** | `start_session`, `get_status`, `finish`, `finish_status`, `list_sessions`, `get_session`, `delete_session`, `prune` |
 | **Directing** | `observe`, `act`, `act_batch`, `assert_visible`, `begin_shot`, `preview_shot`, `verify_shot`, `review_session` |
 | **Storyboard** | `director_guide`, `plan_storyboard`, `shoot_storyboard`, `shoot_beat`, `shoot_status`, `apply_retakes`, `fresh_take` |
-| **After finish** | `storyboard`, `contact_sheet`, `edit_step`, `update_step_narration`, `rerender`, `set_watch_page` |
+| **After finish** | `storyboard`, `contact_sheet`, `edit_step`, `update_step_narration`, `edit_cards`, `rerender`, `set_watch_page` |
 | **Voices** | `list_voices` |
 | **Roadmap** | `submit_backlog`, `list_backlog`, `update_backlog` |
 
@@ -340,6 +340,10 @@ refuses to publish until every shot is verified.
   quiet generated bed.
 - **Storyboard** — every render records where each part landed and a still of
   it; the watch page shows the storyboard, and clicking a step plays from there.
+- **Corrections last** — a line changed with `update_step_narration` and a card
+  changed with `edit_cards` are written into the storyboard too, so `fresh_take`
+  starts from them. A long `rerender` answers with a job id: follow it with
+  `finish_status`; it finishes, subtitles included, even if the call is cut off.
 - **Re-voicing** — `update_step_narration` edits one line and `rerender`
   rebuilds the film from the original recording; unchanged lines reuse their
   audio.
