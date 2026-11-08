@@ -47,6 +47,10 @@ class Signature:
     accent: str = "#1f2a44"
     ink: str = ""
     paper: str = "#ffffff"
+    # What the title and closing cards are set on. "footage" is the film's
+    # own first and last frame, blurred; "solid" is the house's ink, so the
+    # sign-off looks the same on every film, whatever page it ended on.
+    cards: str = "footage"
     # Type, by fontconfig family name. The display face sets cards, the text
     # face captions, the mono face addresses and small labels.
     display_font: str = "DejaVu Sans"
@@ -75,7 +79,7 @@ class Signature:
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name, "version": self.version,
-            "accent": self.accent, "ink": self.ink, "paper": self.paper,
+            "accent": self.accent, "ink": self.ink, "paper": self.paper, "cards": self.cards,
             "display_font": self.display_font, "text_font": self.text_font, "mono_font": self.mono_font,
             "signature_line": self.signature_line, "ai_label": self.ai_label,
             "voice": self.voice, "tone": list(self.tone), "changelog": [dict(entry) for entry in self.changelog],
@@ -139,6 +143,11 @@ def parse(document: Any) -> tuple[Signature, list[str]]:
     colour("accent", False)
     colour("ink", True)
     colour("paper", False)
+    cards = document.get("cards")
+    if cards in ("footage", "solid"):
+        values["cards"] = cards
+    elif cards is not None:
+        problems.append(f"cards is footage or solid, not {cards!r}")
     for key in ("display_font", "text_font", "mono_font"):
         font(key)
     text("signature_line")
