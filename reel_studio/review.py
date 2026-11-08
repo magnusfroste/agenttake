@@ -8,6 +8,7 @@ these checks catch them from the same evidence.
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 import subprocess
@@ -406,6 +407,312 @@ def focus_findings(steps: Sequence[dict]) -> list[dict]:
     return findings
 
 
+# The film, measured ------------------------------------------------------
+
+# Sluss take 5 went out of Hermes's review as "all 16 ok" with a white page for
+# a second and a half and a line running over the next page (2026-11-03). A
+# director reading stills every two seconds cannot see either; the film can be
+# read frame by frame instead. The numbers below come from Sluss takes 4 and 5:
+# they find each flaw a person found in those films, and nothing else.
+SCAN_FPS = 4
+# Bright or dark enough to be an empty page, and with this little detail:
+# heise.de before its image loaded measured 0.062, the faintest real page in
+# these films well above it.
+FLASH_BRIGHT, FLASH_DARK, FLASH_DETAIL = 235, 16, 0.08
+FLASH_MIN_SECONDS = 0.5
+# Between two samples, the share of pixels that moved by more than PIXEL_STEP.
+PIXEL_STEP = 30
+STILL_CHANGE = 0.01
+# A cut inside a shot: this much at once, once the shot has opened...
+HARD_CHANGE, HARD_FROM = 0.5, 1.0
+# ...or this much once the camera's move into the shot is over (it eases for
+# up to three seconds, and moves the picture by up to 0.16 meanwhile).
+SOFT_CHANGE, SOFT_FROM = 0.1, 3.5
+# The dissolve into the next shot starts this far before a part's end.
+TAIL_SECONDS = 0.75
+LONG_STILL, VERY_LONG_STILL = 7.0, 12.0
+
+
+def scan_frames(video: Path, fps: int = SCAN_FPS) -> list[bytes]:
+    """The film as grey frames of DETAIL_WIDTH x DETAIL_HEIGHT, without the
+    band subtitles are burned into."""
+    command = [
+        "ffmpeg", "-loglevel", "error", "-i", str(video),
+        "-vf", f"fps={fps},crop=iw:ih*{DETAIL_CROP}:0:0,scale={DETAIL_WIDTH}:{DETAIL_HEIGHT},format=gray",
+        "-f", "rawvideo", "-",
+    ]
+    try:
+        raw = subprocess.run(command, capture_output=True, check=True, timeout=300).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    size = DETAIL_WIDTH * DETAIL_HEIGHT
+    return [raw[start:start + size] for start in range(0, len(raw) - size + 1, size)]
+
+
+def _moved(first: bytes, second: bytes) -> float:
+    """The share of the picture that changed; every third pixel is enough."""
+    a, b = first[::3], second[::3]
+    return sum(1 for x, y in zip(a, b) if abs(x - y) > PIXEL_STEP) / len(a) if a else 0.0
+
+
+def _is_empty(frame: bytes) -> bool:
+    sample = frame[::7]
+    level = sum(sample) / len(sample)
+    return (level > FLASH_BRIGHT or level < FLASH_DARK) and frame_detail(frame) < FLASH_DETAIL
+
+
+def film_findings(frames: Sequence[bytes], parts: Sequence[dict], steps: Sequence[dict],
+                  fps: int = SCAN_FPS) -> list[dict]:
+    """What shows only in the moving picture: a page that had not loaded, a
+    line that runs over the next page, a picture that stands still too long."""
+    if len(frames) < 2:
+        return []
+    visible = [s for s in steps if s.get("offset_seconds") is not None and not s.get("offscreen")]
+    shots = [(part, visible[part["step"]]) for part in parts
+             if part.get("kind") == "step" and part.get("step") is not None and part["step"] < len(visible)]
+
+    def shot_at(seconds: float) -> tuple[dict, dict] | None:
+        # Parts overlap by their dissolve; the later one has the screen.
+        found = None
+        for part, step in shots:
+            if float(part["start"]) <= seconds < float(part["start"]) + float(part["duration"]):
+                found = (part, step)
+        return found
+
+    changes = [0.0] + [_moved(frames[i - 1], frames[i]) for i in range(1, len(frames))]
+    findings: list[dict] = []
+    flashed: set[int] = set()
+    run: list[int] = []
+    for index in [*range(len(frames)), -1]:
+        current = shot_at(index / fps) if index >= 0 else None
+        if current is not None and current[1].get("action_type") != "card" and _is_empty(frames[index]):
+            run.append(index)
+            continue
+        if len(run) / fps >= FLASH_MIN_SECONDS:
+            at, seconds = run[0] / fps, len(run) / fps
+            step = shot_at(at)[1]  # type: ignore[index]
+            flashed.add(int(step.get("idx", 0)))
+            findings.append({
+                "category": "blank_flash", "severity": "high", "location": f"step[{step.get('idx', 0)}]",
+                "at_seconds": at, "measured": {"seconds": seconds},
+                "message": f"The screen is empty for {seconds:.2f} s at {at:.1f}s: a page that had not loaded.",
+                "fix": "fresh_take with a wait_for_text on the page's main content, so the shot starts once it is there.",
+            })
+        run = []
+
+    # One finding per shot: the first change is where the shot stops being right.
+    reported: set[int] = set()
+    for index, change in enumerate(changes):
+        current = shot_at(index / fps)
+        if current is None:
+            continue
+        part, step = current
+        idx = int(step.get("idx", 0))
+        into, left = index / fps - float(part["start"]), float(part["start"]) + float(part["duration"]) - index / fps
+        if (idx in reported or idx in flashed or left <= TAIL_SECONDS
+                or not (step.get("narration_text") or "").strip()
+                or step.get("action_type") in ("scroll", "card") or float(step.get("speed") or 1.0) > 1.0):
+            continue
+        if (change >= HARD_CHANGE and into >= HARD_FROM) or (change >= SOFT_CHANGE and into >= SOFT_FROM):
+            reported.add(idx)
+            findings.append({
+                "category": "picture_changes_under_line", "severity": "medium", "location": f"step[{idx}]",
+                "at_seconds": round(index / fps, 2), "measured": {"changed": round(change, 3), "seconds_into_line": round(into, 2)},
+                "message": (f"The picture changes {into:.1f} s into step {idx}'s line, {left:.1f} s before it ends: "
+                            "the line is running over something else."),
+                "fix": "Shorten the line with update_step_narration so it ends before the change, or fresh_take if the "
+                       "wrong page is in the shot.",
+            })
+
+    start = 0
+    for index in range(1, len(frames) + 1):
+        if index < len(frames) and changes[index] <= STILL_CHANGE:
+            continue
+        seconds = (index - start) / fps
+        if seconds >= LONG_STILL:
+            current = shot_at((start + index) / 2 / fps)
+            step = current[1] if current else None
+            where = f"step[{step.get('idx', 0)}]" if step else "session"
+            findings.append({
+                "category": "long_still", "severity": "medium" if seconds >= VERY_LONG_STILL else "low",
+                "location": where, "at_seconds": start / fps, "measured": {"seconds": seconds},
+                "message": f"Nothing moves for {seconds:.1f} s from {start / fps:.1f}s.",
+                "fix": "Shorten the line with update_step_narration, push in on what the line names (the beat's zoom), "
+                       "or split it into two beats.",
+            })
+        start = index
+    return findings
+
+
+# What a shot framed. Recorded when the shot is set up, because only the page
+# knows where its words are: Sluss's audit beat cut "verify offline" at the
+# frame's edge, and a README beat cut its own headline (take 3).
+SHOT_FACTS_JS = """(view) => {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  const right = view.x + view.w, bottom = view.y + view.h;
+  let lines = 0, count = 0;
+  const cut = [];
+  for (let node, seen = 0; (node = walker.nextNode()) && seen < 6000; seen++) {
+    const words = node.textContent.replace(/\\s+/g, " ").trim();
+    const parent = node.parentElement;
+    if (words.length < 2 || !parent || ["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) continue;
+    const style = getComputedStyle(parent);
+    if (style.visibility === "hidden" || style.display === "none" || Number(style.opacity) < 0.05) continue;
+    range.selectNodeContents(node);
+    for (const rect of range.getClientRects()) {
+      if (rect.width < 3 || rect.height < 3) continue;
+      if (rect.bottom <= view.y || rect.top >= bottom || rect.right <= view.x || rect.left >= right) continue;
+      lines += 1;
+      const side = rect.left < view.x - 2 ? "left" : rect.right > right + 2 ? "right" : null;
+      if (!side) continue;
+      count += 1;
+      if (cut.length < 60) cut.push({text: words.slice(0, 48), side, top: rect.top, bottom: rect.bottom});
+    }
+  }
+  return {lines, cut_count: count, cut};
+}"""
+
+# Most of the focus box has to be in the frame.
+FOCUS_IN_FRAME = 0.95
+# A line of text at the focus's height, cut by the frame's edge...
+NEAR_FOCUS_LINES = 1.5
+# ...or this much of everything in the frame.
+CUT_SHARE = 0.4
+# The focus text as a share of the frame's height: 24 px in a 1080p film.
+SMALL_TEXT = 0.022
+
+
+def shot_findings(camera: Any, steps: Sequence[dict]) -> list[dict]:
+    """A shot's frame against what the page had in it when it was set up."""
+    if camera is None:
+        return []
+    by_offset = [s for s in steps if s.get("offset_seconds") is not None and not s.get("offscreen")
+                 and s.get("ok", True) and (s.get("narration_text") or "").strip()]
+    findings: list[dict] = []
+    for key in camera.keys:
+        facts = key.get("facts")
+        step = next((s for s in by_offset if abs(float(s["offset_seconds"]) - float(key["t"])) < 0.06), None)
+        if not facts or step is None or step.get("action_type") == "scroll":
+            continue
+        idx = int(step.get("idx", 0))
+        zoom = float(key["zoom"])
+        view = camera.view((zoom, float(key["cx"]), float(key["cy"])))
+        focus = facts.get("focus") or {}
+        common = {"location": f"step[{idx}]", "at_seconds": None}
+        if focus.get("width") and focus.get("height"):
+            across = min(focus["x"] + focus["width"], view["x"] + view["w"]) - max(focus["x"], view["x"])
+            down = min(focus["y"] + focus["height"], view["y"] + view["h"]) - max(focus["y"], view["y"])
+            share = max(0.0, across) * max(0.0, down) / (focus["width"] * focus["height"])
+            if share < FOCUS_IN_FRAME:
+                findings.append({
+                    **common, "category": "focus_cropped", "severity": "high", "measured": {"in_frame": round(share, 2), "zoom": zoom},
+                    "message": f"Only {share:.0%} of what step {idx}'s line is about is in the frame at zoom {zoom:g}.",
+                    "fix": "Lower the beat's zoom, or set the page narrower, and fresh_take.",
+                })
+        cut = facts.get("cut") or []
+        if focus.get("height"):
+            reach = max(float(focus["height"]) * NEAR_FOCUS_LINES, 24.0)
+            near = [line for line in cut if line["top"] < focus["y"] + focus["height"] + reach
+                    and line["bottom"] > focus["y"] - reach]
+        else:
+            near = []
+        lines, count = int(facts.get("lines") or 0), int(facts.get("cut_count") or 0)
+        share = count / lines if lines else 0.0
+        if near or share >= CUT_SHARE:
+            sample = near or cut
+            findings.append({
+                **common, "category": "text_cut_at_edge", "severity": "medium" if near else "low",
+                "measured": {"lines_cut": count, "lines_in_frame": lines, "next_to_focus": len(near), "zoom": zoom},
+                "message": (f"The frame cuts {count} of {lines} lines of text at zoom {zoom:g}"
+                            + (f", {len(near)} of them next to the focus" if near else "")
+                            + f': "{sample[0]["text"]}" runs off the {sample[0]["side"]} edge.'),
+                "fix": f"Lower the beat's zoom below {zoom:g}, or aim at a block that fits, and fresh_take.",
+            })
+        font = float(facts.get("font_px") or 0.0)
+        if font and font * zoom / camera.height < SMALL_TEXT:
+            findings.append({
+                **common, "category": "focus_text_small", "severity": "low",
+                "measured": {"text_share_of_height": round(font * zoom / camera.height, 4), "zoom": zoom},
+                "message": f"What step {idx}'s line is about is {font * zoom / camera.height:.1%} of the frame's height: "
+                           "hard to read in a feed on a phone.",
+                "fix": "Raise the beat's zoom or use a set_zoom before the shot, and fresh_take.",
+            })
+    return findings
+
+
+# What a line claims -------------------------------------------------------
+
+# Sluss take 2 said "Most stayed in the house" over a chart reading 48%, and
+# Hermes's review passed it. A number has to be on the screen it is said over;
+# a word for a share is listed with the screen's own percentages to check.
+PAGE_TEXT_FILE = "page-text.jsonl"
+PAGE_TEXT_MAX = 20000
+_NUMBER = re.compile(r"(?<![\w.,])\d[\d  ,.]*\d%?|(?<![\w.,])\d%?(?!\w)")
+_YEAR = re.compile(r"^(19|20)\d\d$")
+_MAJORITY = re.compile(r"(?:^|[.!?:]\s+)most\b|\bmost of\b|\bmajority\b|\bde flesta\b|\bmajoriteten\b|\bmerparten\b", re.I)
+_SHARE = re.compile(r"\b(?:nearly|almost|about|around|over|under|roughly) (?:half|all)\b|\bhalf of\b|\bfew\b"
+                    r"|\bnästan (?:hälften|alla)\b|\bhälften\b|\bminority\b", re.I)
+
+
+def _digits(token: str) -> str:
+    return re.sub(r"[^\d]", "", token)
+
+
+def page_numbers(text: str) -> set[str]:
+    return {_digits(token) for token in _NUMBER.findall(text or "")}
+
+
+def page_percentages(text: str) -> list[float]:
+    return [float(value.replace(",", ".")) for value in re.findall(r"(\d+(?:[.,]\d+)?)\s?%", text or "")]
+
+
+def read_page_texts(directory: Path) -> dict[int, str]:
+    """What was on the page under each narrated step, as recorded."""
+    texts: dict[int, str] = {}
+    try:
+        for line in (directory / PAGE_TEXT_FILE).read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            texts[int(entry["step"])] = str(entry["text"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return texts
+    return texts
+
+
+def claim_findings(steps: Sequence[dict], texts: dict[int, str]) -> tuple[list[dict], list[dict]]:
+    """Findings for numbers a screen does not show and shares it contradicts,
+    and the shares a director has to compare with the screen itself."""
+    findings: list[dict] = []
+    to_check: list[dict] = []
+    for step in steps:
+        idx = int(step.get("idx", 0))
+        line = (step.get("narration_text") or "").strip()
+        text = texts.get(idx)
+        if not line or text is None or step.get("offscreen") or not step.get("ok", True):
+            continue
+        shown = page_numbers(text)
+        missing = [token.strip() for token in _NUMBER.findall(line)
+                   if not _YEAR.match(_digits(token)) and _digits(token) not in shown]
+        if missing:
+            findings.append({
+                "category": "claim_not_on_screen", "severity": "medium", "location": f"step[{idx}]",
+                "measured": {"numbers": missing},
+                "message": f"Step {idx}'s line says {', '.join(missing)}, and the screen under it does not.",
+                "fix": "Show the source of the number in this beat, or change the line with update_step_narration.",
+            })
+        percentages = page_percentages(text)
+        if _MAJORITY.search(line) and percentages and max(percentages) <= 50:
+            findings.append({
+                "category": "claim_contradicted", "severity": "high", "location": f"step[{idx}]",
+                "measured": {"on_screen": percentages[:8]},
+                "message": f'Step {idx}\'s line says most ("{line[:70]}"), and the largest share on the screen is {max(percentages):g}%.',
+                "fix": "Say what the screen says, for example \"nearly half\", with update_step_narration.",
+            })
+        elif _MAJORITY.search(line) or _SHARE.search(line):
+            to_check.append({"step": idx, "line": line, "on_screen_percentages": percentages[:8]})
+    return findings, to_check
+
+
 # Contact sheet -----------------------------------------------------------
 
 CONTACT_SHEET_COLUMNS = 6
@@ -419,6 +726,24 @@ def contact_sheet_interval(duration: float, every_seconds: float) -> float:
     if duration / interval > CONTACT_SHEET_MAX_TILES:
         interval = math.ceil(duration / CONTACT_SHEET_MAX_TILES)
     return interval
+
+
+# What an image reply is sent at: a vision model scales anything larger down.
+SHEET_REPLY_EDGE = 1568
+
+
+def write_small_sheet(sheet: Path, out: Path) -> Path | None:
+    """The contact sheet at the size an MCP image reply can carry."""
+    edge = SHEET_REPLY_EDGE
+    try:
+        subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-y", "-i", str(sheet),
+             "-vf", f"scale='min({edge},iw*{edge}/max(iw,ih))':-2", "-q:v", "5", str(out)],
+            check=True, capture_output=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out if out.is_file() else None
 
 
 def write_contact_sheet(video: Path, out: Path, duration: float, every_seconds: float) -> dict | None:

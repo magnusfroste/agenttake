@@ -55,7 +55,7 @@ from .annotations import (
     validate_annotation,
 )
 from .refs import semantic_ref
-from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, describe_cover, focus_covered
+from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, SHOT_FACTS_JS, describe_cover, focus_covered
 from .schema import resolve_secret, secret_names, Action, mask_stylesheet
 from .tts import synthesize
 
@@ -595,6 +595,8 @@ class BrowserSession:
     pending_shot: tuple[float, float | None, float | None] | None = None
     # How long the pending shot's move takes (begin_shot move_seconds).
     pending_ease: float = EASE_SECONDS
+    # What the next shot frames, measured when it is set up (review.shot_findings).
+    pending_facts: dict | None = None
     # Each timeline step's speed: above 1, its footage plays as a time-lapse.
     timeline_speeds: list[float] = field(default_factory=list)
     # Each timeline step's narration length when it is a glide, else None.
@@ -1160,11 +1162,26 @@ class BrowserSession:
                      cy if cy is not None else current[2])
             frame = self.camera.view(state if level > 1.0 else (1.0, 0.0, 0.0))
             result["camera_frame"] = {k: round(frame[k]) for k in ("x", "y", "w", "h")}
+            self.pending_facts = await self._shot_facts(frame, box, target if box else None) if level > 1.0 else None
         if box:
             result["camera_centre"] = {"x": round(cx or 0), "y": round(cy or 0)}
         if note:
             result["camera_note"] = note
         return result
+
+    async def _shot_facts(self, frame: dict, box: dict | None, target: Locator | None) -> dict | None:
+        """What this shot will have in its frame, for the review."""
+        try:
+            facts = await self.page.evaluate(SHOT_FACTS_JS, frame)
+            if box is not None:
+                facts["focus"] = {key: round(box[key], 1) for key in ("x", "y", "width", "height")}
+            if target is not None:
+                facts["font_px"] = await target.evaluate(
+                    "(el) => parseFloat(getComputedStyle(el).fontSize) * (el.currentCSSZoom || 1)"
+                )
+            return facts
+        except PlaywrightError:
+            return None
 
     async def _text_box(self, target: Locator, text: str) -> dict | None:
         """The box of the words themselves, not of the element holding them.
@@ -1911,6 +1928,8 @@ class BrowserSession:
             # push-ins reached the video as a jump to the zoomed frame, not a
             # move (found comparing cut boundaries, 2026-10-09).
             if self.camera.move(offset, *self.pending_shot, ease=self.pending_ease):
+                if self.pending_facts:
+                    self.camera.keys[-1]["facts"] = self.pending_facts
                 await self._redraw_sticky_caption()
             self.pending_shot = None
         hold_duration = annotation_hold_seconds(duration, annotation_duration)

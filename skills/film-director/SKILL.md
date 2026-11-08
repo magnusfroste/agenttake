@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.8.1
+version: 0.8.2
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -137,7 +137,9 @@ Don't use for:
        `rerender(session_id)`.
 
     *Done when* the render is done with the retakes in place.
-12. **Look at the film.** Call `contact_sheet(session_id)`, then
+12. **Look at the film.** Read `review_session` again: every finding has a
+    beat, what was measured and a `fix`, and `claims_to_check` lists lines
+    to compare with their screen. Call `contact_sheet(session_id)`, then
     `vision_analyze` on its image against your beat list, using the checklist
     in `references/contact-sheet-review.md`. *Done when* every beat is
     accounted for on the sheet. The session is finished now, so
