@@ -6,9 +6,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HOST=0.0.0.0 \
     PORT=8000
 
+# libatomic1: Playwright 1.65's driver needs it, and the image did not have it.
+# A change to pyproject.toml reinstalled Playwright and failed the take-01
+# build with exit 127 (2026-11-09).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
+        libatomic1 \
         python3 \
         python3-pip \
         python3-venv \
