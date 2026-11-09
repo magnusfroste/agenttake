@@ -3001,6 +3001,20 @@ async def _rehearsal_act(live: Any, action: dict, narration: str) -> tuple[dict,
     return payload, None
 
 
+REHEARSAL_TEXT_CHARS, REHEARSAL_TEXT_BEFORE = 3000, 300
+
+
+def _page_excerpt(full: str, anchor: str | None, main: str = "") -> str:
+    """What a director can read of the page: around the words the beat is
+    about, else the page's main content. The start of a page is its navigation
+    (a final-test agent could not read a Wikipedia article through it)."""
+    at = full.lower().find(" ".join(anchor.split()).lower()) if anchor else -1
+    if at >= 0:
+        start = max(0, at - REHEARSAL_TEXT_BEFORE)
+        return full[start:start + REHEARSAL_TEXT_CHARS]
+    return (" ".join(main.split()) or full)[:REHEARSAL_TEXT_CHARS]
+
+
 async def _rehearse_one(job: "FinishJob", live: Any, beat: dict, send_live: bool, out: Path) -> dict:
     number = beat["number"]
     job.stage = f"beat {number}"
@@ -3028,7 +3042,10 @@ async def _rehearse_one(job: "FinishJob", live: Any, beat: dict, send_live: bool
     if beat["shot"] != "login":
         # What the screen shows, also when the beat failed: it says why.
         report["url"] = live.page.url
-        report["page_text"] = " ".join((await live.page_text()).split())[:400]
+        full = " ".join((await live.page_text()).split())
+        anchor = beat.get("wait_for_text") or beat.get("text") or beat.get("until_text")
+        report["page_text"] = _page_excerpt(full, anchor, await live.main_text())
+        report["page_text_chars"] = len(full)
         still, frame = await live.frame_preview()
         if still:
             target = out / f"beat-{number}.jpg"

@@ -60,6 +60,9 @@ class Live:
     async def page_text(self):
         return "Where   your data went\n48% stayed"
 
+    async def main_text(self):
+        return ""
+
     async def set_shot(self, framing, zoom, ref, text, move, lift=False, fit=False):
         if self.facts:
             self.camera.keys.append({"t": 1.0, "zoom": zoom, "cx": 960.0, "cy": 540.0, "facts": self.facts})
@@ -254,3 +257,20 @@ def test_a_browser_that_will_not_start_is_reported(mods, monkeypatch):
     monkeypatch.setattr(server.BrowserSession, "create", broken)
     body = asyncio.run(server.rehearse_beats("p1", [3])).structuredContent
     assert not body["ok"] and body["error"]["type"] == "rehearsal_failed"
+
+
+NAV = "Main menu Navigation Contents Search Donate " * 40
+
+
+def test_the_page_is_read_around_the_words_the_beat_is_about(mods):
+    server, _, _ = mods
+    article = f"{NAV}The bridge reaches Peberholm, an artificial island. {'More of the article. ' * 300}"
+    excerpt = server._page_excerpt(article, "peberholm,  an artificial")
+    assert "The bridge reaches Peberholm" in excerpt and len(excerpt) == server.REHEARSAL_TEXT_CHARS
+    assert excerpt.count("Donate") < 12
+
+
+def test_without_those_words_the_main_content_is_read(mods):
+    server, _, _ = mods
+    assert server._page_excerpt(NAV, "not on the page", "The  article itself.") == "The article itself."
+    assert server._page_excerpt("Only text.", None, "") == "Only text."

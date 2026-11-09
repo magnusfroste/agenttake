@@ -32,8 +32,8 @@ You need nothing but these tools. Every reply says what comes next under
 1. **Plan.** `plan_storyboard(beats, target_seconds=60)`, and again with its
    `plan_id` until `ready` is true.
 2. **Rehearse.** `rehearse_beats(plan_id, beats=[...])` for the beats on live
-   pages. Nothing is recorded. Each answers with what the page showed, what
-   the frame cuts and a still.
+   pages. Nothing is recorded. Each answers with the page's text around the
+   beat's words, what the frame cuts and a still. Use it to read a source too.
 3. **Open one session.** `start_session` with `start_url`, `subtitles=true`,
    `color_scheme`, `show_pointer=false`, `mask=["input[type=password]",
    "[data-secret]"]`, `cta_url`, and `width` and `height` if not 1920x1080.
