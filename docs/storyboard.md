@@ -24,6 +24,61 @@ apply_retakes(session_id), rerender(session_id)   ← only if you retook a beat
 contact_sheet(session_id)              ← look at the film before you share it
 ```
 
+## The whole film, start to done
+
+You need nothing but these tools. Every reply says what comes next under
+`next`.
+
+1. **Plan.** `plan_storyboard(beats, target_seconds=60)`, and again with its
+   `plan_id` until `ready` is true.
+2. **Rehearse.** `rehearse_beats(plan_id, beats=[...])` for the beats on live
+   pages. Nothing is recorded. Each answers with what the page showed, what
+   the frame cuts and a still.
+3. **Open one session.** `start_session` with `start_url`, `subtitles=true`,
+   `color_scheme`, `show_pointer=false`, `mask=["input[type=password]",
+   "[data-secret]"]`, `cta_url`, and `width` and `height` if not 1920x1080.
+   A `title` adds a title card. The look is the signature's: pass no `accent`.
+4. **Shoot.** `shoot_storyboard(session_id, plan_id)`, and again while
+   `to_come` is not empty. `status: "shooting"` means `shoot_status` until
+   `done`.
+5. **Retake** a failed beat at most twice with `shoot_beat`, after fixing what
+   its reason names. A beat that fails twice is cut or goes to a person.
+6. **Finish.** `finish` once, then `finish_status` while it answers
+   `rendering`. If you retook a beat: `apply_retakes`, then `rerender`.
+7. **Judge.** `review_session` and `contact_sheet`. The verdict says where the
+   film stands:
+
+   | `verdict` | what it means |
+   |---|---|
+   | `fix` | Findings of high or medium severity are open and you may still mend them. `next` says what. |
+   | `ready_for_approval` | Nothing high or medium is open. Low findings are yours to weigh. |
+   | `needs_human` | What is open needs another fresh take, and that is a person's call. Report it. |
+
+8. **Mend.** In the edit when the footage is right: `edit_step`, `edit_cards`,
+   `update_step_narration`, then `rerender`. In one `fresh_take` when the
+   footage is wrong, changing only the beats the findings name. Then judge the
+   film you keep again. A fresh take can break what was fine: compare both.
+9. **Deliver.** Download the film from `video_url`, because a finished session
+   can be pruned later. Report the watch URL, the duration, each beat's status
+   and every source URL. A person approves a film and publishes it.
+
+**A score is not a verdict on the film.** The measures find what can be
+measured. Go through the contact sheet beat by beat as well. `contact_sheet`
+carries the picture in its reply; if you cannot see images, say so in your
+report instead of calling the film seen. On every beat:
+
+- It is there, in order, and its page had loaded.
+- Nothing is left open: a cookie banner, a menu, a chat bubble, a link address.
+- The picture is what the line names, and nothing plays twice.
+- Nothing secret is readable.
+
+**Text has to match the page.** `wait_for_text` and a highlight's `text` come
+from what the page renders, not from a search snippet. AgentTake opens pages
+from its own server, so a site that blocks data centres shows a bot check
+even if it opens for you: pick another source.
+
+**A friction with AgentTake itself** goes to `submit_backlog`, one thing each.
+
 ## A beat
 
 ```json

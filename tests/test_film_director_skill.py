@@ -47,7 +47,7 @@ def test_every_tool_the_skill_calls_exists(tools):
         "director_guide", "plan_storyboard", "shoot_storyboard", "shoot_beat", "apply_retakes",
         "start_session", "review_session", "finish", "finish_status", "rerender", "contact_sheet",
     }
-    assert {"plan_storyboard", "shoot_storyboard", "shoot_beat", "contact_sheet"} <= called
+    assert {"director_guide", "plan_storyboard", "contact_sheet"} <= called
     missing = called - AGENT_TOOLS - set(tools)
     assert not missing, f"the skill names tools AgentTake does not have: {sorted(missing)}"
 
@@ -60,9 +60,22 @@ def test_every_argument_the_skill_passes_exists(tools):
         properties = tools[tool].inputSchema["properties"]
         for name in re.findall(r"([a-z_]+)=", args):
             assert name in properties, f"{tool} has no argument {name}"
+
+
+def test_the_handbook_alone_can_direct_a_film(tools):
+    """Any agent has the handbook; only Hermes has the skill."""
+    handbook = (SKILL_DIR.parent.parent / "docs" / "storyboard.md").read_text(encoding="utf-8")
+    named = set(re.findall(r"`([a-z_]+)(?:\(|`)", handbook)) & set(tools)
+    for needed in ("plan_storyboard", "rehearse_beats", "start_session", "shoot_storyboard", "shoot_beat", "finish",
+                   "finish_status", "apply_retakes", "rerender", "review_session", "contact_sheet", "edit_step",
+                   "edit_cards", "update_step_narration", "fresh_take", "submit_backlog"):
+        assert needed in named, needed
     start = tools["start_session"].inputSchema["properties"]
-    for name in ("start_url", "title", "subtitles", "color_scheme", "mask", "cta_url", "width", "height"):
-        assert re.search(rf"\b{name}\b", text) and name in start, name
+    for name in ("start_url", "title", "subtitles", "color_scheme", "mask", "cta_url", "width", "height", "show_pointer"):
+        assert re.search(rf"\b{name}\b", handbook) and name in start, name
+    assert "vision_analyze" not in handbook
+    for verdict in ("fix", "ready_for_approval", "needs_human"):
+        assert f"`{verdict}`" in handbook
 
 
 def test_the_shot_menu_matches_the_storyboard_shots():
