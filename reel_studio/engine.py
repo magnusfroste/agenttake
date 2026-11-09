@@ -825,6 +825,16 @@ class BrowserSession:
         except PlaywrightError:
             return ""
 
+    async def main_text(self) -> str:
+        """The page's main content, without its navigation, where it has one."""
+        try:
+            return await self.page.evaluate(
+                "() => { const el = document.querySelector('main, article, [role=main], #content');"
+                " return el ? el.innerText : ''; }"
+            )
+        except PlaywrightError:
+            return ""
+
     async def capture_screenshot(self) -> Path:
         screenshot = self.directory / f"screenshot-{int(time.time() * 1000)}.jpg"
         if await self._grab_display(screenshot, scale_to=f"{self.width}:{self.height}"):
