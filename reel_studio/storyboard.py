@@ -935,6 +935,17 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
     raise ValueError(f"unknown shot {shot!r}")
 
 
+def rehearsal_ops(beat: dict, send_live: bool = False) -> list[dict]:
+    """A beat's recipe for a rehearsal: it opens its own page, and a live
+    answer stops before the prompt is sent unless asked to send it, because a
+    sent prompt lands in the product's log and moves its numbers."""
+    ops = recipe(beat, retake=True)
+    if beat["shot"] != "live_answer" or send_live:
+        return ops
+    stop = next(number for number, op in enumerate(ops) if op["op"] == "answer_start")
+    return [op for op in ops[:stop] if op.get("action", {}).get("ref") != "@message"]
+
+
 # The render's own card (the card action, where this AgentTake has it) takes
 # one or two short lines on the brand colour, a blur of the frame before, or a
 # hex colour, and fades in and out. A card it cannot draw — an image behind

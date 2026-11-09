@@ -236,7 +236,7 @@ None of these can score `excellent`.
 |---|---|
 | **Session** | `start_session`, `get_status`, `finish`, `finish_status`, `list_sessions`, `get_session`, `delete_session`, `prune` |
 | **Directing** | `observe`, `act`, `act_batch`, `assert_visible`, `begin_shot`, `preview_shot`, `verify_shot`, `review_session` |
-| **Storyboard** | `director_guide`, `plan_storyboard`, `shoot_storyboard`, `shoot_beat`, `shoot_status`, `apply_retakes`, `fresh_take` |
+| **Storyboard** | `director_guide`, `plan_storyboard`, `rehearse_beats`, `rehearse_status`, `shoot_storyboard`, `shoot_beat`, `shoot_status`, `apply_retakes`, `fresh_take` |
 | **After finish** | `storyboard`, `contact_sheet`, `edit_step`, `update_step_narration`, `edit_cards`, `rerender`, `set_watch_page` |
 | **Voices** | `list_voices` |
 | **Roadmap** | `submit_backlog`, `list_backlog`, `update_backlog` |
