@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import re
 import sys
 import time
@@ -20,7 +21,8 @@ from pathlib import Path
 
 # The same file sensitive.TEST_NUMBERS_FILE reads. This module imports nothing
 # of AgentTake's, so the image fetches the list in a layer of its own.
-TEST_NUMBERS_FILE = Path(__file__).parent / "data" / "skatteverket-test-personnummer.txt.gz"
+TEST_NUMBERS_FILE = Path(os.environ.get("REEL_TEST_NUMBERS")
+                         or Path(__file__).parent / "data" / "skatteverket-test-personnummer.txt.gz")
 
 DATASET = "https://skatteverket.entryscape.net/rowstore/dataset/b4de7df7-63c0-4e7e-bb59-1f156a591763/json"
 PAGE = 500

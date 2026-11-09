@@ -13,12 +13,15 @@ from __future__ import annotations
 
 from datetime import date
 import gzip
+import os
 from functools import lru_cache
 from pathlib import Path
 import re
 from typing import Any, Sequence
 
-TEST_NUMBERS_FILE = Path(__file__).parent / "data" / "skatteverket-test-personnummer.txt.gz"
+# REEL_TEST_NUMBERS names the file in the image (see Dockerfile).
+TEST_NUMBERS_FILE = Path(os.environ.get("REEL_TEST_NUMBERS")
+                         or Path(__file__).parent / "data" / "skatteverket-test-personnummer.txt.gz")
 
 # 19811218-2392, 811218-2392, 811218+2392, 198112182392. Ten digits with no
 # separator are left out: that is what a phone number or an order number looks
