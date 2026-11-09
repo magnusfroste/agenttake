@@ -17,7 +17,7 @@ Ask anything — simple or hard…"""
 def test_only_the_new_lines_are_reported():
     after = BEFORE + """
 YOU
-Summarise the case for customer 811218-9876 who complained about an invoice.
+Summarise the case for customer 811218-2392 who complained about an invoice.
 blocked · fail-closed
 Stopped by your policy — nothing was sent to any model."""
     shown = text_that_appeared(BEFORE, after)
