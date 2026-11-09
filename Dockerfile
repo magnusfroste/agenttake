@@ -41,6 +41,7 @@ RUN apt-get update \
 # a real one out of a film. Not in git; its own layer, so a code change does
 # not fetch it again. A build without network still works: every number is
 # then stopped.
+ENV REEL_TEST_NUMBERS=/app/test-data/skatteverket-test-personnummer.txt.gz
 COPY reel_studio/fetch_test_numbers.py ./reel_studio/fetch_test_numbers.py
 RUN python3 reel_studio/fetch_test_numbers.py
 
