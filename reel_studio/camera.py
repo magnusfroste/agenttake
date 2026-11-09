@@ -31,6 +31,18 @@ FOLLOW_MARGIN = 0.05
 # Space kept between a wide target's first edge and the frame's edge.
 AIM_PAD = 0.08
 CAMERA_FILE = "camera.json"
+# Space kept beside a row of panels, as a share of the page's width.
+PANEL_GUTTER = 0.012
+# A panel showing less than this, or more than PARTLY_MAX, is out of frame or
+# in it; between the two the frame's edge runs through it.
+PARTLY_MIN, PARTLY_MAX = 0.08, 0.92
+# A line held this long gets a second, gentle camera move. Sluss's flows beat
+# stood still for 11 s under its line, and agents left the finding open.
+HOLD_SECONDS = 7.0
+HOLD_PUSH = 1.07
+HOLD_EASE = 1.6
+# Keep this far from what the shot's own move and the next cut are doing.
+HOLD_CLEAR = 1.5
 
 SCALE_CANDIDATES = (4 / 3, 1.5, 2.0)
 # 2560x1440 is what a 2-core host records at 25 fps without dropping frames.
@@ -81,6 +93,12 @@ def capture_scale(width: int, height: int, output: tuple[int, int] | None = None
 def _ease_term(t: str, start: float, seconds: float = EASE_SECONDS) -> str:
     u = f"clip(({t}-{start:.3f})/{max(seconds, 0.001):.3f},0,1)"
     return f"({u}*{u}*(3-2*{u}))"
+
+
+def panel_is_cut(panel: dict, left: float, right: float) -> bool:
+    """Whether a frame from left to right runs through this panel."""
+    shown = (min(panel["x"] + panel["width"], right) - max(panel["x"], left)) / panel["width"]
+    return PARTLY_MIN < shown < PARTLY_MAX
 
 
 @dataclass
@@ -205,6 +223,87 @@ class Camera:
         if box.get("height", 0) > 0:
             zoom = min(zoom, self.height * (usable - 2 * lift) / box["height"])
         return max(zoom, 1.0)
+
+    def frame_panels(self, panels: list[dict], box: dict, zoom: float, keep_zoom: bool = False) -> dict:
+        """Frame a page of panels so the frame's edge runs between them.
+
+        Sluss's audit beat framed "Audit chain" and left an empty third of the
+        frame beside a chart cut in two (take 7). The focus's panel is shown
+        whole, and the left edge is put where it cuts the fewest panels in that
+        row. Without a camera the beat asked for, the zoom comes down until
+        the row fits. Returns {} when the focus is in no panel.
+        """
+        cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        holding = [p for p in panels if p["x"] <= cx <= p["x"] + p["width"] and p["y"] <= cy <= p["y"] + p["height"]]
+        if not holding:
+            return {}
+        focus = min(holding, key=lambda p: p["width"] * p["height"])
+
+        def beside(panel: dict) -> bool:
+            overlap = min(panel["y"] + panel["height"], focus["y"] + focus["height"]) - max(panel["y"], focus["y"])
+            return overlap >= 0.3 * min(panel["height"], focus["height"])
+
+        row = [panel for panel in panels if beside(panel)]
+        left, right = min(p["x"] for p in row), max(p["x"] + p["width"] for p in row)
+        gutter = self.width * PANEL_GUTTER
+        usable = self.width - 2 * gutter
+        row_zoom, panel_zoom = max(1.0, usable / (right - left)), max(1.0, usable / focus["width"])
+        level = max(zoom, 1.0) if keep_zoom else max(1.0, min(zoom, row_zoom))
+        view = self.width / level
+        limit = self.width - view
+        centre = focus["x"] + focus["width"] / 2
+        edges = {min(max(edge, 0.0), limit) for edge in (
+            focus["x"] - gutter, focus["x"] + focus["width"] + gutter - view,
+            left - gutter, right + gutter - view, centre - view / 2)}
+
+        def cost(edge: float) -> tuple[bool, int, float]:
+            whole = edge <= focus["x"] and focus["x"] + focus["width"] <= edge + view
+            return (not whole, sum(panel_is_cut(p, edge, edge + view) for p in row), abs(edge + view / 2 - centre))
+
+        best = min(sorted(edges), key=cost)
+        return {"zoom": level, "cx": best + view / 2, "panels": row,
+                "row_camera": round(row_zoom, 2), "panel_camera": round(panel_zoom, 2)}
+
+    def hold_moves(self, holds: list[tuple[float, float]]) -> list[dict]:
+        """The moves that keep a long line from standing still.
+
+        ``holds`` is (where the line starts, how long it lasts) on the
+        recording's clock. Only a shot the camera is already framing gets one:
+        such a shot has its own move out, so the frame does not stay pushed
+        in. Each move is {t, seconds_in, zoom, cx, cy}.
+        """
+        moves: list[dict] = []
+        for start, seconds in holds:
+            if seconds < HOLD_SECONDS:
+                continue
+            opening = next((key for key in self.keys if abs(float(key["t"]) - start) < 0.06), None)
+            if opening is None or float(opening["zoom"]) <= 1.0:
+                continue
+            if any(start + HOLD_CLEAR < float(key["t"]) < start + seconds - HOLD_CLEAR for key in self.keys):
+                continue
+            zoom, cx, cy = float(opening["zoom"]), float(opening["cx"]), float(opening["cy"])
+            focus = (opening.get("facts") or {}).get("focus") or {}
+            ceiling = float((opening.get("facts") or {}).get("panel_camera") or MAX_ZOOM)
+            count = 2 if seconds >= 2 * HOLD_SECONDS else 1
+            for number in range(1, count + 1):
+                level = min(zoom * HOLD_PUSH, MAX_ZOOM, max(ceiling, zoom))
+                if level <= zoom + 1e-3:
+                    break
+                if focus.get("width"):
+                    cx += (focus["x"] + focus["width"] / 2 - cx) * 0.25
+                    cy += (focus["y"] + focus["height"] / 2 - cy) * 0.25
+                seconds_in = seconds * number / (count + 1)
+                moves.append({"t": round(start + seconds_in, 3), "seconds_in": round(seconds_in, 3),
+                              "zoom": round(level, 4), "cx": round(cx, 1), "cy": round(cy, 1)})
+                zoom = level
+        return moves
+
+    def with_hold_moves(self, holds: list[tuple[float, float]]) -> "Camera":
+        """This camera with the hold moves added: for the render only, so a
+        rerender starts from the shots as they were set up."""
+        moves = self.hold_moves(holds)
+        keys = [{key: move[key] for key in ("t", "zoom", "cx", "cy")} | {"ease": HOLD_EASE} for move in moves]
+        return Camera(self.width, self.height, self.scale, sorted([*self.keys, *keys], key=lambda key: float(key["t"])))
 
     def needs_follow(self, box: dict | None) -> tuple[float, float] | None:
         """The centre to pan to so a target is inside the view, if needed."""

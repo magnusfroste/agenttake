@@ -37,6 +37,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-inter fonts-ibm-plex \
     && rm -rf /var/lib/apt/lists/*
 
+# Skatteverket's open list of test personal numbers, for the check that keeps
+# a real one out of a film. Not in git; its own layer, so a code change does
+# not fetch it again. A build without network still works: every number is
+# then stopped.
+COPY reel_studio/fetch_test_numbers.py ./reel_studio/fetch_test_numbers.py
+RUN python3 reel_studio/fetch_test_numbers.py
+
 COPY README.md ./
 COPY reel_studio ./reel_studio
 COPY examples ./examples

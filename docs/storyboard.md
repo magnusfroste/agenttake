@@ -56,13 +56,14 @@ You need nothing but these tools. Every reply says what comes next under
 
 8. **Mend.** In the edit when the footage is right: `edit_step`, `edit_cards`,
    `update_step_narration`, then `rerender`. When one beat's footage is wrong,
-   change it with `plan_storyboard(beats, plan_id=...)` and
+   change it with `edit_beat(beat=n, changes={...}, session_id=...)` and
    `reshoot_beat(session_id, beat=n)`: only that beat is shot again, and the
    film is cut with it. When most of the film is wrong, one `fresh_take`. It
    can break what was fine, so compare both. Then judge the film again.
 9. **Deliver.** Download the film from `video_url`, because a finished session
    can be pruned later. Report the watch URL, the duration, each beat's status
-   and every source URL. A person approves a film and publishes it.
+   and every source URL. A person approves a film on its watch page, and only
+   then is it listed in the theater. Re-rendering withdraws the approval.
 
 **A score is not a verdict on the film.** The measures find what can be
 measured. Go through the contact sheet beat by beat as well. `contact_sheet`
@@ -264,3 +265,17 @@ beats. Change one with `plan_storyboard(beats, plan_id=<the new plan_id>)`,
 then `shoot_storyboard(<the new session_id>)`. Unchanged lines reuse their
 voice clips, so it costs minutes, not quota. Delete the flawed session once
 the new take passes.
+
+## Data that belongs to someone
+
+A film is a publication. `plan_storyboard` refuses a beat that types or says a
+personal number outside Skatteverket's test list, a card number or a secret, and
+`review_session` stops at `needs_human` when such a thing is on a screen in the
+film. Use test data. Swedish test personal numbers are in
+[Skatteverket's open list](https://skatteverket.entryscape.net/rowstore/dataset/b4de7df7-63c0-4e7e-bb59-1f156a591763), and
+AgentTake carries a copy, so nothing has to be looked up elsewhere.
+
+`get_plan(session_id)` reads a storyboard back, and `edit_beat` changes one
+beat of it. After a retake that replaced something that must not stay,
+`purge_replaced_takes(session_id, confirm=True)` paints the old take black in the
+recording and deletes its page text, voice clips and screenshots.

@@ -23,3 +23,6 @@ test = [
 
 [tool.setuptools.packages.find]
 include = ["reel_studio*"]
+
+[tool.setuptools.package-data]
+reel_studio = ["data/*.gz"]

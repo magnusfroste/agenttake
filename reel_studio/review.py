@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
+from .camera import HOLD_EASE, panel_is_cut
 from .render import FONT_PATH, STORYBOARD_DIR, storyboard_still_at
 
 
@@ -483,9 +484,11 @@ def lost_step_findings(parts: Sequence[dict], steps: Sequence[dict]) -> list[dic
 
 
 def film_findings(frames: Sequence[bytes], parts: Sequence[dict], steps: Sequence[dict],
-                  fps: int = SCAN_FPS) -> list[dict]:
+                  fps: int = SCAN_FPS, holds: dict[int, list[float]] | None = None) -> list[dict]:
     """What shows only in the moving picture: a page that had not loaded, a
-    line that runs over the next page, a picture that stands still too long."""
+    line that runs over the next page, a picture that stands still too long.
+    ``holds`` is, per step, where AgentTake's own hold moves fall in its line:
+    that change of picture is the camera, not another page."""
     if len(frames) < 2:
         return []
     visible = [s for s in steps if s.get("offset_seconds") is not None and not s.get("offscreen")]
@@ -534,6 +537,8 @@ def film_findings(frames: Sequence[bytes], parts: Sequence[dict], steps: Sequenc
                 or not (step.get("narration_text") or "").strip()
                 or step.get("action_type") in ("scroll", "card") or float(step.get("speed") or 1.0) > 1.0):
             continue
+        if any(at - 1.0 <= into <= at + HOLD_EASE + 1.0 for at in (holds or {}).get(idx, [])):
+            continue
         if (change >= HARD_CHANGE and into >= HARD_FROM) or (change >= SOFT_CHANGE and into >= SOFT_FROM):
             reported.add(idx)
             findings.append({
@@ -568,12 +573,18 @@ def film_findings(frames: Sequence[bytes], parts: Sequence[dict], steps: Sequenc
 # What a shot framed. Recorded when the shot is set up, because only the page
 # knows where its words are: Sluss's audit beat cut "verify offline" at the
 # frame's edge, and a README beat cut its own headline (take 3).
+# A page's own menus and rails: no camera can frame a chat app without cutting
+# its sidebar, so a sidebar cut by the frame is no flaw (Hermes spent three takes
+# and its fresh take on one, Sluss take 7).
+_PAGE_CHROME = 'nav, aside, [role=navigation], [role=complementary], [class*="sidebar" i]'
+
 SHOT_FACTS_JS = """(view) => {
+  const PAGE_CHROME = '""" + _PAGE_CHROME + """';
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const range = document.createRange();
   const right = view.x + view.w, bottom = view.y + view.h;
   let lines = 0, count = 0;
-  const cut = [];
+  const cut = [], shown = [];
   for (let node, seen = 0; (node = walker.nextNode()) && seen < 6000; seen++) {
     const words = node.textContent.replace(/\\s+/g, " ").trim();
     const parent = node.parentElement;
@@ -585,13 +596,41 @@ SHOT_FACTS_JS = """(view) => {
       if (rect.width < 3 || rect.height < 3) continue;
       if (rect.bottom <= view.y || rect.top >= bottom || rect.right <= view.x || rect.left >= right) continue;
       lines += 1;
+      if (shown[shown.length - 1] !== words) shown.push(words);
       const side = rect.left < view.x - 2 ? "left" : rect.right > right + 2 ? "right" : null;
-      if (!side) continue;
+      if (!side || parent.closest(PAGE_CHROME)) continue;
       count += 1;
       if (cut.length < 60) cut.push({text: words.slice(0, 48), side, top: rect.top, bottom: rect.bottom});
     }
   }
-  return {lines, cut_count: count, cut};
+  return {lines, cut_count: count, cut, frame_text: shown.join("\\n").slice(0, 8000)};
+}"""
+
+# The cards of a page, in viewport pixels. A painted box is a panel; one that
+# holds panels side by side is the page's layout, not a panel.
+PANELS_JS = """() => {
+  const chrome = '""" + _PAGE_CHROME + """';
+  const candidates = [];
+  for (const el of document.querySelectorAll("div, section, article, figure, table, li")) {
+    if (candidates.length >= 300) break;
+    const box = el.getBoundingClientRect();
+    if (box.width < 120 || box.height < 40 || box.width > innerWidth * 0.96) continue;
+    if (box.bottom <= 0 || box.top >= innerHeight || el.closest(chrome)) continue;
+    const style = getComputedStyle(el);
+    const painted = (style.backgroundColor !== "rgba(0, 0, 0, 0)" && style.backgroundColor !== "transparent")
+      || (parseFloat(style.borderTopWidth) > 0 && style.borderTopStyle !== "none")
+      || style.boxShadow !== "none";
+    if (!painted || style.visibility === "hidden" || !(el.innerText || "").trim()) continue;
+    candidates.push({el, x: box.x, y: box.y, width: box.width, height: box.height});
+  }
+  const within = (a, b) => a !== b && b.el.contains(a.el);
+  const sideBySide = (panel) => {
+    const inner = candidates.filter((other) => within(other, panel));
+    return inner.some((a) => inner.some((b) => a.x + a.width <= b.x + 1));
+  };
+  const panels = candidates.filter((panel) => !sideBySide(panel));
+  return panels.filter((panel) => !panels.some((outer) => within(panel, outer)))
+    .map(({x, y, width, height}) => ({x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height)}));
 }"""
 
 # Most of the focus box has to be in the frame.
@@ -602,6 +641,21 @@ NEAR_FOCUS_LINES = 1.5
 CUT_SHARE = 0.4
 # The focus text as a share of the frame's height: 24 px in a 1080p film.
 SMALL_TEXT = 0.022
+
+
+def frame_texts(camera: Any, steps: Sequence[dict]) -> dict[int, str]:
+    """What each framed shot had inside its frame, by step: a chat's history
+    in a sidebar the camera crops is on the page and not in the film."""
+    if camera is None:
+        return {}
+    found: dict[int, str] = {}
+    for step in steps:
+        if step.get("offset_seconds") is None:
+            continue
+        key = next((key for key in camera.keys if abs(float(key["t"]) - float(step["offset_seconds"])) < 0.06), None)
+        if key is not None and isinstance((key.get("facts") or {}).get("frame_text"), str):
+            found[int(step.get("idx", 0))] = key["facts"]["frame_text"]
+    return found
 
 
 def shot_findings(camera: Any, steps: Sequence[dict]) -> list[dict]:
@@ -650,14 +704,30 @@ def shot_findings(camera: Any, steps: Sequence[dict]) -> list[dict]:
                             + f': "{sample[0]["text"]}" runs off the {sample[0]["side"]} edge.'),
                 "fix": f"Set the beat's camera below {zoom:g}, or lower its page zoom, and reshoot_beat. rehearse_beats shows the frame first.",
             })
+        panels_cut = [panel for panel in facts.get("panels") or []
+                      if panel_is_cut(panel, view["x"], view["x"] + view["w"])]
+        row_camera = float(facts.get("row_camera") or 0.0)
+        if panels_cut:
+            findings.append({
+                **common, "category": "panel_cut_at_edge", "severity": "low",
+                "measured": {"panels_cut": len(panels_cut), "zoom": zoom, "whole_row_camera": row_camera},
+                "message": f"The frame's edge runs through {len(panels_cut)} of the panels beside the focus at zoom {zoom:g}.",
+                "fix": f"Set the beat's camera to {row_camera:g} to keep the row whole, and reshoot_beat."
+                       if row_camera >= 1.0 else "This row is wider than the frame: show one panel, or lower its page zoom.",
+            })
         font = float(facts.get("font_px") or 0.0)
         if font and font * zoom / camera.height < SMALL_TEXT:
+            panel_camera = float(facts.get("panel_camera") or 0.0)
             findings.append({
                 **common, "category": "focus_text_small", "severity": "low",
-                "measured": {"text_share_of_height": round(font * zoom / camera.height, 4), "zoom": zoom},
+                "measured": {"text_share_of_height": round(font * zoom / camera.height, 4), "zoom": zoom,
+                             **({"whole_panel_camera": panel_camera} if panel_camera else {})},
                 "message": f"What step {idx}'s line is about is {font * zoom / camera.height:.1%} of the frame's height: "
                            "hard to read in a feed on a phone.",
-                "fix": "Raise the beat's camera, and reshoot_beat. rehearse_beats shows the frame first.",
+                "fix": ("A closer camera would cut the panel. Raise the beat's page zoom instead, and reshoot_beat."
+                        if panel_camera and zoom >= panel_camera else
+                        f"Raise the beat's camera, at most to {panel_camera:g} to keep its panel whole, and reshoot_beat."
+                        if panel_camera else "Raise the beat's camera, and reshoot_beat. rehearse_beats shows the frame first."),
             })
     return findings
 

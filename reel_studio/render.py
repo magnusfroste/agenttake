@@ -1139,6 +1139,7 @@ def segmented_render(
     config = config or RenderConfig()
     if camera is not None:
         output_size = camera.output_size(output_size)
+        camera = camera.with_hold_moves([(float(offset), float(seconds)) for offset, clip, seconds in steps if clip is not None])
     video_duration = probe_duration(video_path)
     lapsing = speeds is not None and any(speed and speed > 1.0 for speed in speeds)
     cards = load_cards(video_path.parent)

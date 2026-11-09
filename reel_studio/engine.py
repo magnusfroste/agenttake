@@ -56,7 +56,7 @@ from .annotations import (
 )
 from .refs import semantic_ref
 from . import signature as sig
-from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, SHOT_FACTS_JS, describe_cover, focus_covered
+from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, PANELS_JS, SHOT_FACTS_JS, describe_cover, focus_covered
 from .schema import resolve_secret, secret_names, Action, mask_stylesheet
 from .tts import synthesize
 
@@ -1113,6 +1113,8 @@ class BrowserSession:
         move_seconds: float | None = None,
         lift: bool = False,
         fit: bool = False,
+        panels: bool = False,
+        keep_zoom: bool = False,
     ) -> dict:
         """Aim the camera for the next step: framing, or an explicit zoom, on a focus.
 
@@ -1122,13 +1124,16 @@ class BrowserSession:
         of the band burned-in subtitles take: a highlighted quote under the
         subtitle of the line that reads it cannot be read. ``fit`` lowers the
         zoom, when it must, until the whole focus is in frame: a quote the
-        line reads cannot lose its end off the edge.
+        line reads cannot lose its end off the edge. ``panels`` frames a page
+        of cards so the frame's edge runs between them (Camera.frame_panels);
+        ``keep_zoom`` is a zoom the beat asked for, which it then does not lower.
         """
         level = zoom if zoom is not None else FRAMING_ZOOM.get(framing, 1.0)
         level = max(1.0, level)
         asked = level
         box = None
         box_is_text = False
+        panel_frame: dict = {}
         note = ""
         if level > 1.0:
             if focus_ref and focus_ref in self.refs and not self.refs_stale:
@@ -1155,6 +1160,11 @@ class BrowserSession:
                 # Words are read from their start: frame a text focus from
                 # its first word, not around its middle.
                 cx, cy = self.camera.aim(box, level, lead=box_is_text)
+                if panels:
+                    panel_frame = await self._frame_panels(box, level, keep_zoom)
+                    if panel_frame:
+                        level, cx = panel_frame["zoom"], panel_frame["cx"]
+                        cy = self.camera.aim(box, level)[1]
             else:
                 cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
             if lift:
@@ -1174,11 +1184,21 @@ class BrowserSession:
             frame = self.camera.view(state if level > 1.0 else (1.0, 0.0, 0.0))
             result["camera_frame"] = {k: round(frame[k]) for k in ("x", "y", "w", "h")}
             self.pending_facts = await self._shot_facts(frame, box, target if box else None) if level > 1.0 else None
+            if self.pending_facts and panel_frame:
+                self.pending_facts.update({key: panel_frame[key] for key in ("panels", "row_camera", "panel_camera")})
         if box:
             result["camera_centre"] = {"x": round(cx or 0), "y": round(cy or 0)}
         if note:
             result["camera_note"] = note
         return result
+
+    async def _frame_panels(self, box: dict, zoom: float, keep_zoom: bool) -> dict:
+        """Where to put the frame on a page of panels; {} when it has none."""
+        try:
+            found = await self.page.evaluate(PANELS_JS)
+        except PlaywrightError:
+            return {}
+        return self.camera.frame_panels(found, box, zoom, keep_zoom) if self.camera is not None and found else {}
 
     async def _shot_facts(self, frame: dict, box: dict | None, target: Locator | None) -> dict | None:
         """What this shot will have in its frame, for the review."""

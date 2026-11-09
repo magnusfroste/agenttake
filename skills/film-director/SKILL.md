@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.9.0
+version: 0.10.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -118,5 +118,7 @@ brief, and never publish a film yourself.
 ## Verification
 
 - `plan_storyboard` reported `ready: true`.
+- Every personal number, card or login in the film is test data. A number outside
+  Skatteverket's test list stops the plan and the review.
 - `review_session` gave a `verdict`, and your report states it with what is open.
 - The MP4 is on disk and the report lists every source URL.
