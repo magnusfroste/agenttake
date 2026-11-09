@@ -118,7 +118,15 @@ def transport_security_from_env() -> TransportSecuritySettings:
     )
 
 
-mcp = FastMCP("agenttake", transport_security=transport_security_from_env())
+mcp = FastMCP(
+    "agenttake",
+    instructions=(
+        "AgentTake shoots narrated web films. To direct one, call director_guide first: it has the "
+        "whole procedure. Then every reply says what comes next under `next`, and after finish "
+        "review_session gives a `verdict`: fix, ready_for_approval or needs_human."
+    ),
+    transport_security=transport_security_from_env(),
+)
 sessions: dict[str, BrowserSession] = {}
 
 
@@ -2662,7 +2670,8 @@ async def plan_storyboard(
         "next": (
             f"Fix the {fix_count_words(fixes)} marked fix, then plan_storyboard(beats, plan_id={plan_id!r}) again."
             if fixes else
-            f"start_session(start_url=<the first beat's url>, ...), then shoot_storyboard(session_id, plan_id={plan_id!r})."
+            f"Try the beats on live pages first: rehearse_beats(plan_id={plan_id!r}, beats=[...]). "
+            f"Then start_session(start_url=<the first beat's url>, ...), then shoot_storyboard(session_id, plan_id={plan_id!r})."
             if not attached else
             "shoot_storyboard(session_id)."
         ),
@@ -2942,11 +2951,16 @@ async def fresh_take(
                           "message": f"{session_id} was started before AgentTake kept a session's settings"},
                 "hint": "start_session again with the same settings, then plan_storyboard(beats) and shoot_storyboard."}
     # The signature a film was shot in is a record, not a setting: the fresh
-    # take is shot in the house style of today, and records that.
-    started = await start_session(**{key: value for key, value in start_args.items() if key != "signature"})
+    # take is shot in the house style of today, and records that. The same
+    # goes for how many fresh takes it descends from.
+    started = await start_session(**{key: value for key, value in start_args.items()
+                                     if key not in ("signature", "generation")})
     if not started.get("session_id"):
         return started
     new_id = started["session_id"]
+    fresh = store.get_session(new_id) or {}
+    store.update_session_start_args(new_id, {**(fresh.get("start_args") or start_args),
+                                             "generation": int(start_args.get("generation") or 0) + 1})
     beats = [{**beat, "state": {"status": "planned", "attempts": []}} for beat in plan["beats"]]
     plan_id = uuid.uuid4().hex[:12]
     store.save_storyboard(plan_id, beats, plan["checklist"], plan.get("target_seconds") or 60, new_id)
@@ -3084,6 +3098,9 @@ async def _rehearsal_reply(job: "FinishJob") -> CallToolResult:
     except asyncio.TimeoutError:
         return feedback_result({"ok": True, "status": "rehearsing", "job_id": job.session_id, "stage": job.stage,
                                 "hint": "Still rehearsing. Call rehearse_status(job_id) until status is done."})
+    if result.get("status") == "done":
+        result = {**result, "next": "A beat that failed or a finding: change it with plan_storyboard(beats, plan_id) "
+                                    "and rehearse it again. Otherwise start_session, then shoot_storyboard."}
     return feedback_result(result, *[beat.get("still") for beat in result.get("beats", [])])
 
 
@@ -3551,7 +3568,8 @@ async def contact_sheet(
     # The version keeps a viewer from showing the sheet of an earlier render.
     url = f"{base}/videos/{session_id}/{STORYBOARD_DIR}/{CONTACT_SHEET_NAME}?v={int(sheet.stat().st_mtime)}"
     small = await asyncio.to_thread(checks.write_small_sheet, sheet, frames_dir / f"small-{CONTACT_SHEET_NAME}")
-    return feedback_result({"ok": True, "url": url, "path": str(sheet), "duration": round(duration, 2), **layout}, small)
+    return feedback_result({"ok": True, "url": url, "path": str(sheet), "duration": round(duration, 2), **layout,
+                            "next": "Go through it beat by beat against your lines. Then review_session's verdict."}, small)
 
 
 @mcp.tool()
@@ -3694,7 +3712,7 @@ async def update_step_narration(
         session_id, index, narration.strip(), voice.strip() if voice else None
     )
     kept = bool(narration.strip()) and _keep_in_storyboard(session_id, index, line=narration.strip())
-    return {"ok": True, "step": updated, "in_storyboard": kept}
+    return {"ok": True, "step": updated, "in_storyboard": kept, "next": "rerender(session_id) speaks the line."}
 
 
 BRANDING_FIELDS = ("title", "subtitle", "cta_text", "cta_url")
@@ -4035,6 +4053,7 @@ async def _rerender(job: "FinishJob", session: dict, voice: str | None, provider
         # after a move to another hostname the stored URL is dead.
         "video_url": public_video_url(session_id) or session["video_url"],
         "warnings": warnings,
+        "next": "review_session(session_id): its verdict says whether the film is ready.",
     }
 
 
@@ -4142,6 +4161,10 @@ async def review_session(session_id: str) -> dict:
     measured, and in `fix` what to do about it. claims_to_check lists the lines
     that state a share ("nearly half") with the percentages on their screen:
     compare them yourself.
+
+    `verdict` says where the film stands: not_finished, fix (with what to do
+    in `next`), ready_for_approval, or needs_human when what is left takes a
+    person. A person approves a film; nothing here publishes one.
     """
     session = store.get_session(session_id)
     if session is None:
@@ -4339,9 +4362,58 @@ async def review_session(session_id: str) -> dict:
     }
     if claims_to_check:
         result["claims_to_check"] = claims_to_check
+    result.update(_verdict(session_id, session, findings, claims_to_check))
     if comparison is not None:
         result["beats"] = comparison
     return result
+
+
+# A fresh take costs a whole shoot and can break beats that were fine, so an
+# agent gets one before a person decides (Sluss take 6's fresh take cut its
+# GitHub beat mid-word while it mended the audit beat).
+MAX_UNATTENDED_FRESH_TAKES = 1
+
+
+def _verdict(session_id: str, session: dict, findings: list[dict], claims_to_check: list[dict]) -> dict:
+    """Where the film stands, and what to do next: what lets an agent run the
+    loop from the replies alone."""
+    high = [finding for finding in findings if finding["severity"] == "high"]
+    if session.get("status") != "finished":
+        return {"verdict": "not_finished", "next": (
+            ["Retake what the high findings name with shoot_beat(session_id, beat=n), then finish(session_id)."]
+            if high else ["finish(session_id), then follow finish_status if it answers with a job_id."]
+        )}
+    plan = store.session_storyboard(session_id)
+    waiting = [beat for beat in (plan or {}).get("beats", [])
+               if len(beat.get("state", {}).get("attempts") or []) > 1 and not beat["state"].get("placed")
+               and beat["state"]["attempts"][-1].get("ok") and beat["state"]["attempts"][-1].get("visible")]
+    if waiting:
+        return {"verdict": "fix", "next": [
+            "Retakes are not in place yet: apply_retakes(session_id), then rerender(session_id), then review_session(session_id)."
+        ]}
+    open_findings = [finding for finding in findings if finding["severity"] in ("high", "medium")]
+    compare = (["Compare each line in claims_to_check with the percentages beside it. A line the screen "
+                "contradicts is changed with update_step_narration, then rerender."]
+               if claims_to_check else [])
+    look = "Look at contact_sheet(session_id) against your beats: the measures cannot tell whether the picture is what the line means."
+    if not open_findings:
+        return {"verdict": "ready_for_approval", "next": [
+            *compare, look, "Hand the film to whoever commissioned it to approve. A person approves it and publishes it."
+        ]}
+    lines = [f"Beat {finding.get('beat', '?')} ({finding.get('label') or finding.get('location')}), "
+             f"{finding['category']}: {finding.get('fix') or finding['message']}" for finding in open_findings[:8]]
+    used = int((session.get("start_args") or {}).get("generation") or 0)
+    if used < MAX_UNATTENDED_FRESH_TAKES:
+        return {"verdict": "fix", "next": [
+            *lines, *compare,
+            "Mend in the edit when the footage is right (edit_step, edit_cards, update_step_narration, then "
+            "rerender). When the footage is wrong, make one fresh_take(session_id), changing only the beats "
+            "named here. Then review_session on the film you keep.",
+        ]}
+    return {"verdict": "needs_human", "next": [
+        f"This film has had {used} fresh take; another one is a person's call. Mend what the edit can, then report what is left:",
+        *lines, *compare,
+    ]}
 
 
 def _place_findings(findings: list[dict], session_id: str, steps: list[dict], parts: list[dict]) -> None:
@@ -4591,7 +4663,8 @@ async def _render_and_publish(job: FinishJob, session: Any) -> dict:
     sessions.pop(session_id, None)
     # After subtitles: burning them rewrites the file, and the URL is versioned by it.
     return {"ok": True, "status": "done", "video_path": str(video_path),
-            "video_url": public_video_url(session_id) or video_url, "review": review}
+            "video_url": public_video_url(session_id) or video_url, "review": review,
+            **{key: review[key] for key in ("verdict", "next") if isinstance(review, dict) and key in review}}
 
 
 @mcp.tool()

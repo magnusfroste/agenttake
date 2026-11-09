@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.8.3
+version: 0.9.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -15,9 +15,9 @@ metadata:
 
 You direct a short film. You do the research, choose the story and write every
 line. AgentTake shoots it with its recipes, so you never issue browser actions
-yourself. The tools come from the AgentTake MCP server: `director_guide`,
-`plan_storyboard`, `shoot_storyboard`, `shoot_beat`, `shoot_status`, `apply_retakes`, `fresh_take` and the
-session tools.
+yourself. The tools come from the AgentTake MCP server; `director_guide` is
+the whole procedure, and this skill adds what depends on your own tools: the
+research, the writing and showing the plan to a person.
 
 Sixteen takes of one film failed on procedure and never on writing: a skipped
 intro, a menu left open, a glide reported as moving when it did not. This skill
@@ -71,7 +71,8 @@ Don't use for:
    `text`). If you cannot find a public source, cut the claim; never round,
    merge or invent a figure. *Done when* every number and quote in your lines
    has a URL, and its `text` was found verbatim in that page's extract.
-4. **Scout the product offscreen** with your browser tools. Note the tour
+4. **Scout the product offscreen** with your browser tools, or after planning
+   with `rehearse_beats`, which also works behind a sign-in. Note the tour
    URLs, the sign-in URL and what the page after sign-in shows, the system
    page and a word on it, and the chat page. A live answer needs no
    predicted words: AgentTake waits until it stops growing and frames its
@@ -101,144 +102,21 @@ Don't use for:
    of beat, shot, line and source, and wait for a go. A fixed line costs
    seconds; a retake costs half an hour. Skip this step only when told to run
    unattended. *Done when* you have a go, or were told to skip it.
-8. **Open one session.** Call `start_session` with:
-   - `start_url`: the first page the plan opens
-   - `title`, and `subtitles=true` (feeds autoplay muted)
-   - `color_scheme`
-   - `show_pointer=false`: a storyboard film clicks nothing on camera, so a
-     recorded pointer is only a stray arrow in every frame
-   - `mask=["input[type=password]", "[data-secret]"]`
-   - `cta_url`: the cta beat's url
-
-   On a host with two cores, use `width=1280, height=720`. Keep the
-   `session_id`: it is not your chat session's id. *Done when* you hold
-   exactly one open session id.
-9. **Shoot.** Call `shoot_storyboard(session_id, plan_id)`, and again while
-   `to_come` is not empty. An answer with `status: "shooting"` is a shoot
-   still running: call `shoot_status(session_id)` until `status` is `done`,
-   and nothing else meanwhile. Note each beat's `ok` or `failed` and its
-   reason. *Done when* `to_come` is empty.
-10. **Retake what failed**, at most twice per beat:
-    1. Read the reason.
-    2. Fix the beat in `storyboard.json`. A wrong `wait_for_text` or a quote
-       not on the page are the usual causes.
-    3. Call `plan_storyboard(beats, plan_id=...)`, then `shoot_beat(session_id,
-       beat=n)`.
-
-    A beat that fails twice is cut from the story or brought to the operator,
-    never retried a third time. A failed `login` stops the shoot: check the
-    secret name and the post-sign-in text, then retake it and resume
-    `shoot_storyboard`. *Done when* every beat is ok or deliberately cut.
-11. **Review, finish, place the retakes.**
-    1. Call `review_session` and fix every high-severity finding. A planned
-       line that is missing or out of order is one, with one exception: a
-       beat you retook is reported `beat_out_of_order`, because the retake
-       was recorded at the end. That one is expected; `apply_retakes` puts
-       it in place after `finish`.
-    2. Call `finish` once. Follow `finish_status` until it is `done`.
-    3. If you retook any beat, call `apply_retakes(session_id)`, then
-       `rerender(session_id)`.
-
-    *Done when* the render is done with the retakes in place.
-12. **Look at the film.** Read `review_session` again: every finding has a
-    beat, what was measured and a `fix`, and `claims_to_check` lists lines
-    to compare with their screen. Call `contact_sheet(session_id)`, then
-    `vision_analyze` on its image against your beat list, using the checklist
-    in `references/contact-sheet-review.md`. *Done when* every beat is
-    accounted for on the sheet. The session is finished now, so
-    `shoot_beat` no longer works on it. Mend a flaw in one of two ways:
-    - **In the edit**, when the footage is right: hide a stray step with
-      `edit_step(session_id, index, hidden=true)`, hold a result longer with
-      `hold_seconds`, change a line with `update_step_narration` or a card
-      with `edit_cards`, then `rerender(session_id)`, follow `finish_status`
-      if it answers with a `job_id`, and look again.
-    - **In a fresh take**, when the footage itself is wrong (a cropped quote,
-      a page that never loaded). Call `fresh_take(session_id)`: a new
-      session started like the first, with AgentTake's copy of the
-      storyboard and the beats in its reply. Change a beat with
-      `plan_storyboard(beats, plan_id=<the new plan_id>)` until it is ready,
-      then `shoot_storyboard(<the new session_id>)`. Unchanged lines reuse
-      their voice clips, so the take costs minutes. Once the new film passes
-      this step, remove the flawed one with
-      `delete_session(session_id, confirm=true)`.
-
-    Make at most one fresh take unattended; after that, report the flaw.
-13. **Deliver.** Download the MP4 at once with
-    `terminal(command="curl -fLo film.mp4 <video_url>")`, and measure it with
-    `ffprobe`. Report:
-    - the watch URL and the local path,
-    - the duration,
-    - the beats shot, retaken and cut,
-    - every source URL.
-
-    *Done when* the file is on disk and its duration is within 15 % of
-    `estimated_seconds` plus the title and closing cards.
+8. **Run the film.** The handbook's "The whole film, start to done" and each
+   tool's `next` carry the procedure from here: open one session, shoot,
+   retake, `finish`, judge with `review_session` and `contact_sheet`, mend,
+   deliver. Pass the picture to `vision_analyze` if you cannot see it in the
+   reply, with the checklist in `references/contact-sheet-review.md`. Stop at
+   the `verdict`: `ready_for_approval` or `needs_human` goes to the operator.
 
 ## Rules
 
-- **A source for every claim**, named on the beat. No source, no claim.
-- **A source's beat says what the source says.** The viewer reads the
-  source's name under the quote, so its line reports the source; your own
-  point goes on the next beat. Under a `highlight`, the line says what the
-  marked words say, not another sentence of the article the viewer cannot
-  see.
-- **Headlines and short quotes only.** One marked sentence, never an article
-  read out. For a paywalled page, the headline only, or a `source_card`
-  quoting it.
-- **Never a synthetic real person.** No generated faces, voices or quotes
-  attributed to someone. An `image` is a real photo or a graphic you may use,
-  with its source named.
-- **Open on the claim.** The first three seconds decide whether anyone
-  watches. Sign-ins are offscreen by design.
-- **One session at a time.** Before `finish`, fix a beat by retaking it in
-  the same session; never open a second one to get around it. After
-  `finish`, a fresh take is a new session, and the flawed one is deleted.
-
-## Pitfalls
-
-- **`review_session` scoring 95 does not make a film good.** It has passed takes
-  with skipped beats and blank pages. Only the contact sheet is evidence, and
-  step 12 is not optional.
-- **A dialog over the text is never "a bar at the bottom".** A beat that fails
-  `focus_covered` names what is in front of its text. Do not retake it
-  unchanged: wait for a sentence below the box, or pick another source. A
-  covered `source` or `highlight` comes back ok with `fallback: source_card`:
-  the beat is a card quoting the page, which is fine; look at it on the
-  contact sheet. In the first Sluss film a consent dialog covered both source
-  beats for 22 s, and the director's own review played it down.
-- **The text has to match the page exactly.** `wait_for_text` and a
-  highlight's `text` must match what the page renders. Curly quotes,
-  non-breaking spaces, a CSS uppercase heading and a truncated teaser all
-  differ from the article body. Copy from `web_extract`, not from a search
-  snippet.
-- **A tour does not stop at its anchor.** Four `page_tour`s of one site,
-  from four anchors, each glided to the footer: the footer played under four
-  lines, and lines about memory played over the model section. The plan now
-  refuses a page toured twice; use `system` per section.
-- **AgentTake probes the URLs from its own server.** A site that blocks
-  datacenter addresses shows a bot check in the plan even though it opens in
-  your browser. Treat `bot_check` as a likely failed beat and pick another
-  source.
-- **Open on the hook, not on the start page.** `start_url` loads before
-  beat 1. When beat 1 is a card, AgentTake cuts the footage before it.
-- **A section shot frames its `wait_for_text`.** Give the section's
-  heading, not one card's text inside a grid, or the push-in lands on a
-  grid the viewer cannot read.
-- **A shot changed after it was shot** shows as `changed` in the plan. Only
-  `shoot_beat` records it again; `shoot_storyboard` moves on.
-- **`finish` answering `rendering` is not a failure.** Follow `finish_status`
-  with the session id about every 30 s. Calling `finish` again does not help.
-  If the first `finish_status` answers `unknown_job`, wait 30 s and ask again
-  before you conclude anything.
-- **A finished session can be pruned later.** The downloaded MP4 is the
-  delivery; a `video_url` in a reply is not.
+The rules for sources, quotes and real people are in the handbook. Yours to
+keep here: do your research with your own tools, never put a password in a
+brief, and never publish a film yourself.
 
 ## Verification
 
-- `plan_storyboard` reported `ready: true`, and every beat ended `ok` or was
-  cut by decision.
-- The contact sheet shows each planned beat, in order, with nothing blank,
-  open or covered.
-- The MP4 is on disk, `ffprobe` gives a duration within 15 % of
-  `estimated_seconds` plus the title and closing cards, and the report lists
-  every source URL.
+- `plan_storyboard` reported `ready: true`.
+- `review_session` gave a `verdict`, and your report states it with what is open.
+- The MP4 is on disk and the report lists every source URL.
