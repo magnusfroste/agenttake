@@ -1,13 +1,13 @@
 """Durable SQLite metadata for recording sessions and storyboard steps."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import sqlite3
 import threading
 import urllib.parse
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 import uuid
 
 from .engine import output_root
@@ -175,6 +175,10 @@ def init_schema() -> None:
             connection.execute(
                 "ALTER TABLE sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'edge'"
             )
+        if "approved_at" not in session_columns:
+            # A person's approval. Films that were already public stay so.
+            connection.execute("ALTER TABLE sessions ADD COLUMN approved_at TEXT")
+            connection.execute("UPDATE sessions SET approved_at = finished_at WHERE status = 'finished'")
         for column in ("output_width", "output_height"):
             if column not in session_columns:
                 connection.execute(f"ALTER TABLE sessions ADD COLUMN {column} INTEGER")
@@ -613,19 +617,33 @@ def list_sessions(limit: int = 20) -> list[dict[str, Any]]:
     return [{**dict(row), "beats": _from_json(row["beats"], [])} for row in rows]
 
 
-def list_finished_sessions() -> list[dict[str, Any]]:
+def list_finished_sessions(approved: bool | None = None) -> list[dict[str, Any]]:
+    """Finished films, newest first: all of them, or only those a person has
+    (approved=True) or has not (approved=False) approved."""
     init_schema()
+    condition = {None: "", True: " AND approved_at IS NOT NULL", False: " AND approved_at IS NULL"}[approved]
     with _lock, _connect() as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT id, start_url, title, page_title, duration_seconds, finished_at, video_path,
-                   video_url, output_dir
+                   video_url, output_dir, approved_at
             FROM sessions
-            WHERE status = 'finished'
+            WHERE status = 'finished'{condition}
             ORDER BY finished_at DESC, created_at DESC
             """
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def set_approved(session_id: str, approved: bool) -> bool:
+    """A person's decision on a finished film. False when there is no such film."""
+    init_schema()
+    with _lock, _connect() as connection:
+        changed = connection.execute(
+            "UPDATE sessions SET approved_at = CASE WHEN ? THEN ? ELSE NULL END WHERE id = ? AND status = 'finished'",
+            (int(approved), _now(), session_id),
+        ).rowcount
+    return bool(changed)
 
 
 def delete_session(session_id: str) -> None:
@@ -634,7 +652,24 @@ def delete_session(session_id: str) -> None:
     with _lock, _connect() as connection:
         connection.execute("DELETE FROM steps WHERE session_id = ?", (session_id,))
         connection.execute("DELETE FROM shots WHERE session_id = ?", (session_id,))
+        connection.execute("DELETE FROM storyboards WHERE session_id = ?", (session_id,))
         connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+
+def delete_orphan_storyboards(older_than_days: int = 7) -> int:
+    """Remove plans whose film is gone, and plans never attached to a film
+    that have lain for ``older_than_days``. A plan holds what a film typed."""
+    init_schema()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+    with _lock, _connect() as connection:
+        return connection.execute(
+            """
+            DELETE FROM storyboards
+            WHERE (session_id IS NOT NULL AND session_id NOT IN (SELECT id FROM sessions))
+               OR (session_id IS NULL AND updated_at < ?)
+            """,
+            (cutoff,),
+        ).rowcount
 
 
 def create_backlog(
@@ -975,6 +1010,17 @@ def delete_steps_from(session_id: str, from_index: int) -> None:
     init_schema()
     with _lock, _connect() as connection:
         connection.execute("DELETE FROM steps WHERE session_id = ? AND idx >= ?", (session_id, from_index))
+
+
+def scrub_steps(session_id: str, indexes: Sequence[int]) -> None:
+    """Empty these steps of what they recorded. The rows stay, out of the film:
+    the renderer counts steps by their place in the list."""
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.executemany(
+            "UPDATE steps SET target = '', url = '', title = '', narration_text = '', narration_clip = NULL, "
+            "screenshot_path = NULL, offscreen = 1 WHERE session_id = ? AND idx = ?",
+            [(session_id, int(index)) for index in indexes])
 
 
 def next_step_index(session_id: str) -> int:

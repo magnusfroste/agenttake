@@ -24,6 +24,7 @@ from typing import Any, Awaitable, Callable, Literal, get_args
 
 from pydantic import BaseModel, Field, ValidationError
 
+from . import sensitive
 from . import signature as sig
 from .review import describe_cover, focus_covered, normalize_line
 from .schema import OFFSCREEN_WAIT_MAX_MS, secret_names
@@ -505,6 +506,11 @@ async def check_storyboard(
                 items.append(_item(beat["number"], beat["label"], "fix", "unknown_secret",
                                    f"AgentTake has no secret {name}: its operator sets REEL_SECRET_{name}; "
                                    f"it has {', '.join(sorted(known)) or 'none'}"))
+    for beat, name, hit in sensitive.storyboard_items(beats):
+        items.append(_item(beat["number"], beat["label"], "fix" if hit["blocks"] else "warn", "sensitive_in_storyboard",
+                           f"{name} holds {hit['label']} ({hit['value']}). "
+                           + (sensitive.REPLACE_NUMBER if hit["kind"] == "personal_number" else
+                              "A film must not show anything that belongs to a real person or account.")))
     urls: dict[str, list[tuple[dict, str]]] = {}
     for beat in beats:
         for name in ("url", "source"):
@@ -796,9 +802,9 @@ def _act(action: dict, narration: str = "") -> dict:
 
 
 def _shot(zoom: float, focus_text: str | None = None, move_seconds: float = 1.0, lift: bool = False,
-          fit: bool = False) -> dict:
+          fit: bool = False, panels: bool = False, keep_zoom: bool = False) -> dict:
     return {"op": "shot", "zoom": zoom, "focus_text": focus_text, "move_seconds": move_seconds, "lift": lift,
-            "fit": fit}
+            "fit": fit, "panels": panels, "keep_zoom": keep_zoom}
 
 
 def _open(url: str, wait_for_text: str | None) -> list[dict]:
@@ -928,7 +934,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
         return [
             *ops,
             _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
-            _shot(camera or 1.3, wait_text, move_seconds=2.5),
+            _shot(camera or 1.3, wait_text, move_seconds=2.5, panels=True, keep_zoom=camera is not None),
             _found(line, wait_text),
         ]
     if shot == "live_answer":
@@ -1112,6 +1118,7 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
             result = await session.set_shot(
                 "wide" if zoom <= 1.0 else "medium", zoom, None, op.get("focus_text"),
                 op.get("move_seconds"), lift=op.get("lift", False), fit=op.get("fit", False),
+                panels=op.get("panels", False), keep_zoom=op.get("keep_zoom", False),
             )
             # A shot with no focus pushes in on the centre on purpose.
             if result.get("camera_note") and op.get("focus_text"):

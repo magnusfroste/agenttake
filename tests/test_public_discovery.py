@@ -120,6 +120,7 @@ def test_watch_and_theater_pages_offer_a_share_link(tmp_path, monkeypatch):
     store.create_session("abc123", "https://example.com", "en-US-JennyNeural", 1920, 1080,
                          str(tmp_path), "edge", None, None, "Demo", "", "#1f2a44", "", "Learn more", "none")
     store.finish_session("abc123", str(tmp_path / "video.mp4"), None, 12.0)
+    store.set_approved("abc123", True)
     watch = server.watch_page("abc123")
     assert 'data-share-path="/watch/abc123"' in watch
     assert "navigator.clipboard.writeText" in watch
@@ -202,6 +203,7 @@ def test_a_rerender_gets_a_new_video_url_and_the_link_is_cached_briefly(tmp_path
     store.init_schema()
     store.create_session(session_id, "https://example.com", "en-US-JennyNeural", 1920, 1080, str(out))
     store.finish_session(session_id, str(video), f"https://take.example.com/videos/{session_id}/video.mp4", 5.0)
+    store.set_approved(session_id, True)
 
     first = server.public_video_url(session_id)
     assert first == f"https://take.example.com/videos/{session_id}/video.mp4?v=1000000"
