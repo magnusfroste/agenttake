@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.8.2
+version: 0.8.3
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -94,6 +94,9 @@ Don't use for:
    checklist item marked `fix` in `storyboard.json`, weigh each `warn`, and
    call it again with the same `plan_id` until `ready` is true. *Done when*
    `ready` is true and `estimated_seconds` is within 10 s of the target.
+   Then try the beats that depend on a live page with
+   `rehearse_beats(plan_id, beats=[...])`: nothing is recorded, and each beat
+   answers with what the page showed and a still of the frame.
 7. **Show the plan when someone commissioned it.** Send the operator a table
    of beat, shot, line and source, and wait for a go. A fixed line costs
    seconds; a retake costs half an hour. Skip this step only when told to run

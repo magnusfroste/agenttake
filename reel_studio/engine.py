@@ -1377,6 +1377,11 @@ class BrowserSession:
         raw.unlink(missing_ok=True)
         return out, {k: round(frame[k]) for k in ("x", "y", "w", "h")} | {"zoom": round(frame["zoom"], 2)}
 
+    async def cover_of(self, text: str) -> dict | None:
+        """Whether a dialog, a banner or an ad lies over this text (rehearsal)."""
+        target = await self._visible_text_target(text)
+        return {**await target.evaluate(FOCUS_COVER_JS), "text": text} if target is not None else None
+
     async def dismiss_consent(
         self, refuse: Sequence[str], managers: Sequence[str] = (), notice: Sequence[str] = ()
     ) -> str | None:

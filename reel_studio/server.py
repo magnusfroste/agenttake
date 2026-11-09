@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import urllib.parse
@@ -121,13 +122,14 @@ mcp = FastMCP("agenttake", transport_security=transport_security_from_env())
 sessions: dict[str, BrowserSession] = {}
 
 
-def feedback_result(payload: dict, screenshot: object = None) -> CallToolResult:
-    """Return structured JSON plus an MCP image when one is available."""
+def feedback_result(payload: dict, *screenshots: object) -> CallToolResult:
+    """Return structured JSON plus an MCP image for each still available."""
     content: list[object] = [
         TextContent(type="text", text=json.dumps(payload)),
     ]
-    if screenshot:
-        content.append(Image(path=screenshot).to_image_content())
+    for screenshot in screenshots:
+        if screenshot:
+            content.append(Image(path=screenshot).to_image_content())
     return CallToolResult(content=content, structuredContent=payload)
 
 
@@ -1428,6 +1430,11 @@ def docs_page(base_url: str = "/") -> str:
       LinkedIn, X or Slack show: the title, a description, and the moment of the
       film the 1200x630 preview image is taken from. Nothing is re-rendered.</p>
       <p><strong>Returns:</strong> <code>{{"ok": true, "watch_url": "...", "poster_url": "..."}}</code></p></div>
+    <div class="tool card"><h3><code>rehearse_beats(plan_id, beats, send_live?)</code></h3>
+      <p>Tries beats in a real browser without recording, also behind a
+      sign-in: ok or why not, the seconds it took, what the page showed, what
+      the frame cuts, and a still. A live answer's prompt is not sent unless
+      <code>send_live</code> is true.</p></div>
     <div class="tool card"><h3><code>edit_cards(session_id, card?, text?, background?, title?, subtitle?, cta_text?, cta_url?)</code></h3>
       <p>Lists or changes a finished video's mid-film cards, title and closing
       card. A change is also kept for a fresh take; <code>rerender</code> cuts
@@ -2959,6 +2966,180 @@ async def fresh_take(
         if key in started:
             result[key] = started[key]
     return result
+
+
+REHEARSE_MAX_BEATS = 6
+REHEARSE_MAX_SECONDS = 240.0
+REHEARSAL_PREFIX = "rehearsal-"
+rehearsal_jobs: dict[str, "FinishJob"] = {}
+
+
+async def _rehearsal_act(live: Any, action: dict, narration: str) -> tuple[dict, object]:
+    """One action of a rehearsal: no voice, no step stored. A line's text is
+    still checked for what lies over it, as it is when the beat is shot."""
+    parsed = Action.model_validate(action)
+    payload, _ = await live.act(parsed, "")
+    if narration.strip() and payload.get("ok") and parsed.wait_for_text:
+        try:
+            payload["focus_cover"] = await live.cover_of(parsed.wait_for_text)
+        except Exception:
+            payload["focus_cover"] = None
+    return payload, None
+
+
+async def _rehearse_one(job: "FinishJob", live: Any, beat: dict, send_live: bool, out: Path) -> dict:
+    number = beat["number"]
+    job.stage = f"beat {number}"
+    started = time.monotonic()
+    camera = getattr(live, "camera", None)
+    if camera is not None:
+        # Each beat is framed from wide, as if it were the only one.
+        camera.keys.clear()
+
+    async def act(_: str, action: dict, narration: str) -> tuple[dict, object]:
+        return await _rehearsal_act(live, action, narration)
+
+    outcome = await boards.run_ops(live, job.session_id, boards.rehearsal_ops(beat, send_live), act)
+    report: dict[str, Any] = {"beat": number, "label": beat["label"], "shot": beat["shot"], "ok": outcome["ok"],
+                              "seconds": round(time.monotonic() - started, 1)}
+    if not outcome["ok"]:
+        report["reason"] = outcome["reason"]
+    if outcome.get("notes"):
+        report["notes"] = outcome["notes"]
+    if beat["shot"] == "live_answer" and not send_live:
+        found = bool((await live.form_fields()).get("message"))
+        report["not_sent"] = "The prompt was not sent. send_live=true sends it, and it lands in the product's log."
+        if outcome["ok"] and not found:
+            report.update(ok=False, reason="no message field on the page")
+    if beat["shot"] != "login":
+        # What the screen shows, also when the beat failed: it says why.
+        report["url"] = live.page.url
+        report["page_text"] = " ".join((await live.page_text()).split())[:400]
+        still, frame = await live.frame_preview()
+        if still:
+            target = out / f"beat-{number}.jpg"
+            shutil.move(str(still), target)
+            report["still"] = str(target)
+            report["camera_frame"] = frame
+        keys = [key for key in (camera.keys if camera is not None else []) if key.get("facts")]
+        if keys:
+            step = {"idx": number, "offset_seconds": keys[-1]["t"], "offscreen": False, "ok": True,
+                    "narration_text": beat.get("line") or "-", "action_type": "wait"}
+            framed = Camera(camera.width, camera.height, camera.scale, [keys[-1]])
+            report["findings"] = [
+                {key: value for key, value in finding.items() if key not in ("location", "at_seconds")}
+                for finding in checks.shot_findings(framed, [step])
+            ]
+    return report
+
+
+async def _run_rehearsal(job: "FinishJob", beats: list[dict], send_live: bool, size: tuple[int, int],
+                         color_scheme: str | None) -> dict:
+    out = output_root() / job.session_id
+    live = None
+    try:
+        for old in output_root().glob(f"{REHEARSAL_PREFIX}*"):
+            if old != out:
+                shutil.rmtree(old, ignore_errors=True)
+        out.mkdir(parents=True, exist_ok=True)
+        start = next((beat.get("url") or beat.get("page_url") for beat in beats
+                      if str(beat.get("url") or beat.get("page_url") or "").startswith("http")), "about:blank")
+        live = await BrowserSession.create(
+            start, size[0], size[1], "en-US-JennyNeural", "edge",
+            mask_selectors=["input[type=password]", "[data-secret]"], color_scheme=color_scheme, show_pointer=False,
+        )
+        began = time.monotonic()
+        reports: list[dict] = []
+        not_reached: list[int] = []
+        for beat in beats:
+            if time.monotonic() - began > REHEARSE_MAX_SECONDS:
+                not_reached.append(beat["number"])
+                continue
+            if beat["shot"] == "card" and boards.render_card_action(beat) is not None:
+                reports.append({"beat": beat["number"], "label": beat["label"], "shot": "card", "ok": True,
+                                "seconds": 0.0, "notes": ["a card is drawn by the render: nothing to rehearse"]})
+                continue
+            reports.append(await _rehearse_one(job, live, beat, send_live, out))
+        result: dict[str, Any] = {"ok": True, "status": "done", "job_id": job.session_id, "beats": reports}
+        if not_reached:
+            result["not_reached"] = not_reached
+            result["hint"] = f"Out of time after {REHEARSE_MAX_SECONDS:g} s: rehearse the rest in another call."
+        return result
+    except Exception as exc:  # a job's failure is reported, never lost
+        return {"ok": False, "status": "failed", "job_id": job.session_id,
+                "error": {"type": "rehearsal_failed", "message": str(exc)}}
+    finally:
+        if live is not None:
+            try:
+                await live.abort()
+            except Exception:
+                pass
+            shutil.rmtree(live.directory, ignore_errors=True)
+
+
+async def _rehearsal_reply(job: "FinishJob") -> CallToolResult:
+    assert job.task is not None
+    try:
+        result = await asyncio.wait_for(asyncio.shield(job.task), FINISH_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        return feedback_result({"ok": True, "status": "rehearsing", "job_id": job.session_id, "stage": job.stage,
+                                "hint": "Still rehearsing. Call rehearse_status(job_id) until status is done."})
+    return feedback_result(result, *[beat.get("still") for beat in result.get("beats", [])])
+
+
+@mcp.tool()
+async def rehearse_beats(
+    plan_id: Annotated[str, Field(description="The plan_storyboard plan the beats are in.")],
+    beats: Annotated[list[int], Field(description="The numbers of the beats to try, six at most: the ones that "
+                                                  "depend on a live page. A sign-in before them is done for you.")],
+    send_live: Annotated[bool, Field(description="Really send a live_answer's prompt. Off by default: a sent "
+                                                 "prompt lands in the product's own log and moves its numbers.")] = False,
+    width: int = 1920,
+    height: int = 1080,
+    color_scheme: Annotated[str | None, Field(description="light or dark, as start_session will have it.")] = None,
+) -> CallToolResult:
+    """Try beats of a plan in a real browser, without recording anything.
+
+    Each beat runs its own recipe, on the page it will be shot on, also behind
+    a sign-in. No voice is spoken and no session is made. For each beat: ok or
+    why not, the seconds it took, the address and text the page showed, what
+    the frame cut or lost (findings), and a still of the frame. Fix a beat with
+    plan_storyboard(beats, plan_id) and try it again before start_session. A
+    long rehearsal answers with a job_id: follow it with rehearse_status.
+    """
+    plan = store.get_storyboard(plan_id)
+    if plan is None:
+        return feedback_result({"ok": False, "error": {"type": "unknown_plan", "message": f"No storyboard {plan_id}"}})
+    if not 1 <= len(beats) <= REHEARSE_MAX_BEATS:
+        return feedback_result({"ok": False, "error": {"type": "invalid_beats",
+                                                       "message": f"Rehearse 1-{REHEARSE_MAX_BEATS} beats at a time"}})
+    known = {beat["number"]: beat for beat in plan["beats"]}
+    unknown = [number for number in beats if number not in known]
+    if unknown:
+        return feedback_result({"ok": False, "error": {"type": "unknown_beat", "message": f"No beat {unknown[0]}: "
+                                                       f"this plan has 1-{len(plan['beats'])}"}})
+    if sessions or any(job.running() for job in (*finish_jobs.values(), *rehearsal_jobs.values())):
+        return feedback_result({"ok": False, "error": {"type": "busy", "message": "A recording, a render or a rehearsal is running"},
+                                "hint": "Rehearse before start_session, one at a time."})
+    last = max(beats)
+    chosen = [beat for beat in plan["beats"]
+              if beat["number"] in beats or (beat["shot"] == "login" and beat["number"] < last)]
+    job_id = f"{REHEARSAL_PREFIX}{uuid.uuid4().hex[:12]}"
+    job = FinishJob(job_id, None, 0, tool="rehearse_beats")
+    job.task = asyncio.create_task(_run_rehearsal(job, chosen, send_live, (width, height), color_scheme))
+    rehearsal_jobs[job_id] = job
+    return await _rehearsal_reply(job)
+
+
+@mcp.tool()
+async def rehearse_status(
+    job_id: Annotated[str, Field(description="The job_id rehearse_beats answered with.")],
+) -> CallToolResult:
+    """Follow a rehearsal that was still running when it answered."""
+    job = rehearsal_jobs.get(job_id)
+    if job is None:
+        return feedback_result({"ok": False, "error": {"type": "unknown_job", "message": f"No rehearsal {job_id}"}})
+    return await _rehearsal_reply(job)
 
 
 @mcp.tool()
