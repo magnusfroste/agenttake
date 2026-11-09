@@ -960,6 +960,23 @@ def update_session_beats(session_id: str, beats: list[dict]) -> None:
         )
 
 
+def shift_steps(session_id: str, from_index: int, seconds: float) -> None:
+    """Move steps later on the recording's clock: a pickup joined onto it."""
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.execute(
+            "UPDATE steps SET offset_seconds = offset_seconds + ?, started_seconds = started_seconds + ? "
+            "WHERE session_id = ? AND idx >= ?",
+            (seconds, seconds, session_id, from_index),
+        )
+
+
+def delete_steps_from(session_id: str, from_index: int) -> None:
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.execute("DELETE FROM steps WHERE session_id = ? AND idx >= ?", (session_id, from_index))
+
+
 def next_step_index(session_id: str) -> int:
     init_schema()
     with _lock, _connect() as connection:

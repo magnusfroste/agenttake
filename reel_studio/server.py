@@ -58,6 +58,7 @@ from .render import (
     clean_card_text,
     read_cards,
 )
+from . import pickup
 from .camera import MAX_OUTPUT_SCALE, MAX_ZOOM, Camera
 from . import review as checks
 from . import storyboard as boards
@@ -1443,6 +1444,10 @@ def docs_page(base_url: str = "/") -> str:
       sign-in: ok or why not, the seconds it took, what the page showed, what
       the frame cuts, and a still. A live answer's prompt is not sent unless
       <code>send_live</code> is true.</p></div>
+    <div class="tool card"><h3><code>reshoot_beat(session_id, beat)</code></h3>
+      <p>Shoots one beat of a finished film again and cuts the film with it.
+      The other beats stay as they are, and a failed beat leaves the film as
+      it was.</p></div>
     <div class="tool card"><h3><code>edit_cards(session_id, card?, text?, background?, title?, subtitle?, cta_text?, cta_url?)</code></h3>
       <p>Lists or changes a finished video's mid-film cards, title and closing
       card. A change is also kept for a fresh take; <code>rerender</code> cuts
@@ -3207,6 +3212,17 @@ async def apply_retakes(session_id: str) -> dict:
     plan = store.session_storyboard(session_id)
     if plan is None:
         return {"ok": False, "error": {"type": "no_storyboard", "message": f"{session_id} has no storyboard"}}
+    placed, skipped = _place_retakes(session_id, plan)
+    result: dict = {"ok": True, "placed": placed}
+    if skipped:
+        result["skipped"] = skipped
+    result["hint"] = ("rerender(session_id) cuts the video in this order; storyboard shows it."
+                      if placed else "No retakes to place.")
+    return result
+
+
+def _place_retakes(session_id: str, plan: dict) -> tuple[list[dict], list[dict]]:
+    """Hide earlier takes of each retaken beat and play the last where it belongs."""
     placed: list[dict] = []
     skipped: list[dict] = []
     beats = plan["beats"]
@@ -3237,12 +3253,127 @@ async def apply_retakes(session_id: str) -> dict:
         placed.append({"beat": beat["number"], "hidden": earlier, "plays": last["visible"],
                        "moved": anchor is not None})
     store.update_storyboard_beats(plan["plan_id"], beats)
-    result: dict = {"ok": True, "placed": placed}
-    if skipped:
-        result["skipped"] = skipped
-    result["hint"] = ("rerender(session_id) cuts the video in this order; storyboard shows it."
-                      if placed else "No retakes to place.")
-    return result
+    return placed, skipped
+
+
+async def _shoot_pickup(job: "FinishJob", session: dict, plan: dict, target: dict) -> dict:
+    """Shoot one beat in a recording of its own and join it onto the session's."""
+    session_id = job.session_id
+    directory = Path(session["video_path"]).parent
+    args = session.get("start_args") or {}
+    start = next((url for url in (target.get("url"), target.get("page_url")) if str(url or "").startswith("http")), "about:blank")
+    size = (int(session["output_width"]), int(session["output_height"])) if session.get("output_width") and session.get("output_height") else None
+    state = _beat_state(target)
+    status, before = state["status"], store.next_step_index(session_id)
+    report: dict | None = None
+    live = await BrowserSession.create(
+        start, int(args.get("width") or 1920), int(args.get("height") or 1080), session["voice"], session.get("provider", "edge"),
+        size, None, mask_selectors=args.get("mask") or ["input[type=password]", "[data-secret]"],
+        color_scheme=args.get("color_scheme"), show_pointer=bool(args.get("show_pointer", False)),
+    )
+    sessions[session_id] = live
+    try:
+        job.stage = "shooting"
+
+        async def act(_: str, action: dict, narration: str) -> tuple[dict, object]:
+            return await _rehearsal_act(live, action, narration)
+
+        # A sign-in before the beat, as the film had: nothing of it is kept.
+        for beat in plan["beats"]:
+            if beat["shot"] == "login" and beat["number"] < target["number"]:
+                signed_in = await boards.run_ops(live, session_id, boards.recipe(beat, retake=True), act)
+                if not signed_in["ok"]:
+                    report = {"beat": target["number"], "ok": False, "reason": f"the sign-in failed: {signed_in['reason']}"}
+                    break
+        if report is None:
+            report = await _shoot_beat(session_id, plan, target, retake=True)
+            # The recording has to outlast the line, or its last frame is
+            # frozen under the end of it: the recording stops right after the
+            # beat here, where a film's next beat would have kept it going.
+            spoken = [float(step.get("narration_duration") or 0.0) for step in (store.get_session(session_id) or {}).get("steps", [])
+                      if step["idx"] >= before and (step.get("narration_text") or "").strip()]
+            if report["ok"] and spoken:
+                await asyncio.sleep(min(spoken[-1] + PICKUP_TAIL_SECONDS, 40.0))
+    finally:
+        sessions.pop(session_id, None)
+        await live.abort()
+    if not report["ok"]:
+        # The film stands as it was: nothing of the failed pickup is kept.
+        store.delete_steps_from(session_id, before)
+        if state["attempts"] and (state["attempts"][-1].get("steps") or [-1])[0] >= before:
+            state["attempts"].pop()
+        state["status"] = status
+        store.update_storyboard_beats(plan["plan_id"], plan["beats"])
+        shutil.rmtree(live.directory, ignore_errors=True)
+        return {"ok": False, "status": "failed", "beat": target["number"],
+                "error": {"type": "reshoot_failed", "message": report.get("reason") or "the beat failed"},
+                "hint": "The film is unchanged. Fix the beat with plan_storyboard(beats, plan_id) and try it with rehearse_beats."}
+    job.stage = "joining"
+    picked = Path(live.directory)
+    offset = await asyncio.to_thread(pickup.join_recordings, directory / "screen.mp4", picked / "screen.mp4")
+    store.shift_steps(session_id, before, offset)
+    await asyncio.to_thread(pickup.take_in, directory, picked, offset, getattr(live, "camera", None))
+    shutil.rmtree(picked, ignore_errors=True)
+    job.stage = "rendering"
+    placed, _ = _place_retakes(session_id, plan)
+    current = store.get_session(session_id)
+    assert current is not None
+    result = await _rerender(job, current, None, None, None, None)
+    if result.get("ok"):
+        result["next"] = "review_session(session_id): its verdict says whether the film is ready."
+    return {**result, "beat": target["number"], "take": len(state["attempts"]), "placed": placed}
+
+
+async def _run_pickup(job: "FinishJob", session: dict, plan: dict, target: dict) -> dict:
+    try:
+        return await _shoot_pickup(job, session, plan, target)
+    except Exception as exc:  # a job's failure is reported, never lost
+        return {"ok": False, "status": "failed", "error": {"type": "reshoot_failed", "message": str(exc)}}
+
+
+@mcp.tool()
+async def reshoot_beat(
+    session_id: str,
+    beat: Annotated[int, Field(description="The beat's number, as plan_storyboard reports it.")],
+) -> dict:
+    """Shoot one beat of a finished film again and cut the film with it.
+
+    Change the beat first with plan_storyboard(beats, plan_id) if it needs
+    changing, and try it with rehearse_beats. Only this beat is recorded, a
+    sign-in before it is done for you, unchanged lines reuse their voice, and
+    the other beats stay exactly as they are. If the beat fails, the film is
+    left as it was. A beat gets three takes in all. It answers like finish:
+    follow finish_status while status is rendering, then review_session.
+    """
+    job = finish_jobs.get(session_id)
+    if job is not None and job.running():
+        return await _await_finish(job)
+    session, error = _editable_session(session_id)
+    if error:
+        return error
+    assert session is not None
+    plan = store.session_storyboard(session_id)
+    if plan is None:
+        return {"ok": False, "error": {"type": "no_storyboard", "message": f"{session_id} has no storyboard"}}
+    target = next((candidate for candidate in plan["beats"] if candidate["number"] == beat), None)
+    if target is None:
+        return {"ok": False, "error": {"type": "unknown_beat", "message": f"beat is 1-{len(plan['beats'])}"}}
+    if target["shot"] == "login" or (target["shot"] == "card" and boards.render_card_action(target) is not None):
+        return {"ok": False, "error": {"type": "nothing_to_reshoot", "message": f"a {target['shot']} has no footage in the film"},
+                "hint": "A card is changed with edit_cards, then rerender."}
+    if len(_beat_state(target)["attempts"]) >= MAX_BEAT_TAKES:
+        return {"ok": False, "error": {"type": "reshoot_limit", "message": f"beat {beat} has had {MAX_BEAT_TAKES} takes"},
+                "hint": "Report it: more is a person's call."}
+    if not (Path(session["video_path"]).parent / "screen.mp4").is_file():
+        return {"ok": False, "error": {"type": "recording_missing", "message": "The session's recording was pruned"},
+                "hint": "fresh_take(session_id) shoots the film again."}
+    if sessions or any(other.running() for other in (*finish_jobs.values(), *rehearsal_jobs.values())):
+        return {"ok": False, "error": {"type": "busy", "message": "A recording, a render or a rehearsal is running"},
+                "hint": "Try again when it is done."}
+    job = FinishJob(session_id, Path(session["video_path"]).parent, 0, tool="reshoot_beat")
+    job.task = asyncio.create_task(_run_pickup(job, session, plan, target))
+    finish_jobs[session_id] = job
+    return await _await_finish(job)
 
 
 def director_guide_text() -> str:
@@ -4389,6 +4520,9 @@ async def review_session(session_id: str) -> dict:
 # agent gets one before a person decides (Sluss take 6's fresh take cut its
 # GitHub beat mid-word while it mended the audit beat).
 MAX_UNATTENDED_FRESH_TAKES = 1
+# A beat's first take and two more, as for a beat that fails while shooting.
+MAX_BEAT_TAKES = 3
+PICKUP_TAIL_SECONDS = 1.0
 
 
 def _verdict(session_id: str, session: dict, findings: list[dict], claims_to_check: list[dict]) -> dict:
@@ -4420,12 +4554,15 @@ def _verdict(session_id: str, session: dict, findings: list[dict], claims_to_che
     lines = [f"Beat {finding.get('beat', '?')} ({finding.get('label') or finding.get('location')}), "
              f"{finding['category']}: {finding.get('fix') or finding['message']}" for finding in open_findings[:8]]
     used = int((session.get("start_args") or {}).get("generation") or 0)
-    if used < MAX_UNATTENDED_FRESH_TAKES:
+    takes = {beat.get("number"): len(beat.get("state", {}).get("attempts") or []) for beat in (plan or {}).get("beats", [])}
+    can_reshoot = any(finding.get("beat") in takes and takes[finding["beat"]] < MAX_BEAT_TAKES for finding in open_findings)
+    if used < MAX_UNATTENDED_FRESH_TAKES or can_reshoot:
         return {"verdict": "fix", "next": [
             *lines, *compare,
             "Mend in the edit when the footage is right (edit_step, edit_cards, update_step_narration, then "
-            "rerender). When the footage is wrong, make one fresh_take(session_id), changing only the beats "
-            "named here. Then review_session on the film you keep.",
+            "rerender). When one beat's footage is wrong, change it with plan_storyboard(beats, plan_id) and "
+            "reshoot_beat(session_id, beat=n). When most of the film is wrong, one fresh_take(session_id). "
+            "Then review_session on the film you keep.",
         ]}
     return {"verdict": "needs_human", "next": [
         f"This film has had {used} fresh take; another one is a person's call. Mend what the edit can, then report what is left:",
