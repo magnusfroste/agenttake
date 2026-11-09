@@ -52,12 +52,14 @@ You need nothing but these tools. Every reply says what comes next under
    |---|---|
    | `fix` | Findings of high or medium severity are open and you may still mend them. `next` says what. |
    | `ready_for_approval` | Nothing high or medium is open. Low findings are yours to weigh. |
-   | `needs_human` | What is open needs another fresh take, and that is a person's call. Report it. |
+   | `needs_human` | What is open has used its reshoots and fresh take, and more is a person's call. Report it. |
 
 8. **Mend.** In the edit when the footage is right: `edit_step`, `edit_cards`,
-   `update_step_narration`, then `rerender`. In one `fresh_take` when the
-   footage is wrong, changing only the beats the findings name. Then judge the
-   film you keep again. A fresh take can break what was fine: compare both.
+   `update_step_narration`, then `rerender`. When one beat's footage is wrong,
+   change it with `plan_storyboard(beats, plan_id=...)` and
+   `reshoot_beat(session_id, beat=n)`: only that beat is shot again, and the
+   film is cut with it. When most of the film is wrong, one `fresh_take`. It
+   can break what was fine, so compare both. Then judge the film again.
 9. **Deliver.** Download the film from `video_url`, because a finished session
    can be pruned later. Report the watch URL, the duration, each beat's status
    and every source URL. A person approves a film and publishes it.
