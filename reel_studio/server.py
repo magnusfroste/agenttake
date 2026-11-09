@@ -2603,7 +2603,7 @@ def _keep_in_storyboard(session_id: str, step_index: int, **fields: Any) -> bool
 
 def _beat_identity(beat: dict) -> tuple:
     return tuple(beat.get(key) for key in (
-        "shot", "line", "url", "text", "wait_for_text", "input_text", "background", "caption", "zoom",
+        "shot", "line", "url", "text", "wait_for_text", "input_text", "background", "caption", "zoom", "camera",
         "username", "password_secret", "timeout",
     ))
 

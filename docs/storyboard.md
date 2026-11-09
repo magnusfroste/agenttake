@@ -108,9 +108,15 @@ even if it opens for you: pick another source.
 | `image` | `url` (an https image), `caption` optional | The still with a slow Ken Burns drift; `caption` is a lower third, above the subtitles. |
 | `page_tour` | `url`, `wait_for_text` optional, `until_text` optional | A glide down from the hero, as long as the line: slow at first, then a steady pace a viewer can follow. With `until_text` (a heading further down, as the page shows it) it stops with that heading near the top; without, it goes about 400 px a second and stops where the line ends, not at the footer. **Once per page**: a second tour of it glides over the same sections again. |
 | `login` | `url`, `username`, `password_secret`, `wait_for_text` | Signs in offscreen and lands on the page after it. `password_secret` is the NAME of a secret AgentTake has (start_session lists them); the password never passes through you. `wait_for_text` is something the page after sign-in shows. The line is optional. |
-| `system` | `url`, `wait_for_text`, `zoom` optional | A page in the product, or one section of any page, held with a gentle push-in on `wait_for_text` (the section's heading). `zoom` (0.5–2) makes small text readable. |
+| `system` | `url`, `wait_for_text`, `zoom` optional | A page in the product, or one section of any page, held with a gentle push-in on `wait_for_text` (the section's heading). `zoom` (0.5–2) is the page's own zoom. |
 | `live_answer` | `input_text`, `wait_for_text` optional, `timeout` (seconds, default 120), `url` optional | Types the question and sends it offscreen, reads the page until the answer has stopped growing for 3 s (minutes if need be), then shows it close, above the subtitles. With `wait_for_text` (words only the answer has) the answer must contain them and is framed on them; without, it is framed on its first words. |
 | `cta` | `url`, `wait_for_text` optional | The page the viewer should go to. Pair it with start_session's `cta_url` for the closing card and its QR code. |
+
+**`camera`** (1–2.5) says how close the camera goes on `source`, `highlight`,
+`system`, `live_answer` and `cta`, which default to 1.12, 1.8, 1.3, 1.5 and
+1.12. A frame that cuts text wants it lower, small text wants it higher. On a
+`system` shot `zoom` changes the page and `camera` the framing:
+`rehearse_beats` shows what you get.
 
 Every narrated step waits for its text before the line plays, so a page that
 has not loaded is a failed beat with a reason, not a blank frame in the film.
