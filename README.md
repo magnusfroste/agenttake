@@ -392,6 +392,7 @@ It is one JSON file, `signature.json` under `REEL_OUTPUT_DIR` (or the path in
 | `accent` | The brand colour: the rule under the title and on brand cards, quote marks on source cards, the strip under a hero card. |
 | `ink`, `paper` | The ground solid cards are set on and the text colour on it. `ink` empty uses the accent, the look before signatures. |
 | `cards` | `solid` sets the title and closing cards on `ink`; `footage`, the default, on the film's own first and last frame, blurred. A film's own image still wins. |
+| `marks` | A list of the film's own marks. `window` sets pages inset on `ink` with rounded corners, `trace` draws a line in the accent under the text a shot found, `count_up` counts a whole number on a brand card up to its value. |
 | `display_font`, `text_font`, `mono_font` | Fontconfig family names for cards, captions and addresses. The image ships Inter, IBM Plex Mono and DejaVu; a name that is not installed falls back to DejaVu. |
 | `signature_line`, `ai_label` | Small print at the foot of the closing card: *Directed by Hermes · AgentHotel* and the AI label the EU AI Act (art. 50) asks a viewer be shown. |
 | `voice` | The house voice: `start_session` uses it unless a voice is asked for. |

@@ -433,12 +433,14 @@ TAIL_SECONDS = 0.75
 LONG_STILL, VERY_LONG_STILL = 7.0, 12.0
 
 
-def scan_frames(video: Path, fps: int = SCAN_FPS) -> list[bytes]:
+def scan_frames(video: Path, fps: int = SCAN_FPS, margin: float = 0.0) -> list[bytes]:
     """The film as grey frames of DETAIL_WIDTH x DETAIL_HEIGHT, without the
-    band subtitles are burned into."""
+    band subtitles are burned into, nor the margin of a window mark."""
+    area = (f"crop=iw*{1 - 2 * margin:.3f}:ih*{DETAIL_CROP - margin:.3f}:iw*{margin:.3f}:ih*{margin:.3f}"
+            if margin else f"crop=iw:ih*{DETAIL_CROP}:0:0")
     command = [
         "ffmpeg", "-loglevel", "error", "-i", str(video),
-        "-vf", f"fps={fps},crop=iw:ih*{DETAIL_CROP}:0:0,scale={DETAIL_WIDTH}:{DETAIL_HEIGHT},format=gray",
+        "-vf", f"fps={fps},{area},scale={DETAIL_WIDTH}:{DETAIL_HEIGHT},format=gray",
         "-f", "rawvideo", "-",
     ]
     try:
@@ -459,6 +461,25 @@ def _is_empty(frame: bytes) -> bool:
     sample = frame[::7]
     level = sum(sample) / len(sample)
     return (level > FLASH_BRIGHT or level < FLASH_DARK) and frame_detail(frame) < FLASH_DETAIL
+
+
+def lost_step_findings(parts: Sequence[dict], steps: Sequence[dict]) -> list[dict]:
+    """A narrated step that never reached the film. On a host too busy to keep
+    up the recording falls behind the clock (57 s of footage for 144 s of
+    shooting, 2026-11-09) and the render silently has nothing for the last
+    beats: that film was reported ready for approval."""
+    if not parts:
+        return []
+    visible = [s for s in steps if s.get("offset_seconds") is not None and not s.get("offscreen")]
+    placed = {part["step"] for part in parts if part.get("kind") == "step" and part.get("step") is not None}
+    return [{
+        "category": "step_not_in_film", "severity": "high", "location": f"step[{step.get('idx', 0)}]",
+        "measured": {"offset_seconds": step.get("offset_seconds")},
+        "message": f"Step {step.get('idx', 0)}'s line is not in the film: the recording ended before it, "
+                   "because the host could not keep up.",
+        "fix": "reshoot_beat for this beat, or fresh_take when the host is quieter.",
+    } for position, step in enumerate(visible)
+      if position not in placed and (step.get("narration_text") or "").strip()]
 
 
 def film_findings(frames: Sequence[bytes], parts: Sequence[dict], steps: Sequence[dict],

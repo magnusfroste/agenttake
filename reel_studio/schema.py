@@ -20,7 +20,7 @@ class Action(BaseModel):
     dy: int = 0
     ms: int = Field(default=0, ge=0)
     spotlight: bool = True
-    style: Literal["marker", "callout", "underline"] = "callout"
+    style: Literal["marker", "callout", "underline", "trace"] = "callout"
     dim: bool = False
     target_text: str | None = None
     wait_for_url: str | None = None
@@ -145,7 +145,7 @@ def action_json_schema() -> dict[str, Any]:
             "dy": {"type": "integer"},
             "ms": {"type": "integer", "minimum": 0},
             "spotlight": {"type": "boolean"},
-            "style": {"type": "string", "enum": ["marker", "callout", "underline"]},
+            "style": {"type": "string", "enum": ["marker", "callout", "underline", "trace"]},
             "dim": {"type": "boolean"},
             "target_text": {"type": "string"},
             "wait_for_url": {"type": "string"},

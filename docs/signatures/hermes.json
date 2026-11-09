@@ -5,6 +5,7 @@
   "ink": "#0B1B2B",
   "paper": "#F6F1E7",
   "cards": "solid",
+  "marks": ["window", "trace", "count_up"],
   "display_font": "Inter",
   "text_font": "Inter",
   "mono_font": "IBM Plex Mono",

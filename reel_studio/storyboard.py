@@ -810,6 +810,15 @@ def _open(url: str, wait_for_text: str | None) -> list[dict]:
     return [_act(goto), {"op": "consent"}]
 
 
+def _found(line: str, text: str) -> dict:
+    """The beat's narrated step, on a page where it found these words: with
+    the house's trace mark, a line in its accent draws itself under them."""
+    if "trace" not in sig.current().marks:
+        return _say(line, text)
+    return _act({"type": "annotate", "target_text": text, "text": "found", "style": "trace", "ms": 2500,
+                 "wait_for_text": text}, line)
+
+
 def _say(line: str, wait_for_text: str | None = None) -> dict:
     """The beat's narrated step: hold the frame for the line, after checking
     that what it talks about is on screen."""
@@ -842,7 +851,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             # Gentle: a full-width headline at 1.25x lost its last words off
             # both edges at 1280x720 (TNW, 2026-10-28).
             _shot(camera or 1.12, wait_text, move_seconds=3.0),
-            _say(line, wait_text),
+            _found(line, wait_text),
         ]
     if shot == "highlight":
         text = beat["text"]
@@ -920,7 +929,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             *ops,
             _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
             _shot(camera or 1.3, wait_text, move_seconds=2.5),
-            _say(line, wait_text),
+            _found(line, wait_text),
         ]
     if shot == "live_answer":
         # Sent offscreen, then the page is read until the answer stops
@@ -939,7 +948,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
              "question": beat["input_text"]},
             _act({"type": "scroll_to_text", "text": "@answer", "offscreen": True}),
             _shot(camera or 1.5, "@answer", move_seconds=1.2, lift=True),
-            _say(line, "@answer"),
+            _found(line, "@answer"),
         ]
     if shot == "cta":
         return [

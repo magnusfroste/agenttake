@@ -50,6 +50,7 @@ from .render import (
     wants_lead_in,
     burn_subtitles,
     STORYBOARD_DIR,
+    WINDOW_MARGIN,
     QUIET_FLOOR,
     SEGMENT_FLOOR,
     CARD_TEXT_MAX,
@@ -4294,7 +4295,7 @@ def _extract_review_frames(session_id: str, video_path: Path, duration: float | 
 
 
 BLOCKS_EXCELLENT = {"beat_missing", "beat_out_of_order", "blank_frame", "overlay_left_open", "focus_covered",
-                    "blank_flash", "focus_cropped", "claim_contradicted"}
+                    "blank_flash", "focus_cropped", "claim_contradicted", "step_not_in_film"}
 
 
 @mcp.tool()
@@ -4470,8 +4471,11 @@ async def review_session(session_id: str) -> dict:
         )
         findings.extend(checks.blank_frame_findings(step_frames))
         # 5. The moving picture, measured frame by frame.
-        scanned = await asyncio.to_thread(checks.scan_frames, video_path)
+        margin = WINDOW_MARGIN if "window" in signature.current().marks else 0.0
+        scanned = await asyncio.to_thread(checks.scan_frames, video_path, checks.SCAN_FPS, margin)
         findings.extend(await asyncio.to_thread(checks.film_findings, scanned, parts, steps))
+
+    findings.extend(checks.lost_step_findings(parts, steps))
 
     # 6. What each shot framed, and what each line claims.
     findings.extend(checks.shot_findings(camera, steps))
