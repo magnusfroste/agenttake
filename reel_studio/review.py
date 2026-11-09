@@ -537,7 +537,7 @@ def film_findings(frames: Sequence[bytes], parts: Sequence[dict], steps: Sequenc
                 "category": "long_still", "severity": "medium" if seconds >= VERY_LONG_STILL else "low",
                 "location": where, "at_seconds": start / fps, "measured": {"seconds": seconds},
                 "message": f"Nothing moves for {seconds:.1f} s from {start / fps:.1f}s.",
-                "fix": "Shorten the line with update_step_narration, push in on what the line names (the beat's zoom), "
+                "fix": "Shorten the line with update_step_narration, push in on what the line names (the beat's camera), "
                        "or split it into two beats.",
             })
         start = index
@@ -608,7 +608,7 @@ def shot_findings(camera: Any, steps: Sequence[dict]) -> list[dict]:
                 findings.append({
                     **common, "category": "focus_cropped", "severity": "high", "measured": {"in_frame": round(share, 2), "zoom": zoom},
                     "message": f"Only {share:.0%} of what step {idx}'s line is about is in the frame at zoom {zoom:g}.",
-                    "fix": "Lower the beat's zoom, or set the page narrower, and fresh_take.",
+                    "fix": "Lower the beat's camera, or its page zoom, and fresh_take.",
                 })
         cut = facts.get("cut") or []
         if focus.get("height"):
@@ -627,7 +627,7 @@ def shot_findings(camera: Any, steps: Sequence[dict]) -> list[dict]:
                 "message": (f"The frame cuts {count} of {lines} lines of text at zoom {zoom:g}"
                             + (f", {len(near)} of them next to the focus" if near else "")
                             + f': "{sample[0]["text"]}" runs off the {sample[0]["side"]} edge.'),
-                "fix": f"Lower the beat's zoom below {zoom:g}, or aim at a block that fits, and fresh_take.",
+                "fix": f"Set the beat's camera below {zoom:g}, or lower its page zoom, and fresh_take. rehearse_beats shows the frame first.",
             })
         font = float(facts.get("font_px") or 0.0)
         if font and font * zoom / camera.height < SMALL_TEXT:
@@ -636,7 +636,7 @@ def shot_findings(camera: Any, steps: Sequence[dict]) -> list[dict]:
                 "measured": {"text_share_of_height": round(font * zoom / camera.height, 4), "zoom": zoom},
                 "message": f"What step {idx}'s line is about is {font * zoom / camera.height:.1%} of the frame's height: "
                            "hard to read in a feed on a phone.",
-                "fix": "Raise the beat's zoom or use a set_zoom before the shot, and fresh_take.",
+                "fix": "Raise the beat's camera, and fresh_take. rehearse_beats shows the frame first.",
             })
     return findings
 

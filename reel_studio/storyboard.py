@@ -37,6 +37,8 @@ SHOT_TYPES: tuple[str, ...] = get_args(ShotType)
 # What each shot needs besides its line, and what it does with it: the menu
 # the director picks from, stated once for the tool schema, the checks and
 # the handbook.
+# The shots whose recipe moves the camera: only these take a beat's camera.
+CAMERA_SHOTS = {"source", "highlight", "system", "live_answer", "cta"}
 SHOT_FIELDS: dict[str, str] = {
     "source": "url, wait_for_text (the headline): opens the article, closes a consent banner offscreen without accepting it, "
               "settles, then a slow push-in on the headline",
@@ -52,11 +54,12 @@ SHOT_FIELDS: dict[str, str] = {
                  "hero, slow at first, to until_text or as far as a readable pace gets in the line, once per page",
     "login": "url (the sign-in page), username, password_secret (a secret's NAME), wait_for_text (what the "
              "page after sign-in shows): signs in offscreen, line optional",
-    "system": "url, wait_for_text, zoom optional (page zoom 0.5-2, for readable text): a page, or one "
-              "section of a page, held with a push-in on wait_for_text",
+    "system": "url, wait_for_text, zoom optional (page zoom 0.5-2, for readable text), camera optional (how "
+              "close the camera goes, 1-2.5, default 1.3): a page, or one section of a page, held with a "
+              "push-in on wait_for_text",
     "live_answer": "input_text, wait_for_text optional (words the answer must have), timeout optional (seconds, "
                    "default 120), url optional (default: the page before): sends offscreen, waits until the "
-                   "answer stops growing, shows it",
+                   "answer stops growing, shows it; camera optional (1-2.5, default 1.5)",
     "cta": "url, wait_for_text optional: the page the viewer should go to",
 }
 
@@ -143,7 +146,12 @@ class StoryBeat(BaseModel):
     date: str | None = None
     username: str | None = None
     password_secret: str | None = None
-    zoom: float | None = Field(default=None, ge=0.5, le=2.0)
+    zoom: float | None = Field(default=None, ge=0.5, le=2.0, description="system: the page's own zoom.")
+    camera: float | None = Field(
+        default=None, ge=1.0, le=2.5,
+        description="How close the camera goes: 1 is the whole page, 2.5 the closest. "
+                    "source, highlight, system, live_answer and cta have a default of their own.",
+    )
     input_text: str | None = None
     until_text: str | None = Field(default=None, description="page_tour: the heading the glide stops at.")
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
@@ -157,7 +165,10 @@ def beats_json_schema() -> dict[str, Any]:
         "line": {"type": "string", "description": "The narration, spoken once over the shot"},
         "label": {"type": "string"},
         "source": {"type": "string", "description": "The URL a claim comes from"},
-        "zoom": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+        "zoom": {"type": "number", "minimum": 0.5, "maximum": 2.0, "description": "system: the page's own zoom"},
+        "camera": {"type": "number", "minimum": 1.0, "maximum": 2.5,
+                   "description": "How close the camera goes: 1 is the whole page. source, highlight, system, "
+                                  "live_answer and cta only"},
         "timeout": {"type": "number", "minimum": 1, "maximum": OFFSCREEN_WAIT_MAX_MS / 1000},
     }
     for name in ("url", "wait_for_text", "text", "background", "caption", "publication", "date", "username",
@@ -290,6 +301,9 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
                 items.append(_item(number, label, "fix", "invalid_url", f"{name} must be an http(s) URL"))
         if shot == "image" and beat.get("url") and not beat["url"].startswith("https://"):
             items.append(_item(number, label, "fix", "invalid_url", "an image url must be https"))
+        if beat.get("camera") is not None and shot not in CAMERA_SHOTS:
+            items.append(_item(number, label, "warn", "camera_not_used",
+                               f"a {shot} shot has no camera move, so camera does nothing here"))
         if shot == "card" and beat.get("background") and not _background_ok(beat["background"]):
             items.append(_item(number, label, "fix", "invalid_background",
                                "background is auto, brand, blur, a colour (#123456, navy) or an https image URL"))
@@ -818,6 +832,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
     """
     shot, line = beat["shot"], beat.get("line", "")
     wait_text = beat.get("wait_for_text")
+    camera = beat.get("camera")
     reopen = (retake or beat.get("reopens")) and beat.get("inherits_url") and beat.get("page_url")
     if shot == "source":
         return [
@@ -826,7 +841,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             # Wide, then a slow push-in on the headline while the line plays.
             # Gentle: a full-width headline at 1.25x lost its last words off
             # both edges at 1280x720 (TNW, 2026-10-28).
-            _shot(1.12, wait_text, move_seconds=3.0),
+            _shot(camera or 1.12, wait_text, move_seconds=3.0),
             _say(line, wait_text),
         ]
     if shot == "highlight":
@@ -842,7 +857,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             # Close, but never closer than the whole quote: a standfirst that
             # wraps is as wide as its column, and at 1.8x it lost its last
             # words off the right edge (TechTarget, 2026-10-28).
-            _shot(1.8, text, move_seconds=1.2, lift=True, fit=True),
+            _shot(camera or 1.8, text, move_seconds=1.2, lift=True, fit=True),
             _act({"type": "annotate", "target_text": text, "text": mark, "style": "marker",
                   "ms": 4000, "wait_for_text": text}, line),
         ]
@@ -904,7 +919,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
         return [
             *ops,
             _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
-            _shot(1.3, wait_text, move_seconds=2.5),
+            _shot(camera or 1.3, wait_text, move_seconds=2.5),
             _say(line, wait_text),
         ]
     if shot == "live_answer":
@@ -923,13 +938,13 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             {"op": "answer", "timeout": float(beat.get("timeout", 120)), "expect": wait_text,
              "question": beat["input_text"]},
             _act({"type": "scroll_to_text", "text": "@answer", "offscreen": True}),
-            _shot(1.5, "@answer", move_seconds=1.2, lift=True),
+            _shot(camera or 1.5, "@answer", move_seconds=1.2, lift=True),
             _say(line, "@answer"),
         ]
     if shot == "cta":
         return [
             *_open(beat["url"], wait_text),
-            _shot(1.12, wait_text, move_seconds=3.0),
+            _shot(camera or 1.12, wait_text, move_seconds=3.0),
             _say(line, wait_text),
         ]
     raise ValueError(f"unknown shot {shot!r}")
