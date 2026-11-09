@@ -232,16 +232,18 @@ def test_edit_cards_changes_the_closing_card_for_this_film_and_the_next(mods, mo
     assert stored["start_args"]["cta_text"] == "Get it on GitHub" and stored["start_args"]["accent"] == "#1f2a44"
 
 
-def test_an_ffmpeg_killed_by_a_signal_runs_once_more(monkeypatch):
+@pytest.mark.parametrize("code", [-6, render.FFMPEG_ENCODER_FAILED])
+def test_an_ffmpeg_that_dies_of_something_passing_runs_once_more(monkeypatch, code):
     calls = []
 
     def flaky(command, check, **kwargs):
         calls.append(kwargs)
         if len(calls) == 1:
-            raise subprocess.CalledProcessError(-6, command)
+            raise subprocess.CalledProcessError(code, command)
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(render.subprocess, "run", flaky)
+    monkeypatch.setattr(render, "MEDIA_RETRY_PAUSE", 0)
     assert render.run_media(["ffmpeg"], timeout=5).returncode == 0
     assert calls == [{"timeout": 5}, {"timeout": 5}]
 
@@ -257,3 +259,20 @@ def test_an_ffmpeg_that_fails_by_itself_is_not_run_again(monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         render.run_media(["ffmpeg"])
     assert len(calls) == 1
+
+
+def test_the_join_asks_for_few_threads_per_part(monkeypatch, tmp_path):
+    """18 parts took 377 threads with ffmpeg's defaults, under a guest's 512."""
+    seen = []
+    monkeypatch.setattr(render, "run_media", lambda command, **kwargs: seen.append(command))
+    monkeypatch.setattr(render, "probe_duration", lambda path: 3.0)
+    monkeypatch.setattr(render, "probe_video_size", lambda path: (320, 176))
+    monkeypatch.setattr(render, "_mux_segment_audio", lambda *args, **kwargs: None)
+    monkeypatch.setattr(render, "choose_transitions", lambda paths, pages, temporary: [0.5] * (len(paths) - 1))
+    paths = [tmp_path / f"part-{number}.mp4" for number in range(3)]
+    render._assemble_smooth(paths, [""] * 3, [None] * 3, tmp_path / "out.mp4", None,
+                            render.RenderConfig(), tmp_path)
+    command = seen[0]
+    assert command[command.index("-filter_complex_threads") + 1] == render.JOIN_THREADS
+    inputs = [index for index, word in enumerate(command) if word == "-i"]
+    assert len(inputs) == 3 and all(command[index - 2:index] == ["-threads", render.JOIN_THREADS] for index in inputs)

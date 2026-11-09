@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from typing import TYPE_CHECKING, Callable, Sequence, cast
 import textwrap
+import time
 
 from . import signature as sig
 
@@ -22,16 +23,28 @@ FONT_PATH = sig.FALLBACK_FONT
 CARD_DURATION = 3.0
 
 
+# ffmpeg's AVERROR_EXTERNAL as an exit status, the low byte of the error.
+FFMPEG_ENCODER_FAILED = 187
+MEDIA_RETRY_PAUSE = 2.0
+# A film's join decodes every part at once, and ffmpeg gives each input and
+# the filter graph a thread per core: 377 threads for 18 parts on eight cores,
+# against the 512 AgentHotel allows a guest. Too close: take 6's first finish
+# failed there twice. At two each it peaks at 111 and takes the same time.
+JOIN_THREADS = "2"
+
+
 def run_media(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
-    """subprocess.run with check=True for ffmpeg, once more if a signal killed
-    it. The first mux of Sluss take 5 died with SIGABRT and the same command
-    went through on the next finish (2026-11-03). An ffmpeg that exits with an
-    error of its own would only fail the same way again."""
+    """subprocess.run with check=True for ffmpeg, once more if it died of
+    something passing: a signal, or the encoder failing to start (exit 187).
+    Both are what running out of threads looks like, and the same command
+    went through on the next finish (Sluss takes 5 and 6). An ffmpeg that
+    exits with an error of its own would only fail the same way again."""
     try:
         return subprocess.run(command, check=True, **kwargs)
     except subprocess.CalledProcessError as exc:
-        if exc.returncode >= 0:
+        if exc.returncode >= 0 and exc.returncode != FFMPEG_ENCODER_FAILED:
             raise
+        time.sleep(MEDIA_RETRY_PAUSE)
         return subprocess.run(command, check=True, **kwargs)
 
 
@@ -1351,9 +1364,9 @@ def _assemble_smooth(
     if config.cta_url.strip():
         kinds.append(("outro", None))
 
-    command = ["ffmpeg", "-loglevel", "error", "-y"]
+    command = ["ffmpeg", "-loglevel", "error", "-y", "-filter_complex_threads", JOIN_THREADS]
     for path, _ in parts:
-        command += ["-i", str(path)]
+        command += ["-threads", JOIN_THREADS, "-i", str(path)]
     chain: list[str] = []
     label = "[0:v]"
     end = probe_duration(parts[0][0])
