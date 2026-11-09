@@ -6,15 +6,15 @@ import re
 from typing import Literal
 
 
-AnnotationKind = Literal["marker", "callout", "underline"]
+AnnotationKind = Literal["marker", "callout", "underline", "trace"]
 
 
 def validate_annotation(kind: str, label: str, duration_ms: int) -> dict[str, object]:
     """Validate and normalize the small annotation action contract."""
     kind = kind.strip().lower()
     label = label.strip()
-    if kind not in {"marker", "callout", "underline"}:
-        raise ValueError("annotation kind must be marker, callout, or underline")
+    if kind not in {"marker", "callout", "underline", "trace"}:
+        raise ValueError("annotation kind must be marker, callout, underline, or trace")
     if not label:
         raise ValueError("annotation label cannot be empty")
     if duration_ms < 250 or duration_ms > 30000:
@@ -58,7 +58,7 @@ def annotation_script() -> str:
     background:"transparent", transition:"all 180ms ease"
   });
   group.appendChild(box);
-  if (spec.kind !== "underline") {
+  if (spec.kind !== "underline" && spec.kind !== "trace") {
     label = document.createElement("div");
     label.textContent = spec.label;
     Object.assign(label.style, {
@@ -90,6 +90,18 @@ def annotation_script() -> str:
       x: (rect.left ?? rect.x) / z, y: (rect.top ?? rect.y) / z,
       width: rect.width / z, height: rect.height / z,
     };
+    if (spec.kind === "trace") {
+      // A line that draws itself under the words, once the frame has settled.
+      if (box.dataset.traced) return;
+      box.dataset.traced = "true";
+      Object.assign(box.style, {
+        left:`${x}px`, top:`${y + height + 3}px`, width:"0px", height:`${Math.min(5, Math.max(3, Math.round(height * 0.12)))}px`,
+        background:accent, border:"none", boxShadow:"none", borderRadius:"2px",
+        transition:"width 900ms cubic-bezier(.2,.7,.2,1) 350ms",
+      });
+      requestAnimationFrame(() => requestAnimationFrame(() => { box.style.width = `${width}px`; }));
+      return;
+    }
     Object.assign(box.style, {
       left:`${x-10}px`, top:`${y-10}px`,
       width:`${width+20}px`, height:`${height+20}px`,

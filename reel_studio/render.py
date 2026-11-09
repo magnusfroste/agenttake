@@ -90,12 +90,19 @@ def start_recording(
     )
 
 
+# How long the recorder gets to write out what it holds. On a busy host it can
+# need much more than the twelve seconds it had: it was then killed before
+# writing its index, and the whole recording was unreadable (Sluss take 4, and
+# three test films in a row on 2026-11-09 at load 8 on eight cores).
+RECORDER_STOP_SECONDS = 180
+
+
 def stop_recording(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
     try:
         process.send_signal(signal.SIGINT)
-        process.wait(timeout=12)
+        process.wait(timeout=RECORDER_STOP_SECONDS)
     except subprocess.TimeoutExpired:
         process.terminate()
         try:
@@ -291,6 +298,29 @@ def card_backgrounds(
     )
 
 
+# Whole numbers only: "1.2" and "3,000" would count as something else.
+_CARD_NUMBER = re.compile(r"(?<![\d.,])\d{1,7}(?![\d]|[.,]\d)")
+# Past the dissolve in, then up to the value in under a second.
+COUNT_START, COUNT_SECONDS = 0.4, 0.9
+
+
+def _count_up_line(lines: Sequence[str]) -> tuple[int, re.Match[str]] | None:
+    """The line and number to count up: only a card with exactly one number,
+    and not a year, which is no quantity."""
+    found = [(index, match) for index, line in enumerate(lines) for match in _CARD_NUMBER.finditer(line)]
+    if len(found) != 1 or re.fullmatch(r"(19|20)\d\d", found[0][1].group()):
+        return None
+    return found[0]
+
+
+def _count_up_expression(value: int) -> str:
+    """drawtext's expansion of a number counting up. It starts at the same
+    number of digits, so the line stays put while it runs."""
+    start = 0 if value < 10 else 10 ** (len(str(value)) - 1)
+    progress = f"pow(min(1,max(0,t-{COUNT_START})/{COUNT_SECONDS}),0.5)"
+    return f"%{{eif\\:min({value},floor({start}+({value - start})*{progress}))\\:d}}"
+
+
 def card_filters(
     width: int,
     height: int,
@@ -300,6 +330,7 @@ def card_filters(
     signature: "Signature | None" = None,
     rule: bool = False,
     small_print: Sequence[str] = (),
+    count_up: bool = False,
 ) -> list[str]:
     """The drawtext (and drawbox) filters of a card: its lines centred, each
     in the display face, or in the face its tuple names; an accent rule
@@ -318,10 +349,16 @@ def card_filters(
         expanded_lines.extend((line, size, face) for line in wrapped)
     center_offset = (len(expanded_lines) - 1) * 0.7
     colour = "white" if on_image else text_colour
+    counted = _count_up_line([text for text, _, _ in expanded_lines]) if count_up else None
     for index, (text, size, face) in enumerate(expanded_lines):
+        drawn = _escape_drawtext(text)
+        if counted is not None and counted[0] == index:
+            found = counted[1]
+            drawn = (_escape_drawtext(text[:found.start()]) + _count_up_expression(int(found.group()))
+                     + _escape_drawtext(text[found.end():]))
         filters.append(
             "drawtext="
-            f"fontfile={face}:text='{_escape_drawtext(text)}':"
+            f"fontfile={face}:text='{drawn}':"
             f"fontcolor={colour}:fontsize={size}:"
             + ("shadowcolor=black@0.55:shadowx=2:shadowy=2:" if on_image else "")
             + f"x=(w-text_w)/2:y=(h-text_h)/2+{index * 1.4 - center_offset}*{size}"
@@ -364,11 +401,12 @@ def _card(
     text_colour: str = "white",
     rule: bool = False,
     small_print: Sequence[str] = (),
+    count_up: bool = False,
 ) -> None:
     signature = sig.current()
     if not Path(sig.font_file(signature.display_font)).is_file():
         raise RuntimeError(f"Title-card font is missing: {FONT_PATH}")
-    drawtext = card_filters(width, height, lines, text_colour, background is not None, signature, rule, small_print)
+    drawtext = card_filters(width, height, lines, text_colour, background is not None, signature, rule, small_print, count_up)
     if background is not None:
         # A hero section: the image fills the frame, drifts in a little over
         # the card, and is blurred and dimmed just enough for the text to read
@@ -438,6 +476,36 @@ def _overlay_qr(card: Path, qr: Path, width: int, height: int) -> None:
     )
     if result.returncode == 0 and out.is_file():
         out.replace(card)
+
+
+# The window mark: the page inset on the house's ink, with rounded corners.
+WINDOW_MARGIN = 0.04
+WINDOW_RADIUS = 0.022
+
+
+def window_geometry(width: int, height: int) -> tuple[int, int, int, int]:
+    """The inset page's width, height, left and top: the film's own shape."""
+    inner_h = int(height * (1 - 2 * WINDOW_MARGIN)) // 2 * 2
+    inner_w = int(inner_h * width / height) // 2 * 2
+    return inner_w, inner_h, (width - inner_w) // 2, (height - inner_h) // 2
+
+
+def window_frame(out: Path, width: int, height: int, ink: str) -> Path:
+    """A still of the ink with a rounded hole, to lay over the inset page. One
+    frame: overlay repeats its last, so a film of any length needs no more."""
+    inner_w, inner_h, left, top = window_geometry(width, height)
+    scale = 2  # drawn large and scaled down, for smooth corners
+    x0, y0, x1, y1 = left * scale, top * scale, (left + inner_w) * scale, (top + inner_h) * scale
+    r = int(height * WINDOW_RADIUS) * scale
+    outside = (f"gt(hypot(max(max({x0 + r}-X,X-{x1 - r}),0),max(max({y0 + r}-Y,Y-{y1 - r}),0)),{r})")
+    run_media([
+        "ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+        f"color=c=0x{ink.lstrip('#')}:s={width * scale}x{height * scale}",
+        "-frames:v", "1", "-vf",
+        f"format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='255*{outside}',scale={width}:{height}:flags=lanczos",
+        str(out),
+    ])
+    return out
 
 
 def _title_card(intro: Path, width: int, height: int, config: RenderConfig, background: Path | None) -> None:
@@ -881,6 +949,7 @@ def render_card_segment(
         # The house's mark, on the house's ground: a brand card is often the
         # only card a film has, when it opens straight on a question.
         rule=background == "brand" and not signature.is_default,
+        count_up=background == "brand" and "count_up" in signature.marks,
     )
     return output_path
 
@@ -1368,7 +1437,27 @@ def _assemble_smooth(
     for path, _ in parts:
         command += ["-threads", JOIN_THREADS, "-i", str(path)]
     chain: list[str] = []
-    label = "[0:v]"
+    # The window mark: a page is scaled in, and the ink with its rounded hole
+    # laid over it, in this same pass, so the footage is not encoded an extra
+    # time. Cards stay full frame.
+    house = sig.current()
+    first_segment = 1 if config.title.strip() else 0
+    framed = [first_segment + index for index in range(len(segment_paths))
+              if not (cards and cards[index])] if "window" in house.marks else []
+    if framed:
+        frame = window_frame(temporary / "window.png", width, height, house.ground)
+        command += ["-i", str(frame)]
+        inner_w, inner_h, left, top = window_geometry(width, height)
+        copies = "".join(f"[f{index}]" for index in framed)
+        chain.append(f"[{len(parts)}:v]format=rgba,split={len(framed)}{copies}" if len(framed) > 1
+                     else f"[{len(parts)}:v]format=rgba[f{framed[0]}]")
+        chain += [
+            f"[{index}:v]scale={inner_w}:{inner_h}:flags=lanczos,pad={width}:{height}:{left}:{top}:"
+            f"color=0x{house.ground.lstrip('#')}[p{index}];[p{index}][f{index}]overlay=0:0[w{index}]"
+            for index in framed
+        ]
+    source = lambda index: f"[w{index}]" if index in framed else f"[{index}:v]"
+    label = source(0)
     end = probe_duration(parts[0][0])
     placed = [{"kind": kinds[0][0], "step": kinds[0][1], "start": 0.0, "duration": round(end, 3)}]
     audio: list[tuple[float, Path]] = []
@@ -1378,7 +1467,7 @@ def _assemble_smooth(
         overlap = joins[index - 1] or CUT_FRAME
         start = max(0.0, end - overlap)
         chain.append(
-            f"{label}[{index}:v]xfade=transition=fade:duration={overlap:.3f}"
+            f"{label}{source(index)}xfade=transition=fade:duration={overlap:.3f}"
             f":offset={start:.3f}[v{index}]"
         )
         label = f"[v{index}]"

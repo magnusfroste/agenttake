@@ -276,3 +276,25 @@ def test_the_join_asks_for_few_threads_per_part(monkeypatch, tmp_path):
     assert command[command.index("-filter_complex_threads") + 1] == render.JOIN_THREADS
     inputs = [index for index, word in enumerate(command) if word == "-i"]
     assert len(inputs) == 3 and all(command[index - 2:index] == ["-threads", render.JOIN_THREADS] for index in inputs)
+
+
+def test_the_recorder_gets_time_to_finish_its_file(monkeypatch):
+    waited = []
+
+    class Recorder:
+        stdin = None
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def send_signal(self, signal):
+            pass
+
+        def wait(self, timeout):
+            waited.append(timeout)
+            return 0
+
+    render.stop_recording(Recorder())
+    assert waited == [render.RECORDER_STOP_SECONDS] and render.RECORDER_STOP_SECONDS >= 120
+

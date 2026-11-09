@@ -34,6 +34,7 @@ _FONT_NAME = re.compile(r"^[A-Za-z0-9 .+_-]{1,64}$")
 MAX_LINE = 80
 MAX_TONE_RULES = 12
 MAX_RULE = 160
+MARKS = {"window", "trace", "count_up"}
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,11 @@ class Signature:
     # own first and last frame, blurred; "solid" is the house's ink, so the
     # sign-off looks the same on every film, whatever page it ended on.
     cards: str = "footage"
+    # The film's own marks, beyond colour and type. window: the pages sit
+    # inset on the ink with rounded corners. trace: a line in the accent draws
+    # itself under the text a shot found. count_up: a number on a card counts
+    # up to its value.
+    marks: tuple[str, ...] = ()
     # Type, by fontconfig family name. The display face sets cards, the text
     # face captions, the mono face addresses and small labels.
     display_font: str = "DejaVu Sans"
@@ -79,7 +85,7 @@ class Signature:
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name, "version": self.version,
-            "accent": self.accent, "ink": self.ink, "paper": self.paper, "cards": self.cards,
+            "accent": self.accent, "ink": self.ink, "paper": self.paper, "cards": self.cards, "marks": list(self.marks),
             "display_font": self.display_font, "text_font": self.text_font, "mono_font": self.mono_font,
             "signature_line": self.signature_line, "ai_label": self.ai_label,
             "voice": self.voice, "tone": list(self.tone), "changelog": [dict(entry) for entry in self.changelog],
@@ -143,6 +149,14 @@ def parse(document: Any) -> tuple[Signature, list[str]]:
     colour("accent", False)
     colour("ink", True)
     colour("paper", False)
+    marks = document.get("marks")
+    if isinstance(marks, list):
+        values["marks"] = tuple(mark for mark in marks if mark in MARKS)
+        unknown = [mark for mark in marks if mark not in MARKS]
+        if unknown:
+            problems.append(f"marks are {', '.join(sorted(MARKS))}, not {unknown!r}")
+    elif marks is not None:
+        problems.append("marks must be a list")
     cards = document.get("cards")
     if cards in ("footage", "solid"):
         values["cards"] = cards

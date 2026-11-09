@@ -55,6 +55,7 @@ from .annotations import (
     validate_annotation,
 )
 from .refs import semantic_ref
+from . import signature as sig
 from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, SHOT_FACTS_JS, describe_cover, focus_covered
 from .schema import resolve_secret, secret_names, Action, mask_stylesheet
 from .tts import synthesize
@@ -1656,6 +1657,7 @@ class BrowserSession:
                         "id": live_annotation_id,
                         "kind": normalized["kind"],
                         "label": normalized["label"],
+                        **({"accent": sig.current().accent} if not sig.current().is_default else {}),
                         "duration_ms": visual_duration_ms,
                         "dim": action.dim,
                         "box": box,

@@ -102,6 +102,19 @@ def test_a_long_still_is_measured(seconds, expected):
         assert found[0]["severity"] == expected and found[0]["measured"]["seconds"] == seconds
 
 
+def test_a_line_that_never_reached_the_film_is_found():
+    steps = [{"idx": 0, "offset_seconds": 4.0, "offscreen": False, "narration_text": "One."},
+             {"idx": 1, "offset_seconds": 27.0, "offscreen": True, "narration_text": ""},
+             {"idx": 3, "offset_seconds": 97.0, "offscreen": False, "narration_text": "Two."},
+             {"idx": 6, "offset_seconds": 140.0, "offscreen": False, "narration_text": "Three."}]
+    parts = [{"kind": "lead", "step": None}, {"kind": "step", "step": 0}, {"kind": "outro", "step": None}]
+    found = review.lost_step_findings(parts, steps)
+    assert [finding["location"] for finding in found] == ["step[3]", "step[6]"] and found[0]["severity"] == "high"
+    assert not review.lost_step_findings([], steps)
+    all_parts = [{"kind": "step", "step": index} for index in range(3)]
+    assert not review.lost_step_findings(all_parts, steps)
+
+
 def _camera(facts, zoom=1.5, cx=960.0, cy=540.0):
     return Camera(1920, 1080, 1.0, [{"t": 2.0, "zoom": zoom, "cx": cx, "cy": cy, "facts": facts}])
 
@@ -235,6 +248,15 @@ def test_scanning_a_real_film_gives_one_frame_per_quarter_second(tmp_path):
                     "-t", "3", "-pix_fmt", "yuv420p", str(video)], check=True)
     frames = review.scan_frames(video)
     assert len(frames) == 3 * review.SCAN_FPS and {len(frame) for frame in frames} == {W * H}
+
+
+@media
+def test_a_window_films_margin_is_left_out_of_the_scan(tmp_path):
+    video = tmp_path / "film.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=white:size=320x176:rate=25",
+                    "-t", "1", "-pix_fmt", "yuv420p", str(video)], check=True)
+    frames = review.scan_frames(video, margin=0.04)
+    assert frames and {len(frame) for frame in frames} == {W * H}
 
 
 @media
