@@ -308,6 +308,68 @@ GLIDE_TEXT_TOP = 0.18
 # above the band burned-in subtitles take.
 SUBTITLE_LIFT = 0.17
 
+# A modal dialog smaller than this share of the screen is framed by the camera
+# when a step leaves it open, at most this deep: a bulk-sign dialog filled a
+# fifth of a dark 1080p frame and read as an empty screen (certera.ink,
+# 2026-11-10). The camera goes back to wide when the dialog closes.
+DIALOG_MAX_SHARE = 0.55
+DIALOG_ZOOM = 1.6
+# The box of the largest open modal dialog, or null. Modal: aria-modal, a
+# <dialog> shown with showModal(), or a dialog over a backdrop that covers the
+# screen (Radix and most kits do not set aria-modal). A popover is not modal.
+MODAL_BOX_JS = """() => {
+  const vw = innerWidth, vh = innerHeight;
+  const shown = (el) => {
+    const s = getComputedStyle(el), b = el.getBoundingClientRect();
+    return b.width > 40 && b.height > 40 && s.visibility !== "hidden" && s.display !== "none"
+      && Number(s.opacity) > 0.5 && b.bottom > 0 && b.right > 0 && b.top < vh && b.left < vw ? b : null;
+  };
+  const backdrop = (dialog) => [[4, 4], [vw - 5, 4], [4, vh - 5], [vw - 5, vh - 5]].every(([x, y]) => {
+    const el = document.elementFromPoint(x, y);
+    if (!el || dialog.contains(el)) return false;
+    const b = el.getBoundingClientRect(), s = getComputedStyle(el);
+    return (s.position === "fixed" || s.position === "absolute") && b.width >= vw * 0.95 && b.height >= vh * 0.95;
+  });
+  let best = null;
+  for (const el of document.querySelectorAll("[role=dialog], [role=alertdialog], dialog[open]")) {
+    const b = shown(el);
+    if (!b) continue;
+    const modal = el.getAttribute("aria-modal") === "true"
+      || (el.matches("dialog") && el.matches(":modal")) || backdrop(el);
+    if (modal && (!best || b.width * b.height > best.width * best.height))
+      best = {x: b.x, y: b.y, width: b.width, height: b.height};
+  }
+  return best;
+}"""
+
+# What the page's iframes hold, to see when a click's result has been drawn in
+# one: a template clicked in a design studio is drawn in an iframe a moment
+# after the click, and its line played over the studio before it (certera.ink,
+# 2026-11-10). A frame of another origin reads the same every time.
+FRAMES_SIGNATURE_JS = """() => Array.from(document.querySelectorAll("iframe")).map((f) => {
+  try {
+    const d = f.contentDocument;
+    return d ? d.readyState + ":" + (d.body ? d.body.innerHTML.length : 0) : "-";
+  } catch (e) { return "x"; }
+}).join("|")"""
+FRAMES_SETTLE_MS = 3000
+FRAMES_POLL_MS = 250
+
+# A film has one tab: a link that opens a new one would be recorded over the
+# session's page, untracked (certera.ink's "Open" link, 2026-11-10). Such links
+# and window.open load in the session's own tab instead.
+SAME_TAB_JS = """(() => {
+  document.addEventListener("click", (e) => {
+    const a = e.target && e.target.closest ? e.target.closest("a[target]") : null;
+    if (a && a.target && a.target !== "_self" && a.target !== "_top" && a.target !== "_parent") a.target = "_self";
+  }, true);
+  const open = window.open;
+  window.open = function (url, ...rest) {
+    if (url) { location.href = url; return window; }
+    return open.call(this, url, ...rest);
+  };
+})()"""
+
 # Hides the consent managers among the given selectors that are on screen, and
 # lets the page scroll again; returns the first one hidden, or null. A manager's
 # root is often an empty box around fixed children, so a child counts too. The
@@ -598,6 +660,10 @@ class BrowserSession:
     pending_ease: float = EASE_SECONDS
     # What the next shot frames, measured when it is set up (review.shot_findings).
     pending_facts: dict | None = None
+    # The camera is framing an open dialog on its own (_frame_dialog).
+    dialog_framed: bool = False
+    # Tabs the page opened anyway; the next step loads them in its own tab.
+    popups: list = field(default_factory=list)
     # Each timeline step's speed: above 1, its footage plays as a time-lapse.
     timeline_speeds: list[float] = field(default_factory=list)
     # Each timeline step's narration length when it is a glide, else None.
@@ -690,6 +756,7 @@ class BrowserSession:
         await context.add_init_script(
             "document.addEventListener('invalid', (e) => e.preventDefault(), true);"
         )
+        await context.add_init_script(SAME_TAB_JS)
         if color_scheme:
             await context.add_init_script(color_scheme_script(color_scheme))
         if mask_css:
@@ -761,6 +828,8 @@ class BrowserSession:
         )
         session.profile_dir = profile_dir
         session.camera = Camera(width, height, scale)
+        # A lambda: Playwright cannot wrap a builtin such as list.append.
+        context.on("page", lambda popup: session.popups.append(popup))
         return session
 
     async def _grab_display(self, output: Path, crop: dict | None = None, scale_to: str | None = None) -> bool:
@@ -1135,24 +1204,35 @@ class BrowserSession:
         box_is_text = False
         panel_frame: dict = {}
         note = ""
+        target = None
         if level > 1.0:
-            if focus_ref and focus_ref in self.refs and not self.refs_stale:
-                target = self.page.locator(self.refs[focus_ref]).first
+            if focus_ref:
+                # A ref from the latest observe, or else a CSS selector: a
+                # director framed a diploma drawn in an iframe with
+                # focus_ref "iframe", which is no ref, and the camera pushed in
+                # on the middle of the screen, cutting the diploma's top and
+                # right edge (certera.ink, 2026-11-10).
+                known = focus_ref in self.refs and not self.refs_stale
+                target = self.page.locator(self.refs[focus_ref] if known else focus_ref).first
                 try:
-                    box = await target.bounding_box()
-                except PlaywrightError:
+                    box = await target.bounding_box(timeout=2000)
+                except (PlaywrightError, PlaywrightTimeoutError):
                     box = None
-            elif focus_text:
+            if box is None and focus_text:
                 target = await self._visible_text_target(focus_text, exact=False)
                 if target is not None:
                     box = await self._text_box(target, focus_text)
                     box_is_text = True
             if box is None:
                 note = (
-                    "No focus_ref or focus_text box on screen: the camera pushes in "
-                    "on the current centre and follows the next clicked element."
+                    (f"focus_ref {focus_ref!r} is neither a ref from the latest observe nor a CSS selector "
+                     "of an element on screen. " if focus_ref else "")
+                    + "No focus box on screen: the camera pushes in on the current centre and follows "
+                    "the next clicked element. Call observe for a fresh ref, or give focus_text."
                 )
-        if box and fit and self.camera is not None:
+        # An element is framed whole: close on a diploma or a panel cut it at
+        # 2x. A line of text is framed from its start instead (aim's lead).
+        if box and (fit or not box_is_text) and self.camera is not None:
             level = self.camera.fit_zoom(box, level, SUBTITLE_LIFT if lift else 0.0)
         cx = cy = None
         if box:
@@ -1191,6 +1271,79 @@ class BrowserSession:
         if note:
             result["camera_note"] = note
         return result
+
+    async def _frame_dialog(self) -> None:
+        """Frame a small modal dialog the step left open; back to wide when it closes.
+
+        Only when the camera is wide or already on a dialog: a shot the
+        director framed is theirs.
+        """
+        if self.camera is None:
+            return
+        try:
+            box = await self.page.evaluate(MODAL_BOX_JS)
+        except PlaywrightError:
+            return
+        small = bool(box) and box["width"] * box["height"] < DIALOG_MAX_SHARE * self.width * self.height
+        if small:
+            if self.camera.final_state()[0] > 1.01 and not self.dialog_framed:
+                return
+            level = self.camera.fit_zoom(box, DIALOG_ZOOM, SUBTITLE_LIFT)
+            if level < 1.15:
+                return
+            cx, cy = self.camera.aim(box, level)
+            self.pending_shot = (level, cx, cy + self.height / level * SUBTITLE_LIFT)
+            self.pending_ease = EASE_SECONDS
+            self.pending_facts = None
+            self.dialog_framed = True
+        elif self.dialog_framed and not box:
+            self.pending_shot = (1.0, None, None)
+            self.pending_ease = EASE_SECONDS
+            self.pending_facts = None
+            self.dialog_framed = False
+
+    async def _frames_settled(self) -> None:
+        """Wait, up to FRAMES_SETTLE_MS, until the page's iframes stop changing."""
+        try:
+            last = await self.page.evaluate(FRAMES_SIGNATURE_JS)
+            if not last:
+                return
+            steady = 0
+            deadline = time.monotonic() + FRAMES_SETTLE_MS / 1000
+            while time.monotonic() < deadline and steady < 2:
+                await self.page.wait_for_timeout(FRAMES_POLL_MS)
+                current = await self.page.evaluate(FRAMES_SIGNATURE_JS)
+                loading = any(part.startswith(("loading", "interactive")) for part in current.split("|"))
+                steady = steady + 1 if current == last and not loading else 0
+                last = current
+        except PlaywrightError:
+            return  # mid-navigation: the step has settled as far as it can
+
+    async def _adopt_popups(self) -> str | None:
+        """Load a tab the page opened anyway in the session's own tab, and close it."""
+        url = None
+        while self.popups:
+            popup = self.popups.pop(0)
+            if popup is self.page:
+                continue
+            try:
+                await popup.wait_for_load_state("commit", timeout=5000)
+            except (PlaywrightError, PlaywrightTimeoutError):
+                pass
+            if popup.url and popup.url != "about:blank":
+                url = popup.url
+            try:
+                await popup.close()
+            except PlaywrightError:
+                pass
+        if url:
+            try:
+                await self.page.bring_to_front()
+                await self.page.goto(url, wait_until="domcontentloaded")
+            except PlaywrightError:
+                return None
+            self.refs_stale = True
+        return url
 
     async def _frame_panels(self, box: dict, zoom: float, keep_zoom: bool) -> dict:
         """Where to put the frame on a page of panels; {} when it has none."""
@@ -1919,6 +2072,8 @@ class BrowserSession:
                         "(up to 60000, or 600000 on an offscreen step) for slow answers.",
                     )
             await self.page.wait_for_timeout(action.settle_ms)
+            await self._adopt_popups()
+            await self._frames_settled()
             if action_type == "scroll" and scrolled is None:
                 try:
                     moved, mover = await self.page.evaluate(_SCROLL_MOVED_JS)
@@ -1957,6 +2112,8 @@ class BrowserSession:
             # TTS is prepared before the browser action; align narration with
             # the settled visual state rather than with synthesis start.
             offset = action_completed_at
+        if self.pending_shot is None and card is None and not action.offscreen:
+            await self._frame_dialog()
         if self.pending_shot is not None and self.camera is not None and card is None:
             # The shot's move starts where this step's footage starts in the
             # video: at its narration, after the action has settled. Timed

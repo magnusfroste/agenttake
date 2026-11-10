@@ -515,6 +515,21 @@ def film_findings(frames: Sequence[bytes], parts: Sequence[dict], steps: Sequenc
         if len(run) / fps >= FLASH_MIN_SECONDS:
             at, seconds = run[0] / fps, len(run) / fps
             step = shot_at(at)[1]  # type: ignore[index]
+            position = next((i for i, s in enumerate(visible) if s is step), 0)
+            if (position > 0 and step.get("action_type") != "goto"
+                    and visible[position - 1].get("url") == step.get("url")):
+                # The step stayed on a page that had loaded: a dark app whose
+                # dialog fades in over a backdrop measures as empty, but no
+                # page is missing (certera.ink's bulk-sign dialog, 2026-11-10).
+                findings.append({
+                    "category": "dim_frame", "severity": "low", "location": f"step[{step.get('idx', 0)}]",
+                    "at_seconds": at, "measured": {"seconds": seconds},
+                    "message": f"The screen is nearly empty for {seconds:.2f} s at {at:.1f}s on a page that had "
+                               "loaded: a dialog or menu fading in over a dark backdrop.",
+                    "fix": "Usually nothing. If it shows, cut the fade with edit_step or frame the dialog closer.",
+                })
+                run = []
+                continue
             flashed.add(int(step.get("idx", 0)))
             findings.append({
                 "category": "blank_flash", "severity": "high", "location": f"step[{step.get('idx', 0)}]",
