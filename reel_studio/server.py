@@ -1984,10 +1984,16 @@ recipes. What follows is the hand-directed way, act by act.
      first. focus_text frames a line from its first word — right for a result,
      a version line, a heading; it takes the first visible match, so pick words
      that appear once (a card's own description, not its title that the
-     sidebar repeats). focus_ref centres an element — right for a button. A
-     card has no ref of its own: use a line of its text. The reply's
-     camera_frame is the rectangle the shot will show, in page pixels;
-     camera_note means the focus was not found.
+     sidebar repeats). focus_ref frames an element whole — right for a button,
+     a panel, a picture. It is a ref from observe or a CSS selector: something
+     drawn in an iframe (a preview, a design) is focus_ref "iframe" or a
+     selector of its frame. A card has no ref of its own: use a line of its
+     text. The reply's camera_frame is the rectangle the shot will show, in
+     page pixels; camera_note means the focus was not found — fix it, or the
+     camera pushes in on the middle of the screen.
+   - A small modal dialog a step opens is framed by itself, and the camera goes
+     back to wide when it closes; you need no begin_shot for it.
+   - A link that opens a new tab opens in the film's own tab: the film has one.
    - A medium frame shows two thirds of the page width: a heading and a button
      at opposite ends of a wide card do not both fit. Frame the one the voice
      is talking about.
