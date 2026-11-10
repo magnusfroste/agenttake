@@ -104,7 +104,8 @@ def _stand_in(tab, width=1440, height=810):
         refs={}, refs_stale=False, popups=[],
     )
     for name in ("_frame_dialog", "_frames_settled", "_adopt_popups", "set_shot", "_shot_facts",
-                 "_frame_panels", "_visible_text_target", "_loose_text_target", "_text_box"):
+                 "_frame_panels", "_visible_text_target", "_loose_text_target", "_text_box",
+                 "_above_band", "_iframe_content_box"):
         setattr(session, name, types.MethodType(getattr(BrowserSession, name), session))
     return session
 
@@ -141,6 +142,33 @@ def test_the_camera_frames_a_small_dialog_and_goes_wide_when_it_closes():
     assert closed == (1.0, None, None) and not framed
 
 
+BULK_SIGN_PAGE = """<html><body style="margin:0;background:#121212;height:100vh">
+<div style="position:fixed;inset:0;background:rgba(0,0,0,.8)"></div>
+<div role="dialog" style="position:fixed;left:704px;top:304px;width:512px;height:472px;background:#1c1c1c">
+  Bulk Sign Diplomas</div></body></html>"""
+
+
+def test_the_bulk_sign_dialog_of_take_2_is_framed():
+    """512x472 at 1920x1080: lifted the subtitle_lift way it came out at 1.14x
+    and was left wide."""
+    async def run():
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            browser = await _browser(p)
+            tab = await browser.new_page(viewport={"width": 1920, "height": 1080})
+            await tab.set_content(BULK_SIGN_PAGE)
+            session = _stand_in(tab, 1920, 1080)
+            await session._frame_dialog()
+            await browser.close()
+            return session.pending_shot
+
+    zoom, cx, cy = asyncio.run(run())
+    assert zoom >= 1.5
+    view_h = 1080 / zoom
+    top = cy - view_h / 2
+    assert top <= 304 and 304 + 472 <= top + view_h * 0.85
+
+
 def test_a_shot_the_director_framed_is_left_alone():
     async def run():
         from playwright.async_api import async_playwright
@@ -159,8 +187,10 @@ def test_a_shot_the_director_framed_is_left_alone():
 
 IFRAME_PAGE = """<html><body style="margin:0;background:#111">
 <div style="height:120px">Studio</div>
-<iframe id="preview" style="position:absolute;left:700px;top:180px;width:700px;height:420px;border:0"
-  srcdoc="<p>empty</p>"></iframe></body></html>"""
+<iframe id="preview" style="position:absolute;left:560px;top:160px;width:840px;height:600px;border:0"
+  srcdoc="<body style='margin:0'><div class='wrapper' style='padding:20px;min-height:560px'><div class='diploma'
+  style='width:800px;height:380px;background:#eee'><h1 style='margin:0'>Kestrel Bay Academy</h1></div></div></body>"></iframe>
+</body></html>"""
 
 
 def test_a_css_selector_frames_the_element_whole():
@@ -171,6 +201,7 @@ def test_a_css_selector_frames_the_element_whole():
             tab = await browser.new_page(viewport={"width": 1440, "height": 810})
             await tab.set_content(IFRAME_PAGE)
             session = _stand_in(tab)
+            await tab.wait_for_timeout(300)
             result = await session.set_shot("close", focus_ref="iframe")
             missing = await session.set_shot("close", focus_ref="no-such-ref")
             await browser.close()
@@ -178,10 +209,11 @@ def test_a_css_selector_frames_the_element_whole():
 
     result, session, missing = asyncio.run(run())
     frame = result["camera_frame"]
-    # The whole iframe, not the middle of the screen at 2x.
-    assert frame["x"] <= 700 and frame["x"] + frame["w"] >= 1400
-    assert frame["y"] <= 180 and frame["y"] + frame["h"] >= 600
-    assert result["camera_zoom"] < 2.0
+    # The diploma the iframe shows (580..1380 x 180..560), whole and above the
+    # subtitles: not the middle of the screen at 2x, nor the whole frame at 1.07x.
+    assert frame["x"] <= 580 and frame["x"] + frame["w"] >= 1380
+    assert frame["y"] <= 180 and 560 <= frame["y"] + frame["h"] * 0.85
+    assert 1.3 < result["camera_zoom"] < 2.0
     assert "no-such-ref" in missing["camera_note"]
 
 

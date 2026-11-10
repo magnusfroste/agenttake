@@ -314,6 +314,47 @@ SUBTITLE_LIFT = 0.17
 # 2026-11-10). The camera goes back to wide when the dialog closes.
 DIALOG_MAX_SHARE = 0.55
 DIALOG_ZOOM = 1.6
+# An element is framed whole in the part of the frame above the subtitles:
+# FRAME_BAND is that band's share of the frame's height, FRAME_PAD the margin
+# kept around the element.
+FRAME_BAND = 0.15
+FRAME_PAD = 0.04
+# The box of what an iframe shows, in the iframe's own pixels: from its body
+# down while the children fill clearly less than their parent. A design studio
+# draws a 1277x599 diploma at the top of a 1317x910 preview frame; framing the
+# frame came out at 1.07x, no close-up at all (certera.ink, 2026-11-10).
+IFRAME_CONTENT_JS = """() => {
+  const union = (els) => {
+    let u = null;
+    for (const e of els) {
+      const b = e.getBoundingClientRect();
+      if (b.width < 3 || b.height < 3) continue;
+      u = u ? {l: Math.min(u.l, b.left), t: Math.min(u.t, b.top), r: Math.max(u.r, b.right), b: Math.max(u.b, b.bottom)}
+            : {l: b.left, t: b.top, r: b.right, b: b.bottom};
+    }
+    return u;
+  };
+  const area = (u) => (u.r - u.l) * (u.b - u.t);
+  // A painted box is the thing itself (a card, a diploma): its text is
+  // smaller than it, but the frame is the box.
+  const painted = (e) => {
+    const s = getComputedStyle(e);
+    return s.backgroundImage !== "none"
+      || (s.backgroundColor !== "rgba(0, 0, 0, 0)" && s.backgroundColor !== "transparent")
+      || (parseFloat(s.borderTopWidth) > 0 && s.borderTopStyle !== "none");
+  };
+  let level = Array.from(document.body ? document.body.children : []);
+  let box = union(level);
+  for (let i = 0; box && i < 8; i++) {
+    if (level.length === 1 && painted(level[0])) break;
+    const kids = level.flatMap((e) => Array.from(e.children));
+    const inner = union(kids);
+    if (!inner || area(inner) >= 0.8 * area(box)) break;
+    level = kids;
+    box = inner;
+  }
+  return box && {x: box.l, y: box.t, width: box.r - box.l, height: box.b - box.t};
+}"""
 # The box of the largest open modal dialog, or null. Modal: aria-modal, a
 # <dialog> shown with showModal(), or a dialog over a backdrop that covers the
 # screen (Radix and most kits do not set aria-modal). A popover is not modal.
@@ -1230,12 +1271,20 @@ class BrowserSession:
                     + "No focus box on screen: the camera pushes in on the current centre and follows "
                     "the next clicked element. Call observe for a fresh ref, or give focus_text."
                 )
-        # An element is framed whole: close on a diploma or a panel cut it at
-        # 2x. A line of text is framed from its start instead (aim's lead).
-        if box and (fit or not box_is_text) and self.camera is not None:
+        # An element is framed whole, above the subtitles: close on a diploma or
+        # a panel cut it at 2x. A line of text is framed from its start instead
+        # (aim's lead). What an iframe frames is what it shows, not its box.
+        element_frame = None
+        if box and not box_is_text and self.camera is not None:
+            box = await self._iframe_content_box(target, box) or box
+            element_frame = self._above_band(box, level)
+            level = element_frame[0]
+        elif box and fit and self.camera is not None:
             level = self.camera.fit_zoom(box, level, SUBTITLE_LIFT if lift else 0.0)
         cx = cy = None
-        if box:
+        if box and element_frame:
+            cx, cy = element_frame[1], element_frame[2]
+        elif box:
             if self.camera is not None:
                 # Words are read from their start: frame a text focus from
                 # its first word, not around its middle.
@@ -1288,11 +1337,12 @@ class BrowserSession:
         if small:
             if self.camera.final_state()[0] > 1.01 and not self.dialog_framed:
                 return
-            level = self.camera.fit_zoom(box, DIALOG_ZOOM, SUBTITLE_LIFT)
+            # Lifted the subtitle_lift way, the 512x472 bulk-sign dialog came
+            # out at 1.14x and was left wide (certera.ink take 2, 2026-11-10).
+            level, cx, cy = self._above_band(box, DIALOG_ZOOM)
             if level < 1.15:
                 return
-            cx, cy = self.camera.aim(box, level)
-            self.pending_shot = (level, cx, cy + self.height / level * SUBTITLE_LIFT)
+            self.pending_shot = (level, cx, cy)
             self.pending_ease = EASE_SECONDS
             self.pending_facts = None
             self.dialog_framed = True
@@ -1301,6 +1351,37 @@ class BrowserSession:
             self.pending_ease = EASE_SECONDS
             self.pending_facts = None
             self.dialog_framed = False
+
+    def _above_band(self, box: dict, zoom: float) -> tuple[float, float, float]:
+        """(zoom, cx, cy) that shows a box whole, up to ``zoom``, in the part of
+        the frame above the subtitle band, with a margin around it."""
+        width, height = max(box["width"], 1.0), max(box["height"], 1.0)
+        level = min(zoom, self.width * (1 - 2 * FRAME_PAD) / width,
+                    self.height * (1 - FRAME_BAND - 2 * FRAME_PAD) / height)
+        level = max(level, 1.0)
+        view_height = self.height / level
+        top = box["y"] + height / 2 - view_height * (1 - FRAME_BAND) / 2
+        return level, box["x"] + width / 2, top + view_height / 2
+
+    async def _iframe_content_box(self, target, box: dict) -> dict | None:
+        """What an iframe shows, in page pixels; None when the focus is no iframe."""
+        try:
+            if await target.evaluate("(e) => e.tagName") != "IFRAME":
+                return None
+            frame = await (await target.element_handle()).content_frame()
+            inner = await frame.evaluate(IFRAME_CONTENT_JS) if frame else None
+        except PlaywrightError:
+            return None
+        if not inner:
+            return None
+        # Clipped to the iframe: what is scrolled out of it is not on screen.
+        x0 = max(box["x"] + inner["x"], box["x"])
+        y0 = max(box["y"] + inner["y"], box["y"])
+        x1 = min(box["x"] + inner["x"] + inner["width"], box["x"] + box["width"])
+        y1 = min(box["y"] + inner["y"] + inner["height"], box["y"] + box["height"])
+        if x1 - x0 < 20 or y1 - y0 < 20:
+            return None
+        return {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0}
 
     async def _frames_settled(self) -> None:
         """Wait, up to FRAMES_SETTLE_MS, until the page's iframes stop changing."""
