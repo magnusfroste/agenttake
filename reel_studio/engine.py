@@ -269,7 +269,9 @@ async def ensure_fullscreen(context, page, settle_ms: int = 1200) -> bool:
 # close-up of the quote carried "https://googleads.g.doubleclick.net/…" in
 # Chrome's status bubble (2026-10-28).
 _POINTER_PARK_JS = """([x, y]) => {
-  const LINK = 'a[href], [role=link], iframe, frame, embed, object';
+  // [title]: a pointer resting on it shows the browser's tooltip, which the
+  // recording keeps (an iframe's title over certera.ink's opening shot, 2026-11-10).
+  const LINK = 'a[href], [role=link], iframe, frame, embed, object, [title]';
   const MARGIN = 16;
   const onLink = (px, py) => { const el = document.elementFromPoint(px, py); return !!(el && el.closest(LINK)); };
   const clear = (px, py) => !onLink(px, py) && !onLink(px - MARGIN, py) && !onLink(px + MARGIN, py)
@@ -871,6 +873,14 @@ class BrowserSession:
         session.camera = Camera(width, height, scale)
         # A lambda: Playwright cannot wrap a builtin such as list.append.
         context.on("page", lambda popup: session.popups.append(popup))
+        # Where the pointer is from the start, so the first shot parks it too:
+        # left where the display put it, it rested on the opening shot's
+        # diploma, under the iframe's tooltip, in three takes (2026-11-10).
+        try:
+            await page.mouse.move(width / 2, height / 2)
+            session.pointer = (width / 2, height / 2)
+        except Exception:
+            pass
         return session
 
     async def _grab_display(self, output: Path, crop: dict | None = None, scale_to: str | None = None) -> bool:

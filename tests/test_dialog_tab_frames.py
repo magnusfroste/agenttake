@@ -291,3 +291,33 @@ def test_a_tab_opened_anyway_is_loaded_in_the_films_tab_and_closed():
     url, here, pages, stale = asyncio.run(run())
     assert url == here == "http://certera.test/diploma/1"
     assert pages == 1 and stale
+
+
+TOOLTIP_PAGE = """<html><body style="margin:0">
+<iframe title="Sample diploma — Ashford University" srcdoc="<h1>Diploma</h1>"
+  style="position:absolute;left:400px;top:150px;width:640px;height:420px;border:0"></iframe>
+<div title="Copy link" style="position:absolute;left:100px;top:600px;width:120px;height:40px">Copy</div>
+</body></html>"""
+
+
+def test_the_pointer_is_parked_off_anything_that_shows_a_tooltip():
+    """The opening shot of three certera.ink takes had the pointer on the
+    sample diploma, under its iframe's title tooltip."""
+    from reel_studio.engine import _POINTER_PARK_JS
+
+    async def run():
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            browser = await _browser(p)
+            tab = await browser.new_page(viewport={"width": 1440, "height": 810})
+            await tab.set_content(TOOLTIP_PAGE)
+            on_frame = await tab.evaluate(_POINTER_PARK_JS, [720, 360])
+            on_title = await tab.evaluate(_POINTER_PARK_JS, [160, 620])
+            clear = await tab.evaluate(_POINTER_PARK_JS, [1300, 100])
+            await browser.close()
+            return on_frame, on_title, clear
+
+    on_frame, on_title, clear = asyncio.run(run())
+    assert on_frame and not (400 <= on_frame[0] <= 1040 and 150 <= on_frame[1] <= 570)
+    assert on_title and not (100 <= on_title[0] <= 220 and 600 <= on_title[1] <= 640)
+    assert clear is None
