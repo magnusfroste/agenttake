@@ -325,7 +325,12 @@ FRAME_PAD = 0.04
 # down while the children fill clearly less than their parent. A design studio
 # draws a 1277x599 diploma at the top of a 1317x910 preview frame; framing the
 # frame came out at 1.07x, no close-up at all (certera.ink, 2026-11-10).
-IFRAME_CONTENT_JS = """() => {
+#
+# With ``backdrop`` (a share of the viewport) it measures a page instead: a
+# painted box at least that big is the page's background, not the thing, and
+# a lone wrapper as big as its parent is gone through (body > #root > a
+# full-screen centring div > the form).
+IFRAME_CONTENT_JS = """(backdrop) => {
   const union = (els) => {
     let u = null;
     for (const e of els) {
@@ -337,6 +342,8 @@ IFRAME_CONTENT_JS = """() => {
     return u;
   };
   const area = (u) => (u.r - u.l) * (u.b - u.t);
+  // A box with no size (a toast region, an empty row) is not on screen.
+  const sized = (e) => { const b = e.getBoundingClientRect(); return b.width >= 3 && b.height >= 3; };
   // A painted box is the thing itself (a card, a diploma): its text is
   // smaller than it, but the frame is the box.
   const painted = (e) => {
@@ -345,17 +352,33 @@ IFRAME_CONTENT_JS = """() => {
       || (s.backgroundColor !== "rgba(0, 0, 0, 0)" && s.backgroundColor !== "transparent")
       || (parseFloat(s.borderTopWidth) > 0 && s.borderTopStyle !== "none");
   };
-  let level = Array.from(document.body ? document.body.children : []);
+  const screen = backdrop ? backdrop * innerWidth * innerHeight : Infinity;
+  let level = Array.from(document.body ? document.body.children : []).filter(sized);
   let box = union(level);
-  for (let i = 0; box && i < 8; i++) {
-    if (level.length === 1 && painted(level[0])) break;
-    const kids = level.flatMap((e) => Array.from(e.children));
+  for (let i = 0; box && i < 12; i++) {
+    if (level.length === 1 && painted(level[0]) && area(box) < screen) break;
+    const kids = level.flatMap((e) => Array.from(e.children)).filter(sized);
     const inner = union(kids);
-    if (!inner || area(inner) >= 0.8 * area(box)) break;
+    if (!inner) break;
+    const wrapper = backdrop && level.length === 1 && kids.length === 1;
+    if (area(inner) >= 0.8 * area(box) && !wrapper) break;
     level = kids;
     box = inner;
   }
   return box && {x: box.l, y: box.t, width: box.r - box.l, height: box.b - box.t};
+}"""
+# A form alone on a page — sign in, sign up — fills a sliver of a 1080p frame
+# and read as an empty screen (certera.ink take 6, 2026-11-11). Smaller than
+# FORM_MAX_SHARE of the screen, with a field in it, the camera frames it.
+FORM_MAX_SHARE = 0.35
+SMALL_FORM_JS = """() => {
+  const content = (""" + IFRAME_CONTENT_JS + """)(0.8);
+  if (!content) return null;
+  const inside = (b) => b.width > 0 && b.height > 0
+    && b.left >= content.x - 1 && b.right <= content.x + content.width + 1
+    && b.top >= content.y - 1 && b.bottom <= content.y + content.height + 1;
+  const fields = document.querySelectorAll("input:not([type=hidden]), textarea, select");
+  return Array.from(fields).some((e) => inside(e.getBoundingClientRect())) ? content : null;
 }"""
 # The box of the largest open modal dialog, or null. Modal: aria-modal, a
 # <dialog> shown with showModal(), or a dialog over a backdrop that covers the
@@ -705,6 +728,8 @@ class BrowserSession:
     pending_facts: dict | None = None
     # The camera is framing an open dialog on its own (_frame_dialog).
     dialog_framed: bool = False
+    # The camera is framing a small form alone on its page (_frame_form).
+    form_framed: bool = False
     # Tabs the page opened anyway; the next step loads them in its own tab.
     popups: list = field(default_factory=list)
     # Each timeline step's speed: above 1, its footage plays as a time-lapse.
@@ -1361,6 +1386,38 @@ class BrowserSession:
             self.pending_ease = EASE_SECONDS
             self.pending_facts = None
             self.dialog_framed = False
+        elif not box:
+            await self._frame_form()
+
+    async def _frame_form(self) -> None:
+        """Frame a small form alone on its page (sign in, sign up); back to wide
+        when the page holds more than that.
+
+        Only when the camera is wide or already on the form: a shot the
+        director framed is theirs.
+        """
+        if self.camera is None:
+            return
+        try:
+            box = await self.page.evaluate(SMALL_FORM_JS)
+        except PlaywrightError:
+            return
+        small = bool(box) and box["width"] * box["height"] < FORM_MAX_SHARE * self.width * self.height
+        if small:
+            if self.camera.final_state()[0] > 1.01 and not self.form_framed:
+                return
+            level, cx, cy = self._above_band(box, DIALOG_ZOOM)
+            if level < 1.15:
+                return
+            self.pending_shot = (level, cx, cy)
+            self.pending_ease = EASE_SECONDS
+            self.pending_facts = None
+            self.form_framed = True
+        elif self.form_framed:
+            self.pending_shot = (1.0, None, None)
+            self.pending_ease = EASE_SECONDS
+            self.pending_facts = None
+            self.form_framed = False
 
     def _above_band(self, box: dict, zoom: float) -> tuple[float, float, float]:
         """(zoom, cx, cy) that shows a box whole, up to ``zoom``, in the part of
@@ -2102,6 +2159,12 @@ class BrowserSession:
                     await self.page.mouse.wheel(0, action.dy)
             elif action_type == "wait":
                 await self.page.wait_for_timeout(action.ms)
+                # A wait on screen is a hold the director asked for: the
+                # render kept 1.4 s of a 3 s wait on the studio after sign-in,
+                # and the design waiting there flashed by (certera.ink take 6,
+                # 2026-11-11).
+                if not action.offscreen:
+                    annotation_duration = max(annotation_duration, min(action.ms / 1000, 20.0))
             action_finished_at = time.monotonic() - self.t0
             if self.page.url != before_url:
                 self.refs_stale = True
@@ -2110,6 +2173,7 @@ class BrowserSession:
                 # an eased zoom-out showed its first second at the old zoom.
                 if self.camera is not None:
                     self.camera.move(action_finished_at, 1.0, ease=0.0)
+                self.dialog_framed = self.form_framed = False
                 # A sticky caption belonged to the old page. In a single-page
                 # app the old page's DOM — and the caption — survives the
                 # navigation, so it is removed rather than forgotten.
@@ -2309,7 +2373,7 @@ class BrowserSession:
             result.update(scroll_report(action.dy, *scrolled, glide=glide))
         if live_annotation_id:
             result["annotation_id"] = live_annotation_id
-        if live_annotation_id or glide:
+        if live_annotation_id or glide or annotation_duration:
             result["annotation_duration"] = round(annotation_duration, 3)
         if card is not None:
             result["card"] = {"text": card[0], "background": card[1]}

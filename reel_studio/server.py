@@ -1992,7 +1992,10 @@ recipes. What follows is the hand-directed way, act by act.
      page pixels; camera_note means the focus was not found — fix it, or the
      camera pushes in on the middle of the screen.
    - A small modal dialog a step opens is framed by itself, and the camera goes
-     back to wide when it closes; you need no begin_shot for it.
+     back to wide when it closes; you need no begin_shot for it. So is a small
+     form alone on its page (sign in, sign up).
+   - A wait{ms} on screen holds the picture that long in the video: a result
+     the line has already named can breathe without a line of its own.
    - A link that opens a new tab opens in the film's own tab: the film has one.
    - A medium frame shows two thirds of the page width: a heading and a button
      at opposite ends of a wide card do not both fit. Frame the one the voice

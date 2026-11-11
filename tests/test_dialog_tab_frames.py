@@ -101,9 +101,9 @@ def _stand_in(tab, width=1440, height=810):
     session = types.SimpleNamespace(
         page=tab, camera=Camera(width, height, 1.0), width=width, height=height,
         pending_shot=None, pending_ease=1.0, pending_facts=None, dialog_framed=False,
-        refs={}, refs_stale=False, popups=[],
+        form_framed=False, refs={}, refs_stale=False, popups=[],
     )
-    for name in ("_frame_dialog", "_frames_settled", "_adopt_popups", "set_shot", "_shot_facts",
+    for name in ("_frame_dialog", "_frame_form", "_frames_settled", "_adopt_popups", "set_shot", "_shot_facts",
                  "_frame_panels", "_visible_text_target", "_loose_text_target", "_text_box",
                  "_above_band", "_iframe_content_box"):
         setattr(session, name, types.MethodType(getattr(BrowserSession, name), session))
@@ -321,3 +321,86 @@ def test_the_pointer_is_parked_off_anything_that_shows_a_tooltip():
     assert on_frame and not (400 <= on_frame[0] <= 1040 and 150 <= on_frame[1] <= 570)
     assert on_title and not (100 <= on_title[0] <= 220 and 600 <= on_title[1] <= 640)
     assert clear is None
+
+
+# certera.ink's sign-up page as Chromium lays it out at 1920x1080 (take 6,
+# 2026-11-11): a painted full-screen wrapper, an empty toast region beside it,
+# and a 384x618 column with the form.
+SIGN_UP_PAGE = """<html><body style="margin:0;background:#121212">
+<div id="root">
+  <div style="height:0"><ol style="position:fixed;right:0;bottom:0;width:420px;height:32px;margin:0"></ol></div>
+  <div style="min-height:100vh;background:#121212;display:flex;align-items:center;justify-content:center">
+    <div style="width:384px">
+      <div style="height:182px"><h1 style="margin:0">certera.ink</h1></div>
+      <div style="height:404px;margin-top:32px;background:#1a1a1a">
+        <form><input style="width:300px" placeholder="you@example.com"><input type="password"></form>
+      </div>
+    </div>
+  </div>
+</div></body></html>"""
+
+HERO_PAGE = """<html><body style="margin:0;background:#121212">
+<div style="min-height:100vh;display:flex;align-items:center;justify-content:center">
+  <div style="width:500px;height:200px"><h1>Diplomas that earn trust.</h1><button>Design a diploma</button></div>
+</div></body></html>"""
+
+
+def test_a_form_alone_on_a_page_is_framed_and_a_full_page_goes_wide():
+    async def run():
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            browser = await _browser(p)
+            tab = await browser.new_page(viewport={"width": 1920, "height": 1080})
+            await tab.set_content(SIGN_UP_PAGE)
+            session = _stand_in(tab, 1920, 1080)
+            await session._frame_dialog()
+            framed = session.pending_shot
+            session.camera.move(1.0, *framed)
+            session.pending_shot = None
+            await tab.set_content(f"<body style='margin:0'><div style='height:1080px'>{'Studio ' * 400}</div></body>")
+            await session._frame_dialog()
+            wide = session.pending_shot
+            await browser.close()
+            return framed, wide, session.form_framed
+
+    framed, wide, still_framed = asyncio.run(run())
+    zoom, cx, cy = framed
+    assert 1.3 <= zoom <= 1.6
+    column = (768, 231, 384, 618)  # x, y, width, height
+    view_w, view_h = 1920 / zoom, 1080 / zoom
+    left, top = cx - view_w / 2, cy - view_h / 2
+    assert left <= column[0] and column[0] + column[2] <= left + view_w
+    assert top <= column[1] and column[1] + column[3] <= top + view_h * 0.85
+    assert wide == (1.0, None, None) and not still_framed
+
+
+def test_a_page_with_no_field_is_not_framed():
+    async def run():
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            browser = await _browser(p)
+            tab = await browser.new_page(viewport={"width": 1920, "height": 1080})
+            await tab.set_content(HERO_PAGE)
+            session = _stand_in(tab, 1920, 1080)
+            await session._frame_dialog()
+            await browser.close()
+            return session.pending_shot
+
+    assert asyncio.run(run()) is None
+
+
+def test_a_wait_on_screen_holds_and_one_offscreen_does_not(tmp_path):
+    """The 3 s wait on the studio after sign-in came out at 1.4 s (take 6)."""
+    from test_beat_fixes import _browser_session, _in_browser
+    from reel_studio.schema import Action
+
+    async def scenario(page):
+        session = _browser_session(page, tmp_path)
+        shown, _ = await session.act(Action(type="wait", ms=1200, settle_ms=0))
+        hidden, _ = await session.act(Action(type="wait", ms=300, settle_ms=0, offscreen=True))
+        return shown, hidden, session.timeline
+
+    shown, hidden, timeline = _in_browser("<body>Studio</body>", scenario)
+    assert shown["annotation_duration"] == pytest.approx(1.2)
+    assert timeline[-1][2] == pytest.approx(1.2)
+    assert len(timeline) == 1 and not hidden.get("annotation_duration")
