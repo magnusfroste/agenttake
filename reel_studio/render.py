@@ -96,6 +96,25 @@ def start_recording(
 # three test films in a row on 2026-11-09 at load 8 on eight cores).
 RECORDER_STOP_SECONDS = 180
 
+# A recording that has not grown for this long has stopped taking frames: the
+# encoder writes several kilobytes a second even of a still page.
+RECORDING_STALL_SECONDS = 30.0
+
+
+def recording_problem(alive: bool, size: int, last_size: int, last_growth_at: float, now: float) -> str | None:
+    """Why the screen recording is no longer taking the session, or None.
+
+    Certera take 10 (2026-11-14): the recorder stopped taking frames 566 s into
+    a 14-minute session while every step still answered ok, and the director
+    learned only from the review that the last four beats had no footage.
+    """
+    if not alive:
+        return "the screen recorder exited"
+    if size <= last_size and now - last_growth_at >= RECORDING_STALL_SECONDS:
+        return f"the screen recording has not grown for {now - last_growth_at:.0f} s"
+    return None
+
+
 
 def stop_recording(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:

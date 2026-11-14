@@ -25,6 +25,7 @@ from playwright.async_api import (
 )
 
 from .render import (
+    recording_problem,
     CARD_DURATION,
     CARD_TEXT_MAX,
     GLIDE_RAMP_IN,
@@ -697,6 +698,11 @@ class BrowserSession:
     page: Page
     recorder: subprocess.Popen[bytes]
     t0: float
+    # The recording's size when it last grew, and when (monotonic): a stalled
+    # recorder is told to the director at the step, not at the review.
+    recording_size: int = 0
+    recording_grew_at: float = 0.0
+    recording_lost_at: float | None = None
     refs: dict[str, str] = field(default_factory=dict)
     narrations: list[tuple[float, Path, str]] = field(default_factory=list)
     timeline: list[tuple[float, Path | None, float]] = field(default_factory=list)
@@ -1803,6 +1809,33 @@ class BrowserSession:
             **({"screenshot_path": str(screenshot)} if screenshot else {}),
         }, screenshot
 
+    def recording_check(self) -> dict | None:
+        """Whether the screen recording still takes the session; once it has
+        stopped, every later step has no footage, so say where it stopped."""
+        now = time.monotonic()
+        try:
+            size = (self.directory / "screen.mp4").stat().st_size
+        except OSError:
+            size = 0
+        if size > self.recording_size:
+            self.recording_size, self.recording_grew_at = size, now
+        elif not self.recording_grew_at:
+            self.recording_grew_at = now
+        problem = recording_problem(self.recorder.poll() is None, size, self.recording_size, self.recording_grew_at, now)
+        if problem is None:
+            return None
+        if self.recording_lost_at is None:
+            self.recording_lost_at = self.recording_grew_at - self.t0
+        return {
+            "reason": problem,
+            "footage_ends_at_seconds": round(self.recording_lost_at, 1),
+            "message": (
+                f"The screen recording stopped at about {self.recording_lost_at:.0f} s ({problem}): this step "
+                "and every later one have no footage, and no rerender brings them back. Stop shooting this "
+                "session and report it; the beats from there on need a new session."
+            ),
+        }
+
     async def act(self, action: Action, narration: str = "") -> tuple[dict, Path | None]:
         if not action.offscreen:
             await self._clear_pointer()
@@ -2355,6 +2388,9 @@ class BrowserSession:
         }
         if open_overlays is not None:
             result["open_overlays"] = open_overlays
+        lost = self.recording_check()
+        if lost:
+            result["recording_lost"] = lost
         if focus_cover is not None:
             result["focus_cover"] = focus_cover
             if focus_covered(focus_cover):
