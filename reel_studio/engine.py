@@ -1859,7 +1859,11 @@ class BrowserSession:
 
     def recording_check(self) -> dict | None:
         """Whether the screen recording still takes the session; once it has
-        stopped, every later step has no footage, so say where it stopped."""
+        stopped, every later step has no footage, so say where it stopped.
+        A session with no recorder (a rehearsal, a test's stand-in) has
+        nothing to lose."""
+        if getattr(self, "recorder", None) is None:
+            return None
         now = time.monotonic()
         try:
             size = (self.directory / "screen.mp4").stat().st_size
