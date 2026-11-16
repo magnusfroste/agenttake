@@ -460,6 +460,43 @@ _HIDE_CONSENT_JS = """(selectors) => {
     return first;
 }"""
 
+# Whether a button sits in a cookie or consent banner, and not in the page
+# itself. A button's label alone is not enough: an approval card in an admin
+# has a "Reject" button too, and on 2026-11-16 a rehearsal of a FlowWink film
+# clicked it, rejecting the purchase order the film was about. A button
+# counts when an ancestor names consent in its id, class, role or label, or
+# when the fixed, sticky or dialog box it sits in talks about cookies,
+# consent or privacy, or when it is in a frame whose page does (consent
+# managers often live in an iframe of their own).
+_CONSENT_CONTEXT_JS = """(el) => {
+    const NAMED = /cookie|consent|gdpr|privacy|cmp|onetrust|didomi|usercentrics|cookiebot|truste|samtycke|kakor|datenschutz/i;
+    const TALKS = /cookie|consent|kakor|samtycke|privacy|integritet|personuppgift|datenschutz|gdpr|tracking/i;
+    const named = (node) => {
+        const parts = [node.id, typeof node.className === 'string' ? node.className : '',
+                       node.getAttribute && node.getAttribute('aria-label'),
+                       node.getAttribute && node.getAttribute('data-testid')];
+        const by = node.getAttribute && node.getAttribute('aria-labelledby');
+        if (by) for (const id of by.split(/\\s+/)) {
+            const label = document.getElementById(id);
+            if (label) parts.push(label.textContent || '');
+        }
+        return NAMED.test(parts.filter(Boolean).join(' '));
+    };
+    for (let node = el; node && node !== document.body && node !== document.documentElement;
+         node = node.parentElement) {
+        if (named(node)) return true;
+        const style = getComputedStyle(node);
+        const boxed = style.position === 'fixed' || style.position === 'sticky' || node.tagName === 'DIALOG'
+            || ['dialog', 'alertdialog', 'region'].includes(node.getAttribute('role') || '');
+        if (boxed) {
+            const text = (node.innerText || '').slice(0, 4000);
+            if (TALKS.test(text)) return true;
+        }
+    }
+    if (window !== window.top) return TALKS.test((document.body && document.body.innerText || '').slice(0, 4000));
+    return false;
+}"""
+
 # What form_fields needs to know about an input to tell what it is for.
 _DESCRIBE_FIELD_JS = """(el) => ({
     tag: el.tagName.toLowerCase(),
@@ -1747,9 +1784,10 @@ class BrowserSession:
         return await self._click_labelled(notice)
 
     async def _click_labelled(self, labels: Sequence[str]) -> str | None:
-        """Click the first visible button whose whole label is one of these,
-        in the page or in its frames (consent managers often live in an
-        iframe). Returns the label clicked, or None."""
+        """Click the first visible button whose whole label is one of these
+        and that sits in a consent banner (_CONSENT_CONTEXT_JS), in the page
+        or in its frames (consent managers often live in an iframe). Returns
+        the label clicked, or None."""
         if not labels:
             return None
         pattern = re.compile(
@@ -1757,15 +1795,25 @@ class BrowserSession:
         )
         for frame in self.page.frames:
             try:
-                button = frame.get_by_role("button", name=pattern).first
-                if await button.count() and await button.is_visible():
+                buttons = await frame.get_by_role("button", name=pattern).all()
+            except PlaywrightError:
+                continue
+            for button in buttons:
+                try:
+                    if not await button.is_visible():
+                        continue
+                    # Only a button in a consent banner: never "Reject" on an
+                    # approval card, "OK" in a form or "Dismiss" on a notice
+                    # the film is about.
+                    if not await button.evaluate(_CONSENT_CONTEXT_JS):
+                        continue
                     label = (await button.inner_text()).strip()
                     await self._note_pointer(button)
                     await button.click(timeout=3000)
                     await self.page.wait_for_timeout(600)
                     return label or "button"
-            except PlaywrightError:
-                continue
+                except PlaywrightError:
+                    continue
         return None
 
     async def form_fields(self) -> dict[str, str]:
@@ -1811,7 +1859,11 @@ class BrowserSession:
 
     def recording_check(self) -> dict | None:
         """Whether the screen recording still takes the session; once it has
-        stopped, every later step has no footage, so say where it stopped."""
+        stopped, every later step has no footage, so say where it stopped.
+        A session with no recorder (a rehearsal, a test's stand-in) has
+        nothing to lose."""
+        if getattr(self, "recorder", None) is None:
+            return None
         now = time.monotonic()
         try:
             size = (self.directory / "screen.mp4").stat().st_size
