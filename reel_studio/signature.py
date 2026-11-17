@@ -28,6 +28,8 @@ import shutil
 import subprocess
 from typing import Any
 
+from .graphics import DEFAULT_STYLE, STYLES as GRAPHIC_STYLES
+
 FALLBACK_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 _FONT_NAME = re.compile(r"^[A-Za-z0-9 .+_-]{1,64}$")
@@ -57,6 +59,10 @@ class Signature:
     # itself under the text a shot found. count_up: a number on a card counts
     # up to its value.
     marks: tuple[str, ...] = ()
+    # The look of the graphics set over a live page, callouts and lower
+    # thirds (graphics.STYLES): label, ink, paper or bare. One film can take
+    # another (start_session or rerender graphics_style).
+    graphics: str = DEFAULT_STYLE
     # Type, by fontconfig family name. The display face sets cards, the text
     # face captions, the mono face addresses and small labels.
     display_font: str = "DejaVu Sans"
@@ -86,6 +92,7 @@ class Signature:
         return {
             "name": self.name, "version": self.version,
             "accent": self.accent, "ink": self.ink, "paper": self.paper, "cards": self.cards, "marks": list(self.marks),
+            "graphics": self.graphics,
             "display_font": self.display_font, "text_font": self.text_font, "mono_font": self.mono_font,
             "signature_line": self.signature_line, "ai_label": self.ai_label,
             "voice": self.voice, "tone": list(self.tone), "changelog": [dict(entry) for entry in self.changelog],
@@ -162,6 +169,11 @@ def parse(document: Any) -> tuple[Signature, list[str]]:
         values["cards"] = cards
     elif cards is not None:
         problems.append(f"cards is footage or solid, not {cards!r}")
+    look = document.get("graphics")
+    if look in GRAPHIC_STYLES:
+        values["graphics"] = look
+    elif look is not None:
+        problems.append(f"graphics is {', '.join(GRAPHIC_STYLES)}, not {look!r}")
     for key in ("display_font", "text_font", "mono_font"):
         font(key)
     text("signature_line")

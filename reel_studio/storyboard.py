@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, ValidationError
 from . import sensitive
 from . import signature as sig
 from .camera import PUSH_ZOOM
+from .graphics import check_callout, check_caption, said_at
 from .review import describe_cover, focus_covered, normalize_line
 from .schema import OFFSCREEN_WAIT_MAX_MS, secret_names
 
@@ -66,14 +67,20 @@ SHOT_FIELDS: dict[str, str] = {
     "login": "url (the sign-in page), username, password_secret (a secret's NAME), wait_for_text (what the "
              "page after sign-in shows): signs in offscreen, line optional",
     "system": "url, wait_for_text, zoom optional (page zoom 0.5-2, for readable text), camera optional (how "
-              "close the camera goes, 1-2.5, default 1.3), move optional: a page, or one section of a page, "
-              "framed on wait_for_text; the push-in has landed early in the line, a short line cuts straight "
-              "to the framing, and a beat on the page the beat before shows stays there and pans",
+              "close the camera goes, 1-2.5, default 1.3), move optional, callout optional (a label of five "
+              "words at most that points at wait_for_text, in on the word of the line that names it), caption "
+              "optional (a lower third for the beat: where and when, \"02:14 · Inbox\"): a page, or one "
+              "section of a page, framed on wait_for_text; the push-in has landed early in the line, a short "
+              "line cuts straight to the framing, and a beat on the page the beat before shows stays there "
+              "and pans",
     "live_answer": "input_text, wait_for_text optional (words the answer must have), timeout optional (seconds, "
                    "default 120), url optional (default: the page before): sends offscreen, waits until the "
                    "answer stops growing, shows it; camera optional (1-2.5, default 1.5)",
     "cta": "url, wait_for_text optional: the page the viewer should go to",
 }
+
+# Shots that take graphics over the page: a callout and a lower third.
+GRAPHIC_SHOTS = {"system"}
 
 # Shots that state something about the world: the viewer is owed where it
 # comes from. A card counts when it carries a number.
@@ -173,6 +180,12 @@ class StoryBeat(BaseModel):
                     "the beat before shows is not opened again, the camera pans to wait_for_text). Left out, "
                     "the shot picks by the line's length and the page.",
     )
+    callout: str | None = Field(
+        default=None,
+        description="system: a label that points at wait_for_text while the line plays, as a news programme "
+                    "flashes a key figure: five words at most, words the page shows or the line says, never "
+                    "a claim of its own. It comes in on the word of the line that names it.",
+    )
     input_text: str | None = None
     until_text: str | None = Field(default=None, description="page_tour: the heading the glide stops at.")
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
@@ -194,6 +207,9 @@ def beats_json_schema() -> dict[str, Any]:
                  "description": "How the camera gets to its framing: push, cut (opens framed, stands still) or "
                                 "stay (system: stays on the page the beat before shows and pans). Left out, "
                                 "the shot picks by the line's length and the page"},
+        "callout": {"type": "string",
+                    "description": "system: a label pointing at wait_for_text, five words at most, words the "
+                                   "page shows or the line says; in on the word of the line that names it"},
         "timeout": {"type": "number", "minimum": 1, "maximum": OFFSCREEN_WAIT_MAX_MS / 1000},
     }
     for name in ("url", "wait_for_text", "text", "background", "caption", "publication", "date", "username",
@@ -358,6 +374,17 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
         elif beat.get("move") == "stay":
             items.append(_item(number, label, "fix", "nothing_to_stay_on",
                                "move=stay is for a system shot on the page the system beat before shows"))
+        if beat.get("callout"):
+            wrong = check_callout(beat["callout"])
+            if shot not in GRAPHIC_SHOTS:
+                items.append(_item(number, label, "warn", "callout_not_used",
+                                   f"a callout points at what a system shot frames: a {shot} shot shows none"))
+            elif wrong:
+                items.append(_item(number, label, "fix", "long_callout", wrong))
+        if beat.get("caption") and shot in GRAPHIC_SHOTS:
+            wrong = check_caption(beat["caption"])
+            if wrong:
+                items.append(_item(number, label, "fix", "long_caption", wrong))
         if shot == "card" and beat.get("background") and not _background_ok(beat["background"]):
             items.append(_item(number, label, "fix", "invalid_background",
                                "background is auto, brand, blur, a colour (#123456, navy) or an https image URL"))
@@ -849,6 +876,7 @@ document.body.appendChild(s)}</script></body></html>"""
 #   {"op": "consent"}                                  — close a cookie banner
 #   {"op": "shot", "zoom", "focus_text", "move_seconds", "lift", "fit"}  — the camera
 #   {"op": "observe"}                                  — fresh refs and form fields
+#   {"op": "graphics", "callout", "caption", "target_text", "line"}  — what the next narrated step shows
 # An action's ref "@username", "@password" or "@message" is the field of that
 # kind the last observe found.
 
@@ -883,6 +911,14 @@ def _move(kind: str | None, zoom: float, drift_seconds: float, same_page: bool =
     if zoom < PUSH_ZOOM:
         return {"move_seconds": drift_seconds}
     return {"move_seconds": PUSH_SECONDS, "land": "cut"}
+
+
+def _graphics(beat: dict, target_text: str | None) -> list[dict]:
+    """The beat's callout and lower third, for its narrated step."""
+    if not (beat.get("callout") or beat.get("caption")):
+        return []
+    return [{"op": "graphics", "callout": beat.get("callout"), "caption": beat.get("caption"),
+             "target_text": target_text, "line": beat.get("line", "")}]
 
 
 def _open(url: str, wait_for_text: str | None) -> list[dict]:
@@ -1024,6 +1060,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
             _shot(camera or 1.3, wait_text, panels=True, keep_zoom=camera is not None, stays=stays,
                   **_move(move, camera or 1.3, 2.5, same_page=stays)),
+            *_graphics(beat, wait_text),
             _found(line, wait_text),
         ]
     if shot == "live_answer":
@@ -1184,6 +1221,9 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
     # Whether the last scroll to a beat's words moved the page.
     page_moved = False
     ops = list(ops)
+    # Graphics set for a beat that failed before its line are not this beat's.
+    if hasattr(session, "set_graphics"):
+        session.set_graphics()
     for number, op in enumerate(ops):
         kind = op["op"]
         if kind == "stay":
@@ -1233,6 +1273,17 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
             if result.get("camera_note") and op.get("focus_text"):
                 notes.append(result["camera_note"])
             continue
+        if kind == "graphics":
+            callout = op.get("callout")
+            if callout and said_at(callout, op.get("line", "")) is None and not quote_on_page(
+                    callout, loose_text(await session.page_text())):
+                # A label is the page's words or the line's, never a claim of
+                # its own: the film would state what no source says.
+                notes.append(f"callout_not_shown: {callout!r} is neither on the page nor in the line, word "
+                             "for word; use words the page shows or the line says")
+                callout = None
+            session.set_graphics(callout, op.get("caption"), op.get("target_text"))
+            continue
         action = dict(op["action"])
         ref = action.get("ref") or ""
         if ref.startswith("@"):
@@ -1247,6 +1298,8 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
                     "reason": f"{action['type']}: {error.get('type', 'failed')}: {error.get('message', '')}".strip()}
         if action["type"] == "scroll_to_text":
             page_moved = float(payload.get("moved_px") or 0) > PAGE_MOVED_PX
+        if (payload.get("graphics") or {}).get("dropped"):
+            notes.append(f"callout_not_shown: {payload['graphics']['dropped']}")
         if op.get("narration") and focus_covered(payload.get("focus_cover")):
             # The step went through, but its line plays over a dialog, a
             # banner or an ad: a beat nobody can read is not shot.

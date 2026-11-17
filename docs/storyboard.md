@@ -111,7 +111,7 @@ even if it opens for you: pick another source.
 | `image` | `url` (an https image), `caption` optional | The still with a slow Ken Burns drift; `caption` is a lower third, above the subtitles. |
 | `page_tour` | `url`, `wait_for_text` optional, `until_text` optional | A glide down from the hero, as long as the line: slow at first, then a steady pace a viewer can follow. With `until_text` (a heading further down, as the page shows it) it stops with that heading near the top; without, it goes about 400 px a second and stops where the line ends, not at the footer. **Once per page**: a second tour of it glides over the same sections again. |
 | `login` | `url`, `username`, `password_secret`, `wait_for_text` | Signs in offscreen and lands on the page after it. `password_secret` is the NAME of a secret AgentTake has (start_session lists them); the password never passes through you. `wait_for_text` is something the page after sign-in shows. The line is optional. |
-| `system` | `url`, `wait_for_text`, `zoom` optional, `move` optional | A page in the product, or one section of any page, framed on `wait_for_text` (the section's heading). `zoom` (0.5–2) is the page's own zoom. A beat on the page the beat before shows does not open it again: the camera stays and pans to the new words. |
+| `system` | `url`, `wait_for_text`, `zoom` optional, `move` optional, `callout` optional, `caption` optional | A page in the product, or one section of any page, framed on `wait_for_text` (the section's heading). `zoom` (0.5–2) is the page's own zoom. A beat on the page the beat before shows does not open it again: the camera stays and pans to the new words. |
 | `live_answer` | `input_text`, `wait_for_text` optional, `timeout` (seconds, default 120), `url` optional | Types the question and sends it offscreen, reads the page until the answer has stopped growing for 3 s (minutes if need be), then shows it close, above the subtitles. With `wait_for_text` (words only the answer has) the answer must contain them and is framed on them; without, it is framed on its first words. |
 | `cta` | `url`, `wait_for_text` optional | The page the viewer should go to; with `wait_for_text` the shot scrolls to it and pushes in there. Pair it with start_session's `cta_url` for the closing card and its QR code. |
 
@@ -138,6 +138,35 @@ from the first word. **`move`** overrides this on one beat:
 review_session reports `camera_lands_late` (a move still going when its line
 is nearly over) and `same_move_in_a_row` (three or more shots that each open
 wide and push in).
+
+**Graphics over the page.** A `system` beat takes two, as a news programme
+sets them over its pictures. Both are burned in at render with the subtitles,
+in the house's accent, so they keep their size and place whatever the camera
+does:
+
+| Field | What the film shows |
+|---|---|
+| `callout` | A label with a pointer at `wait_for_text`, five words (40 characters) at most. It comes in on the word of the line that names it (word for word, or the first word of four letters or a number they share), never before the camera stands still, and stays to the end of the beat, at least 1.5 s. It sits over the words when there is room, under them otherwise, clear of the subtitles. |
+| `caption` | A lower third at the left, above the subtitles: where and when (`"02:14 · Inbox"`), 36 characters at most. It runs for the whole beat, and on through the next beat when that has the same caption. It moves to the top when it would lie over what the camera frames. |
+
+A callout says what the page shows or the line says, word for word, never a
+claim of its own: one that is neither is left out, and the beat's notes say
+`callout_not_shown`. With a callout the camera can stay wide (`camera: 1`)
+under a short line and let the label do the pointing: another way than a
+push-in to show what the line is about. review_session reports
+`callout_too_brief` when the cut left one on screen for under 1.2 s.
+
+Their look is the house's: the signature's `graphics`. One film can take its
+own with `graphics_style` at start_session, and `rerender(graphics_style=...)`
+sets the same take in another look without shooting again, so two can be
+compared side by side:
+
+| Look | What it is | For |
+|---|---|---|
+| `label` | The callout filled in the accent, the lower third on the ink with an accent bar. The default. | A clear flag on any page. |
+| `ink` | Both on the house's ink with the paper's text; the accent only as the lower third's bar. | Busy or colourful pages, a sober assignment. |
+| `paper` | Both on the paper colour with the ink's text and an accent bar. | Dark pages. |
+| `bare` | No plate: outlined text, the callout in the accent, the lower third in the paper colour. | Pages where a plate would hide too much. |
 
 Every narrated step waits for its text before the line plays, so a page that
 has not loaded is a failed beat with a reason, not a blank frame in the film.

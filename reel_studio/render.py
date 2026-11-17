@@ -13,6 +13,7 @@ import textwrap
 import time
 
 from . import signature as sig
+from .graphics import ass_events as graphic_events, ass_styles as graphic_styles, look_of
 
 if TYPE_CHECKING:
     from .camera import Camera
@@ -1794,9 +1795,17 @@ def _ass_time(seconds: float) -> str:
     return f"{centis // 360000}:{centis // 6000 % 60:02d}:{centis // 100 % 60:02d}.{centis % 100:02d}"
 
 
-def subtitles_ass(cues: Sequence[tuple[float, float, str]], width: int, height: int, style: str = "soft") -> str:
+def subtitles_ass(cues: Sequence[tuple[float, float, str]], width: int, height: int, style: str = "soft",
+                  graphics: Sequence[dict] = (), graphics_style: str | None = None) -> str:
     """An ASS script: white text on a dark box near the bottom, sized to the
-    frame; style (SUBTITLE_STYLES) sets how dark the box is."""
+    frame; style (SUBTITLE_STYLES) sets how dark the box is. ``graphics``
+    (graphics.graphic_cues) are the callouts and lower thirds, drawn over it
+    in the house's colours, in the look ``graphics_style`` names
+    (graphics.STYLES) or else the house's own."""
+    house = sig.current()
+    # The default signature marks in the yellow annotations have always had.
+    look = look_of(graphics_style or house.graphics, "#ffd166" if house.is_default else house.accent,
+                   house.ink, house.paper)
     box = SUBTITLE_STYLES.get(style, SUBTITLE_STYLES["soft"])
     size = max(18, round(min(width, height) / 22))
     margin = max(24, round(height * 0.07))
@@ -1809,20 +1818,24 @@ def subtitles_ass(cues: Sequence[tuple[float, float, str]], width: int, height: 
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
         f"Style: Default,{face},{size},&H00FFFFFF,&H00FFFFFF,{box},{box},1,0,0,0,100,100,0,0,3,{max(6, size // 3)},0,2,{round(width * 0.08)},{round(width * 0.08)},{margin},1",
+        *(graphic_styles(width, height, face, look) if graphics else []),
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for start, end, text in cues:
         lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{escape(text)}")
+    lines += graphic_events(graphics, width, height, look)
     return "\n".join(lines) + "\n"
 
 
-def burn_subtitles(video: Path, cues: Sequence[tuple[float, float, str]], style: str = "soft") -> bool:
-    """Write the cues into the video in place. False when there was nothing to write."""
-    if not cues:
+def burn_subtitles(video: Path, cues: Sequence[tuple[float, float, str]], style: str = "soft",
+                   graphics: Sequence[dict] = (), graphics_style: str | None = None) -> bool:
+    """Write the cues, and the graphics, into the video in place: one pass
+    for both. False when there was nothing to write."""
+    if not cues and not graphics:
         return False
     width, height = probe_video_size(video)
     script = video.with_name("subtitles.ass")
-    script.write_text(subtitles_ass(cues, width, height, style), encoding="utf-8")
+    script.write_text(subtitles_ass(cues, width, height, style, graphics, graphics_style), encoding="utf-8")
     temporary = video.with_name("video.subtitled.mp4")
     run_media(
         ["ffmpeg", "-loglevel", "error", "-y", "-i", str(video), "-vf", f"ass={script.name}",

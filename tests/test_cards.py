@@ -270,7 +270,7 @@ def test_subtitle_style_is_kept_and_rerender_changes_it(mods, monkeypatch, tmp_p
                         lambda *args, **kwargs: SimpleNamespace(warnings=[], duration=5.0, timeline=[]))
     monkeypatch.setattr(server, "write_storyboard", lambda *args: [])
     monkeypatch.setattr(server, "subtitle_cues", lambda *args: [(0.0, 1.0, "Hi")])
-    monkeypatch.setattr(server, "burn_subtitles", lambda video, cues, style="soft": burned.append(style) or True)
+    monkeypatch.setattr(server, "burn_subtitles", lambda video, cues, style="soft", *graphics: burned.append(style) or True)
     assert asyncio.run(server.rerender(sid, subtitle_style="solid"))["subtitles"]
     assert store.get_session(sid)["subtitle_style"] == "solid"
     # A rerender without it keeps the style.
