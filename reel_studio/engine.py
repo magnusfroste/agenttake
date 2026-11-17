@@ -47,7 +47,7 @@ from .render import (
     start_recording,
     stop_recording,
 )
-from .camera import EASE_SECONDS, FRAMING_ZOOM, Camera, capture_scale
+from .camera import EASE_SECONDS, FRAMING_ZOOM, Camera, capture_scale, landing_ease
 from .annotations import (
     annotation_hold_seconds,
     annotation_id,
@@ -767,6 +767,8 @@ class BrowserSession:
     pending_shot: tuple[float, float | None, float | None] | None = None
     # How long the pending shot's move takes (begin_shot move_seconds).
     pending_ease: float = EASE_SECONDS
+    # How the pending move is tied to its line (set_shot land): "cut", "move" or None.
+    pending_land: str | None = None
     # What the next shot frames, measured when it is set up (review.shot_findings).
     pending_facts: dict | None = None
     # The camera is framing an open dialog on its own (_frame_dialog).
@@ -1303,6 +1305,7 @@ class BrowserSession:
         fit: bool = False,
         panels: bool = False,
         keep_zoom: bool = False,
+        land: str | None = None,
     ) -> dict:
         """Aim the camera for the next step: framing, or an explicit zoom, on a focus.
 
@@ -1315,6 +1318,10 @@ class BrowserSession:
         line reads cannot lose its end off the edge. ``panels`` frames a page
         of cards so the frame's edge runs between them (Camera.frame_panels);
         ``keep_zoom`` is a zoom the beat asked for, which it then does not lower.
+        ``land`` ties the move to the line it plays under: it has landed by
+        LAND_SHARE of the line, and under a line too short for a move it is a
+        cut to the framing ("cut") or the shortest move ("move"). A
+        ``move_seconds`` of 0 is a cut whatever the line.
         """
         level = zoom if zoom is not None else FRAMING_ZOOM.get(framing, 1.0)
         level = max(1.0, level)
@@ -1377,7 +1384,9 @@ class BrowserSession:
             if lift:
                 cy += self.height / level * SUBTITLE_LIFT
         self.pending_shot = (level, cx, cy)
-        self.pending_ease = EASE_SECONDS if move_seconds is None else min(max(move_seconds, 0.2), 3.0)
+        self.pending_ease = (EASE_SECONDS if move_seconds is None else
+                             0.0 if move_seconds <= 0 else min(max(move_seconds, 0.2), 3.0))
+        self.pending_land = land if land in ("cut", "move") else None
         result: dict = {"camera_zoom": level}
         if level < asked:
             result["camera_fit"] = f"zoom {level:.2f} instead of {asked:g}, so the whole focus is in frame"
@@ -1685,6 +1694,14 @@ class BrowserSession:
         except PlaywrightError:
             self.sticky_caption = None
 
+    def _move_seconds(self, line_seconds: float) -> float:
+        """How long the pending shot's move takes under a line this long: a
+        move tied to its line has landed while most of the line is still to
+        be said, and is a cut where the line is too short for a move."""
+        if self.pending_land and line_seconds > 0:
+            return landing_ease(self.pending_ease, line_seconds, self.pending_land)
+        return self.pending_ease
+
     def _shot_moves_camera(self) -> bool:
         if self.camera is None or self.pending_shot is None:
             return False
@@ -1896,6 +1913,7 @@ class BrowserSession:
         duration = 0.0
         action_box: dict | None = None
         action_in_viewport: bool | None = None
+        scroll_moved: float | None = None
         live_annotation_id: str | None = None
         annotation_duration = 0.0
         glide_started_at: float | None = None
@@ -1948,7 +1966,7 @@ class BrowserSession:
                 # straight away, the caption showed at half size and grew with
                 # the zoom; it appears once the move has landed instead.
                 delay_ms = (
-                    action.settle_ms + int(self.pending_ease * 1000)
+                    action.settle_ms + int(self._move_seconds(duration) * 1000)
                     if self._shot_moves_camera() else 0
                 )
                 annotation_duration = (duration_ms + delay_ms) / 1000
@@ -1999,8 +2017,11 @@ class BrowserSession:
                         "text_not_found",
                         f"Visible text not found: {action.text}",
                     )
+                box_before = await target.bounding_box()
                 await target.scroll_into_view_if_needed(timeout=5000)
                 action_box = await target.bounding_box()
+                if box_before and action_box:
+                    scroll_moved = abs(action_box["y"] - box_before["y"]) + abs(action_box["x"] - box_before["x"])
                 action_in_viewport = await self._box_in_viewport(action_box)
             elif action_type == "set_zoom":
                 try:
@@ -2361,11 +2382,12 @@ class BrowserSession:
             # the settle — footage the segmented render cuts — so most
             # push-ins reached the video as a jump to the zoomed frame, not a
             # move (found comparing cut boundaries, 2026-10-09).
-            if self.camera.move(offset, *self.pending_shot, ease=self.pending_ease):
+            if self.camera.move(offset, *self.pending_shot, ease=self._move_seconds(duration)):
                 if self.pending_facts:
                     self.camera.keys[-1]["facts"] = self.pending_facts
                 await self._redraw_sticky_caption()
             self.pending_shot = None
+            self.pending_land = None
         hold_duration = annotation_hold_seconds(duration, annotation_duration)
         if action.offscreen:
             # Done, but not part of the video: it adds nothing to the timeline
@@ -2457,6 +2479,10 @@ class BrowserSession:
         result["started_at_seconds"] = round(action_started_at, 3)
         if action_type == "scroll_to_text":
             result.update({"box": action_box, "in_viewport": action_in_viewport})
+            if scroll_moved is not None:
+                # Whether the page moved to get there: a camera that stays on
+                # the page pans to the text, or cuts when the page jumped.
+                result["moved_px"] = round(scroll_moved)
         if scrolled is not None:
             result.update(scroll_report(action.dy, *scrolled, glide=glide))
         if live_annotation_id:

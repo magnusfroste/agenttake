@@ -1975,6 +1975,10 @@ recipes. What follows is the hand-directed way, act by act.
      pull back to wide before moving on. A new page returns to wide by itself.
    - Three to five push-ins in a 60-90 s video; not every beat. A camera that
      never rests is as tiring as one that never moves.
+   - What a line names stands still while it is said: a move takes under half
+     its line. Under a line of two seconds or less, cut to the framing instead
+     (begin_shot move_seconds=0, or frame the shot on a silent step first).
+     review_session reports camera_lands_late and same_move_in_a_row.
    - While pushed in, the camera pans to anything you click or type into off
      frame, and captions are drawn inside the frame.
    - Frame what the voice names. A line about a button is a shot of the button:
@@ -2733,7 +2737,7 @@ def _keep_in_storyboard(session_id: str, step_index: int, **fields: Any) -> bool
 def _beat_identity(beat: dict) -> tuple:
     return tuple(beat.get(key) for key in (
         "shot", "line", "url", "text", "wait_for_text", "input_text", "background", "caption", "zoom", "camera",
-        "username", "password_secret", "timeout",
+        "move", "username", "password_secret", "timeout",
     ))
 
 
@@ -3789,7 +3793,8 @@ async def begin_shot(
     focus_text: str | None = None,
     move_seconds: Annotated[
         float | None,
-        Field(description="How long the camera move takes: 0.2 (a snap) to 3 (a slow drift). Default 1."),
+        Field(description="How long the camera move takes: 0.2 (a snap) to 3 (a slow drift), or 0 for a cut "
+                          "to the framing. Default 1. Keep it under half the line it plays under."),
     ] = None,
 ) -> dict:
     """Declare a director storyboard shot, and move the camera for it.
@@ -4750,6 +4755,7 @@ async def review_session(session_id: str) -> dict:
 
     # 6. What each shot framed, and what each line claims.
     findings.extend(checks.shot_findings(camera, steps))
+    findings.extend(checks.move_findings(camera, steps, parts))
     claims_to_check: list[dict] = []
     if session.get("output_dir"):
         texts = checks.read_page_texts(Path(session["output_dir"]))
