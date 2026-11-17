@@ -111,7 +111,7 @@ even if it opens for you: pick another source.
 | `image` | `url` (an https image), `caption` optional | The still with a slow Ken Burns drift; `caption` is a lower third, above the subtitles. |
 | `page_tour` | `url`, `wait_for_text` optional, `until_text` optional | A glide down from the hero, as long as the line: slow at first, then a steady pace a viewer can follow. With `until_text` (a heading further down, as the page shows it) it stops with that heading near the top; without, it goes about 400 px a second and stops where the line ends, not at the footer. **Once per page**: a second tour of it glides over the same sections again. |
 | `login` | `url`, `username`, `password_secret`, `wait_for_text` | Signs in offscreen and lands on the page after it. `password_secret` is the NAME of a secret AgentTake has (start_session lists them); the password never passes through you. `wait_for_text` is something the page after sign-in shows. The line is optional. |
-| `system` | `url`, `wait_for_text`, `zoom` optional | A page in the product, or one section of any page, held with a gentle push-in on `wait_for_text` (the section's heading). `zoom` (0.5–2) is the page's own zoom. |
+| `system` | `url`, `wait_for_text`, `zoom` optional, `move` optional | A page in the product, or one section of any page, framed on `wait_for_text` (the section's heading). `zoom` (0.5–2) is the page's own zoom. A beat on the page the beat before shows does not open it again: the camera stays and pans to the new words. |
 | `live_answer` | `input_text`, `wait_for_text` optional, `timeout` (seconds, default 120), `url` optional | Types the question and sends it offscreen, reads the page until the answer has stopped growing for 3 s (minutes if need be), then shows it close, above the subtitles. With `wait_for_text` (words only the answer has) the answer must contain them and is framed on them; without, it is framed on its first words. |
 | `cta` | `url`, `wait_for_text` optional | The page the viewer should go to; with `wait_for_text` the shot scrolls to it and pushes in there. Pair it with start_session's `cta_url` for the closing card and its QR code. |
 
@@ -120,6 +120,24 @@ even if it opens for you: pick another source.
 1.12. A frame that cuts text wants it lower, small text wants it higher. On a
 `system` shot `zoom` changes the page and `camera` the framing:
 `rehearse_beats` shows what you get.
+
+**The camera follows the line.** What a line names has to stand still while
+it is said, so a push-in has landed by 40% of its line (1.5 s at most) and
+holds from there. Under a line too short for a move (under about two
+seconds) the shot cuts straight to its framing and stands still: a list of
+short phrases is a run of cuts, not a run of push-ins. A drift up to 1.25x
+(`source`, `cta`, a card) stays slow, because its frame shows the subject
+from the first word. **`move`** overrides this on one beat:
+
+| `move` | What the camera does |
+|---|---|
+| `push` | Opens wide and pushes in, landed early in the line, however short the line. |
+| `cut` | Opens already framed and stands still. |
+| `stay` | `system` only: stays on the page the system beat before shows (same `url` and `zoom`) and pans to `wait_for_text`. This is the default for such a beat; when the page had to scroll to the words, the pan is a cut. |
+
+review_session reports `camera_lands_late` (a move still going when its line
+is nearly over) and `same_move_in_a_row` (three or more shots that each open
+wide and push in).
 
 Every narrated step waits for its text before the line plays, so a page that
 has not loaded is a failed beat with a reason, not a blank frame in the film.

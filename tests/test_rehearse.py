@@ -63,7 +63,8 @@ class Live:
     async def main_text(self):
         return ""
 
-    async def set_shot(self, framing, zoom, ref, text, move, lift=False, fit=False, panels=False, keep_zoom=False):
+    async def set_shot(self, framing, zoom, ref, text, move, lift=False, fit=False, panels=False, keep_zoom=False,
+                       land=None):
         if self.facts:
             self.camera.keys.append({"t": 1.0, "zoom": zoom, "cx": 960.0, "cy": 540.0, "facts": self.facts})
         return {}

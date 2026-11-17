@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
-from .camera import HOLD_EASE, panel_is_cut
+from .camera import EASE_SECONDS, HOLD_EASE, PUSH_ZOOM, panel_is_cut
 from .render import FONT_PATH, STORYBOARD_DIR, storyboard_still_at
 
 
@@ -744,6 +744,103 @@ def shot_findings(camera: Any, steps: Sequence[dict]) -> list[dict]:
                         f"Raise the beat's camera, at most to {panel_camera:g} to keep its panel whole, and reshoot_beat."
                         if panel_camera else "Raise the beat's camera, and reshoot_beat. rehearse_beats shows the frame first."),
             })
+    return findings
+
+
+# How the camera moves under the lines ---------------------------------------
+
+# A move that takes more than this share of its line and leaves what the line
+# names still for less than LATE_STILL seconds of it has landed late.
+LATE_SHARE = 0.6
+LATE_STILL = 1.0
+# This many shots in a row that each open wide and push in.
+SAME_MOVE_RUN = 3
+SAME_MOVE_RUN_MANY = 5
+
+
+def step_moves(camera: Any, steps: Sequence[dict], parts: Sequence[dict] | None = None) -> list[dict]:
+    """The camera move each narrated step of the film opens with:
+    {idx, kind, seconds, line_seconds, zoom, from_zoom}. ``kind`` is push,
+    pull, pan, cut, or still when the step has no move of its own. In the
+    film's order when the storyboard ``parts`` are given: a retake is
+    recorded last and plays in its beat's place."""
+    if camera is None:
+        return []
+    if parts:
+        steps = [step for step, _ in narrated_step_parts(parts, steps)]
+    moves: list[dict] = []
+    for step in steps:
+        if (step.get("offset_seconds") is None or step.get("offscreen") or not step.get("ok", True)
+                or not (step.get("narration_text") or "").strip()):
+            continue
+        offset = float(step["offset_seconds"])
+        key = next((key for key in camera.keys if abs(float(key["t"]) - offset) < 0.06), None)
+        before = [other for other in camera.keys if float(other["t"]) < offset - 0.06]
+        from_zoom = float(before[-1]["zoom"]) if before else 1.0
+        move = {"idx": int(step.get("idx", 0)), "kind": "still", "seconds": 0.0,
+                "line_seconds": float(step.get("narration_duration") or 0.0),
+                "zoom": float(key["zoom"]) if key else from_zoom, "from_zoom": from_zoom,
+                "glide": step.get("action_type") == "scroll"}
+        if key is not None:
+            seconds = float(key.get("ease", EASE_SECONDS))
+            zoom = float(key["zoom"])
+            move["seconds"] = seconds
+            move["kind"] = ("cut" if seconds < 0.05 else "push" if zoom > from_zoom * 1.1
+                            else "pull" if zoom < from_zoom / 1.1 else "pan")
+        moves.append(move)
+    return moves
+
+
+def move_findings(camera: Any, steps: Sequence[dict], parts: Sequence[dict] | None = None) -> list[dict]:
+    """The camera against the voice: a move that is still going when its line
+    is nearly over, and the same move shot after shot.
+
+    FlowWink take 2 (2026-11-17) pushed in for 2.5 s under lines of 1.4-2.2 s,
+    ten shots in a row, and the review called it ready: the person watching
+    saw a camera that never stood still on what the voice named.
+    """
+    moves = step_moves(camera, steps, parts)
+    findings: list[dict] = []
+    for move in moves:
+        # A drift near wide shows what the line is about all along.
+        if move["kind"] not in ("push", "pull", "pan") or move["glide"] or max(move["zoom"], move["from_zoom"]) < PUSH_ZOOM:
+            continue
+        line = move["line_seconds"]
+        still = max(0.0, line - move["seconds"])
+        if line > 0 and move["seconds"] > LATE_SHARE * line and still < LATE_STILL:
+            over = still < 0.1
+            findings.append({
+                "category": "camera_lands_late", "severity": "medium" if over else "low",
+                "location": f"step[{move['idx']}]",
+                "at_seconds": None,
+                "measured": {"move_seconds": round(move["seconds"], 2), "line_seconds": round(line, 2),
+                             "still_under_line": round(still, 2), "zoom": move["zoom"]},
+                "message": (f"The camera moves for {move['seconds']:.1f} s under step {move['idx']}'s {line:.1f} s line"
+                            + (": the line is over before the camera has landed on what it names."
+                               if over else f": what it names stands still for only its last {still:.1f} s.")),
+                "fix": "In a storyboard give the beat move=\"cut\" (it opens already framed) and reshoot_beat. "
+                       "Directing by hand, pass begin_shot a move_seconds under half the line, or frame the shot "
+                       "on a silent step before the line.",
+            })
+    run: list[dict] = []
+    for move in [*moves, {"kind": "end"}]:
+        opens_wide = move["kind"] == "push" and move["from_zoom"] <= 1.05 and move["zoom"] >= PUSH_ZOOM
+        if opens_wide:
+            run.append(move)
+            continue
+        if len(run) >= SAME_MOVE_RUN:
+            listed = ", ".join(str(item["idx"]) for item in run)
+            findings.append({
+                "category": "same_move_in_a_row",
+                "severity": "medium" if len(run) >= SAME_MOVE_RUN_MANY else "low",
+                "location": f"step[{run[0]['idx']}]", "at_seconds": None,
+                "measured": {"shots": len(run), "steps": [item["idx"] for item in run]},
+                "message": f"{len(run)} shots in a row open wide and push in (steps {listed}): the same move, "
+                           "shot after shot, reads as a tic and the camera never rests.",
+                "fix": "Vary them: move=\"cut\" on a beat with a short line, two beats on one page so the camera "
+                       "stays close and pans (move=\"stay\"), or a wide beat (camera=1) between them.",
+            })
+        run = []
     return findings
 
 

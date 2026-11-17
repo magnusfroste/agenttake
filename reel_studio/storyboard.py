@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from . import sensitive
 from . import signature as sig
+from .camera import PUSH_ZOOM
 from .review import describe_cover, focus_covered, normalize_line
 from .schema import OFFSCREEN_WAIT_MAX_MS, secret_names
 
@@ -40,6 +41,15 @@ SHOT_TYPES: tuple[str, ...] = get_args(ShotType)
 # the handbook.
 # The shots whose recipe moves the camera: only these take a beat's camera.
 CAMERA_SHOTS = {"source", "highlight", "system", "live_answer", "cta"}
+# How the camera gets to its framing. Left out, the shot decides: a push-in
+# that has landed early in the line, a cut under a line too short for a move,
+# and on a page the beat before already shows, a pan to the new words.
+MoveKind = Literal["push", "cut", "stay"]
+MOVE_KINDS: tuple[str, ...] = get_args(MoveKind)
+# The longest a push-in takes, and a pan across a page the camera stays on:
+# under a line both have landed by camera.LAND_SHARE of it.
+PUSH_SECONDS = 1.5
+PAN_SECONDS = 1.2
 SHOT_FIELDS: dict[str, str] = {
     "source": "url, wait_for_text (the headline): opens the article, closes a consent banner offscreen without accepting it, "
               "settles, then a slow push-in on the headline",
@@ -56,8 +66,9 @@ SHOT_FIELDS: dict[str, str] = {
     "login": "url (the sign-in page), username, password_secret (a secret's NAME), wait_for_text (what the "
              "page after sign-in shows): signs in offscreen, line optional",
     "system": "url, wait_for_text, zoom optional (page zoom 0.5-2, for readable text), camera optional (how "
-              "close the camera goes, 1-2.5, default 1.3): a page, or one section of a page, held with a "
-              "push-in on wait_for_text",
+              "close the camera goes, 1-2.5, default 1.3), move optional: a page, or one section of a page, "
+              "framed on wait_for_text; the push-in has landed early in the line, a short line cuts straight "
+              "to the framing, and a beat on the page the beat before shows stays there and pans",
     "live_answer": "input_text, wait_for_text optional (words the answer must have), timeout optional (seconds, "
                    "default 120), url optional (default: the page before): sends offscreen, waits until the "
                    "answer stops growing, shows it; camera optional (1-2.5, default 1.5)",
@@ -92,6 +103,8 @@ LENGTH_TOLERANCE_SECONDS = 10
 LONG_LINE_WORDS = 35
 LONG_QUOTE_CHARS = 200
 
+# A scroll to a beat's words that moved the page less than this did not jump.
+PAGE_MOVED_PX = 4
 GLIDE_MIN_MS = 6000
 GLIDE_MAX_MS = 20000
 # How fast a tour moves on average with no until_text, in CSS px a second.
@@ -153,6 +166,13 @@ class StoryBeat(BaseModel):
         description="How close the camera goes: 1 is the whole page, 2.5 the closest. "
                     "source, highlight, system, live_answer and cta have a default of their own.",
     )
+    move: MoveKind | None = Field(
+        default=None,
+        description="How the camera gets to its framing: push (wide, then a push-in that has landed early in "
+                    "the line), cut (the shot opens already framed and stands still), stay (system: the page "
+                    "the beat before shows is not opened again, the camera pans to wait_for_text). Left out, "
+                    "the shot picks by the line's length and the page.",
+    )
     input_text: str | None = None
     until_text: str | None = Field(default=None, description="page_tour: the heading the glide stops at.")
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
@@ -170,6 +190,10 @@ def beats_json_schema() -> dict[str, Any]:
         "camera": {"type": "number", "minimum": 1.0, "maximum": 2.5,
                    "description": "How close the camera goes: 1 is the whole page. source, highlight, system, "
                                   "live_answer and cta only"},
+        "move": {"type": "string", "enum": list(MOVE_KINDS),
+                 "description": "How the camera gets to its framing: push, cut (opens framed, stands still) or "
+                                "stay (system: stays on the page the beat before shows and pans). Left out, "
+                                "the shot picks by the line's length and the page"},
         "timeout": {"type": "number", "minimum": 1, "maximum": OFFSCREEN_WAIT_MAX_MS / 1000},
     }
     for name in ("url", "wait_for_text", "text", "background", "caption", "publication", "date", "username",
@@ -215,6 +239,17 @@ def domain(url: str | None) -> str:
     except ValueError:
         return ""
     return host.removeprefix("www.")
+
+
+def same_address(first: str | None, second: str | None) -> bool:
+    """Whether two URLs are one page: the fragment and a trailing slash aside."""
+    def key(url: str | None) -> tuple | None:
+        try:
+            parsed = urllib.parse.urlsplit(url or "")
+        except ValueError:
+            return None
+        return (parsed.scheme, parsed.netloc.lower(), parsed.path.rstrip("/"), parsed.query) if parsed.netloc else None
+    return key(first) is not None and key(first) == key(second)
 
 
 def tour_page(url: str) -> str:
@@ -263,6 +298,8 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
     page_source: str | None = None
     # Whether the browser has left page_url for a page of the video's own.
     left_page = False
+    # The system beat the browser is still on: its url and page zoom.
+    system_page: tuple[str, float | None] | None = None
     for number, entry in enumerate(raw or [], start=1):
         try:
             parsed = entry if isinstance(entry, StoryBeat) else StoryBeat.model_validate(entry)
@@ -305,6 +342,22 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
         if beat.get("camera") is not None and shot not in CAMERA_SHOTS:
             items.append(_item(number, label, "warn", "camera_not_used",
                                f"a {shot} shot has no camera move, so camera does nothing here"))
+        if beat.get("move") and shot not in CAMERA_SHOTS:
+            items.append(_item(number, label, "warn", "move_not_used",
+                               f"a {shot} shot has no camera move, so move does nothing here"))
+        if shot == "system" and beat.get("url"):
+            # Two beats on one page are one shot with two framings: opened
+            # again, the second cut back to wide and pushed in once more.
+            same_page = system_page == (beat["url"], beat.get("zoom")) and not left_page
+            if beat.get("move") in (None, "stay") and same_page:
+                beat["stays"] = True
+            elif beat.get("move") == "stay":
+                items.append(_item(number, label, "fix", "nothing_to_stay_on",
+                                   "move=stay keeps the camera on the page the beat before shows: that beat "
+                                   "must be a system shot with the same url and zoom"))
+        elif beat.get("move") == "stay":
+            items.append(_item(number, label, "fix", "nothing_to_stay_on",
+                               "move=stay is for a system shot on the page the system beat before shows"))
         if shot == "card" and beat.get("background") and not _background_ok(beat["background"]):
             items.append(_item(number, label, "fix", "invalid_background",
                                "background is auto, brand, blur, a colour (#123456, navy) or an https image URL"))
@@ -360,7 +413,9 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
             # A source card leaves the browser on the card.
             page_url = page_source = None
             left_page = False
+            system_page = None
         elif beat.get("url") and shot not in ("card", "image"):
+            system_page = (beat["url"], beat.get("zoom")) if shot == "system" else None
             page_url = beat["url"]
             page_source = beat.get("source") if shot == "source" else None
             left_page = False
@@ -802,9 +857,32 @@ def _act(action: dict, narration: str = "") -> dict:
 
 
 def _shot(zoom: float, focus_text: str | None = None, move_seconds: float = 1.0, lift: bool = False,
-          fit: bool = False, panels: bool = False, keep_zoom: bool = False) -> dict:
+          fit: bool = False, panels: bool = False, keep_zoom: bool = False, land: str | None = None,
+          stays: bool = False) -> dict:
     return {"op": "shot", "zoom": zoom, "focus_text": focus_text, "move_seconds": move_seconds, "lift": lift,
-            "fit": fit, "panels": panels, "keep_zoom": keep_zoom}
+            "fit": fit, "panels": panels, "keep_zoom": keep_zoom, "land": land, "stays": stays}
+
+
+def _move(kind: str | None, zoom: float, drift_seconds: float, same_page: bool = False) -> dict:
+    """How a shot's camera gets to its framing: the move's length, and how it
+    is tied to the line it plays under (set_shot's land).
+
+    A drift up to PUSH_ZOOM is slow on purpose: its frame shows what the line
+    is about from the first word. Anything closer is a push-in on a detail,
+    and the detail has to stand still while the line names it: the move has
+    landed early in the line, and a line too short for that gets a cut to the
+    framing — or, on a page the film is already on, the shortest pan, since a
+    cut inside one page is a jump.
+    """
+    if kind == "cut":
+        return {"move_seconds": 0.0}
+    if same_page:
+        return {"move_seconds": PAN_SECONDS, "land": "move"}
+    if kind == "push":
+        return {"move_seconds": PUSH_SECONDS, "land": "move"}
+    if zoom < PUSH_ZOOM:
+        return {"move_seconds": drift_seconds}
+    return {"move_seconds": PUSH_SECONDS, "land": "cut"}
 
 
 def _open(url: str, wait_for_text: str | None) -> list[dict]:
@@ -848,6 +926,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
     shot, line = beat["shot"], beat.get("line", "")
     wait_text = beat.get("wait_for_text")
     camera = beat.get("camera")
+    move = beat.get("move")
     reopen = (retake or beat.get("reopens")) and beat.get("inherits_url") and beat.get("page_url")
     if shot == "source":
         return [
@@ -856,7 +935,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             # Wide, then a slow push-in on the headline while the line plays.
             # Gentle: a full-width headline at 1.25x lost its last words off
             # both edges at 1280x720 (TNW, 2026-10-28).
-            _shot(camera or 1.12, wait_text, move_seconds=3.0),
+            _shot(camera or 1.12, wait_text, **_move(move, camera or 1.12, 3.0)),
             _found(line, wait_text),
         ]
     if shot == "highlight":
@@ -872,7 +951,10 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             # Close, but never closer than the whole quote: a standfirst that
             # wraps is as wide as its column, and at 1.8x it lost its last
             # words off the right edge (TechTarget, 2026-10-28).
-            _shot(camera or 1.8, text, move_seconds=1.2, lift=True, fit=True),
+            # On the page the beat before shows, it pans there; a cut would
+            # be a jump inside one page.
+            _shot(camera or 1.8, text, lift=True, fit=True,
+                  **_move(move, camera or 1.8, 1.2, same_page=not ops and move != "push")),
             _act({"type": "annotate", "target_text": text, "text": mark, "style": "marker",
                   "ms": 4000, "wait_for_text": text}, line),
         ]
@@ -928,13 +1010,20 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             ops += [{"op": "consent"}, _say(line, wait_text)]
         return ops
     if shot == "system":
+        # A retake is shot at the end of the session, so it opens its page.
+        stays = bool(beat.get("stays")) and not retake
         ops = _open(beat["url"], wait_text)
         if beat.get("zoom"):
             ops.append(_act({"type": "set_zoom", "text": f"{beat['zoom']:g}", "offscreen": True}))
+        if stays:
+            # Opened all the same if the browser is somewhere else: the beat
+            # before failed, or the shoot was taken up again.
+            ops = [{"op": "stay", "url": beat["url"], "open": ops}]
         return [
             *ops,
             _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
-            _shot(camera or 1.3, wait_text, move_seconds=2.5, panels=True, keep_zoom=camera is not None),
+            _shot(camera or 1.3, wait_text, panels=True, keep_zoom=camera is not None, stays=stays,
+                  **_move(move, camera or 1.3, 2.5, same_page=stays)),
             _found(line, wait_text),
         ]
     if shot == "live_answer":
@@ -953,7 +1042,9 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             {"op": "answer", "timeout": float(beat.get("timeout", 120)), "expect": wait_text,
              "question": beat["input_text"]},
             _act({"type": "scroll_to_text", "text": "@answer", "offscreen": True}),
-            _shot(camera or 1.5, "@answer", move_seconds=1.2, lift=True),
+            # The answer is on the page the question was typed on: a pan.
+            _shot(camera or 1.5, "@answer", lift=True,
+                  **_move(move, camera or 1.5, 1.2, same_page=move != "push")),
             _found(line, "@answer"),
         ]
     if shot == "cta":
@@ -963,7 +1054,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
         return [
             *_open(beat["url"], wait_text),
             *scroll,
-            _shot(camera or 1.12, wait_text, move_seconds=3.0),
+            _shot(camera or 1.12, wait_text, **_move(move, camera or 1.12, 3.0)),
             _say(line, wait_text),
         ]
     raise ValueError(f"unknown shot {shot!r}")
@@ -1090,8 +1181,16 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
     notes: list[str] = []
     before = ""
     answer: str | None = None
+    # Whether the last scroll to a beat's words moved the page.
+    page_moved = False
+    ops = list(ops)
     for number, op in enumerate(ops):
         kind = op["op"]
+        if kind == "stay":
+            if not same_address(getattr(getattr(session, "page", None), "url", None), op["url"]):
+                ops[number + 1:number + 1] = op["open"]
+                notes.append("not on the page the beat before shows: opened it")
+            continue
         if kind == "answer_start":
             before = await session.page_text()
             continue
@@ -1119,10 +1218,16 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
             continue
         if kind == "shot":
             zoom = op["zoom"]
+            move_seconds, land = op.get("move_seconds"), op.get("land")
+            if op.get("stays") and page_moved:
+                # The page scrolled to the words offscreen, which is a jump
+                # in the film: the camera cuts with it instead of panning
+                # across a page that is no longer the one it was framing.
+                move_seconds, land = 0.0, None
             result = await session.set_shot(
                 "wide" if zoom <= 1.0 else "medium", zoom, None, op.get("focus_text"),
-                op.get("move_seconds"), lift=op.get("lift", False), fit=op.get("fit", False),
-                panels=op.get("panels", False), keep_zoom=op.get("keep_zoom", False),
+                move_seconds, lift=op.get("lift", False), fit=op.get("fit", False),
+                panels=op.get("panels", False), keep_zoom=op.get("keep_zoom", False), land=land,
             )
             # A shot with no focus pushes in on the centre on purpose.
             if result.get("camera_note") and op.get("focus_text"):
@@ -1140,6 +1245,8 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
             error = payload.get("error") or {}
             return {"ok": False, "op": number, "notes": notes, "action": action["type"],
                     "reason": f"{action['type']}: {error.get('type', 'failed')}: {error.get('message', '')}".strip()}
+        if action["type"] == "scroll_to_text":
+            page_moved = float(payload.get("moved_px") or 0) > PAGE_MOVED_PX
         if op.get("narration") and focus_covered(payload.get("focus_cover")):
             # The step went through, but its line plays over a dialog, a
             # banner or an ad: a beat nobody can read is not shot.

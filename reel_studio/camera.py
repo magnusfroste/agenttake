@@ -25,6 +25,16 @@ MAX_ZOOM = 2.5
 # Product-video tools settle around a second per move; shorter feels like a
 # jolt, longer drags under narration.
 EASE_SECONDS = 1.0
+# A move under a line has landed by this share of the line, so what the line
+# names stands still while it is said. FlowWink take 2 pushed in for 2.5 s
+# under lines of 1.4-2.2 s, ten shots in a row: the camera was moving for 87%
+# of that stretch and arrived after each line was over (2026-11-17).
+LAND_SHARE = 0.4
+# Shorter than this a move is a jolt: the shot cuts to its framing instead.
+MIN_MOVE_SECONDS = 0.8
+# Closer than this is a push-in on a detail; up to it, a slow drift over a
+# frame that already shows what the line is about.
+PUSH_ZOOM = 1.25
 # A target whose centre leaves the middle of the view gets the camera panned
 # to it before it is clicked or typed into, so no action happens off-frame.
 FOLLOW_MARGIN = 0.05
@@ -88,6 +98,18 @@ def capture_scale(width: int, height: int, output: tuple[int, int] | None = None
             continue
         return scale
     return 1.0
+
+
+def landing_ease(ease: float, line_seconds: float, short: str = "cut") -> float:
+    """How long a move may take under a line of ``line_seconds``: at most
+    LAND_SHARE of it. When that is too short to be a move, ``short`` says what
+    it becomes: "cut" a cut to the framing (0), "move" the shortest move."""
+    if line_seconds <= 0 or ease <= 0:
+        return max(ease, 0.0)
+    fits = min(ease, LAND_SHARE * line_seconds)
+    if fits >= MIN_MOVE_SECONDS:
+        return fits
+    return 0.0 if short == "cut" else min(ease, MIN_MOVE_SECONDS)
 
 
 def _ease_term(t: str, start: float, seconds: float = EASE_SECONDS) -> str:
@@ -346,7 +368,11 @@ class Camera:
         values = [[f"{base[0]:.4f}"], [f"{base[1]:.1f}"], [f"{base[2]:.1f}"]]
         for key in active:
             current = (key["zoom"], key["cx"], key["cy"])
-            ease = _ease_term(t, key["t"], key.get("ease", EASE_SECONDS))
+            seconds = key.get("ease", EASE_SECONDS)
+            # A cut on the segment's first frame is that frame's framing: as
+            # a step in time it was still the old framing at it=0, one frame
+            # of the wide page before a shot that opens close.
+            ease = "1" if seconds < 0.002 and key["t"] <= offset + 0.0005 else _ease_term(t, key["t"], seconds)
             for axis in range(3):
                 delta = current[axis] - previous[axis]
                 if abs(delta) > 1e-6:

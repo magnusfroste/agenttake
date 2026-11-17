@@ -583,7 +583,7 @@ class StandInSession:
         return result, None
 
     async def set_shot(self, framing, zoom=None, focus_ref=None, focus_text=None, move_seconds=None, lift=False,
-                       fit=False, panels=False, keep_zoom=False):
+                       fit=False, panels=False, keep_zoom=False, land=None):
         self.calls.append(("shot", zoom, focus_text, lift))
         self.fits.append(fit)
         return {"camera_zoom": zoom}
