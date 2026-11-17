@@ -201,6 +201,9 @@ def init_schema() -> None:
             ("subtitles", "INTEGER NOT NULL DEFAULT 0"),
             # How dark the box behind them is: soft, box or solid.
             ("subtitle_style", "TEXT NOT NULL DEFAULT 'soft'"),
+            # The look of this film's callouts and lower thirds
+            # (graphics.STYLES); empty: the house's (signature.graphics).
+            ("graphics_style", "TEXT NOT NULL DEFAULT ''"),
             # The director's planned beats, JSON [{"line", "label"}]: what
             # review_session holds the recorded narration against.
             ("beats", "TEXT"),
@@ -537,6 +540,12 @@ def update_session_subtitle_style(session_id: str, style: str) -> None:
     init_schema()
     with _lock, _connect() as connection:
         connection.execute("UPDATE sessions SET subtitle_style = ? WHERE id = ?", (style, session_id))
+
+
+def update_session_graphics_style(session_id: str, style: str) -> None:
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.execute("UPDATE sessions SET graphics_style = ? WHERE id = ?", (style, session_id))
 
 
 def update_watch_page(

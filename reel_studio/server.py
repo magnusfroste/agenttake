@@ -37,6 +37,7 @@ from . import signature
 # prefilled link, or filed outright when REEL_GITHUB_TOKEN is set.
 UPSTREAM_REPO = os.environ.get("REEL_UPSTREAM_REPO", "magnusfroste/agenttake").strip().strip("/")
 UPSTREAM_URL = f"https://github.com/{UPSTREAM_REPO}"
+from .graphics import STYLES as GRAPHIC_STYLES, graphic_cues, load_graphics
 from .render import (
     FONT_PATH,
     PAGE_CHANGING_ACTIONS,
@@ -555,18 +556,34 @@ def narrations_by_part(session: dict) -> dict[int, str]:
     return {number: step.get("narration_text") or "" for number, step in enumerate(visible)}
 
 
+def offsets_by_part(session: dict) -> dict[int, float]:
+    """Each storyboard part's step offset on the recording's clock, keyed as
+    narrations_by_part is."""
+    visible = [
+        step for step in session.get("steps", [])
+        if step.get("offset_seconds") is not None and not step.get("offscreen")
+    ]
+    return {number: float(step["offset_seconds"]) for number, step in enumerate(visible)}
+
+
 def apply_subtitles(session_id: str) -> bool:
-    """Burn the narration into a finished video when its session asks for it.
+    """Burn the narration into a finished video when its session asks for it,
+    and the film's graphics (callouts, lower thirds) whether it does or not.
+    True when subtitles were written.
 
     Runs on the freshly rendered file (finish, rerender), so it is never
     applied twice. The storyboard stills are taken before, without text.
     """
     session = store.get_session(session_id)
-    if not session or not session.get("subtitles") or not session.get("video_path"):
+    if not session or not session.get("video_path"):
         return False
     video = Path(session["video_path"])
-    cues = subtitle_cues(read_storyboard(video.parent), narrations_by_part(session))
-    return burn_subtitles(video, cues, session.get("subtitle_style") or "soft")
+    parts = read_storyboard(video.parent)
+    cues = subtitle_cues(parts, narrations_by_part(session)) if session.get("subtitles") else []
+    graphics = graphic_cues(parts, offsets_by_part(session), load_graphics(video.parent))
+    burn_subtitles(video, cues, session.get("subtitle_style") or "soft", graphics,
+                   session.get("graphics_style") or None)
+    return bool(cues)
 
 
 def public_watch_url(session_id: str) -> str:
@@ -1355,6 +1372,13 @@ def step_hold_seconds(step: dict, narration_duration: float) -> float:
 
 
 SubtitleStyle = Literal["soft", "box", "solid"]
+GraphicsStyle = Literal["label", "ink", "paper", "bare"]
+GRAPHICS_STYLE_HELP = (
+    "The look of this film's callouts and lower thirds (a storyboard system beat's callout and caption): "
+    + "; ".join(f"{name}: {what}" for name, what in GRAPHIC_STYLES.items())
+    + ". Left out, the house's own (the signature's graphics). Pick by the pages the film shows and the "
+    "tone of the assignment."
+)
 SUBTITLE_STYLE_HELP = (
     "The box behind the subtitles: soft (default, about 40% black), box (about 75% black) "
     "or solid (opaque black). On light, busy pages white text over soft is hard to read: "
@@ -1979,6 +2003,16 @@ recipes. What follows is the hand-directed way, act by act.
      its line. Under a line of two seconds or less, cut to the framing instead
      (begin_shot move_seconds=0, or frame the shot on a silent step first).
      review_session reports camera_lands_late and same_move_in_a_row.
+   - A move is one way to show what a line is about; a label is another. A
+     storyboard's system beat takes callout (five words at most, pointing at
+     wait_for_text, in on the word that names it: words the page shows or the
+     line says, never a claim of its own) and caption (a lower third: where
+     and when). Under a short line, stay wide (camera=1) and let the callout
+     point. Their look is the house's (the signature's graphics) unless the
+     film takes its own: graphics_style=label|ink|paper|bare at start_session,
+     or later with rerender(graphics_style=...) to compare without shooting
+     again. Pick by the pages and the assignment: label is a clear flag, ink
+     is quiet on busy pages, paper is for dark pages, bare hides the least.
    - While pushed in, the camera pans to anything you click or type into off
      frame, and captions are drawn inside the frame.
    - Frame what the voice names. A line about a button is a shot of the button:
@@ -2175,6 +2209,11 @@ async def start_session(
         SubtitleStyle,
         Field(description=SUBTITLE_STYLE_HELP),
     ] = "soft",
+    graphics_style: Annotated[
+        GraphicsStyle | None,
+        Field(description=GRAPHICS_STYLE_HELP + " Can be changed later with rerender(graphics_style=...), "
+                          "without shooting again."),
+    ] = None,
     mask: Annotated[
         list[str] | None,
         Field(description="CSS selectors blurred on every page from the first frame, e.g. "
@@ -2304,12 +2343,14 @@ async def start_session(
         store.update_session_subtitles(session.session_id, True)
     if subtitle_style != "soft":
         store.update_session_subtitle_style(session.session_id, subtitle_style)
+    if graphics_style:
+        store.update_session_graphics_style(session.session_id, graphics_style)
     store.update_session_start_args(session.session_id, {
         "start_url": start_url, "width": width, "height": height, "voice": voice,
         "provider": selected_provider, "output_size": output_size, "title": title, "subtitle": subtitle,
         "accent": accent, "cta_url": cta_url, "cta_text": cta_text, "music": music,
         "transitions": transitions, "title_background": title_background, "closing_qr": closing_qr,
-        "subtitles": subtitles, "subtitle_style": subtitle_style, "mask": mask,
+        "subtitles": subtitles, "subtitle_style": subtitle_style, "graphics_style": graphics_style, "mask": mask,
         "color_scheme": color_scheme, "show_pointer": show_pointer,
         # Which house style this film was shot in, so a later film can be
         # read against it after the signature has moved on.
@@ -2737,7 +2778,7 @@ def _keep_in_storyboard(session_id: str, step_index: int, **fields: Any) -> bool
 def _beat_identity(beat: dict) -> tuple:
     return tuple(beat.get(key) for key in (
         "shot", "line", "url", "text", "wait_for_text", "input_text", "background", "caption", "zoom", "camera",
-        "move", "username", "password_secret", "timeout",
+        "move", "callout", "username", "password_secret", "timeout",
     ))
 
 
@@ -3683,8 +3724,10 @@ async def set_signature(
     document: Annotated[
         dict,
         Field(description="The whole signature as JSON: name, accent, ink (empty: the accent), paper, "
-                          "display_font, text_font, mono_font (fontconfig family names), signature_line, "
-                          "ai_label, voice, tone (a list of writing rules). Keys left out keep the default."),
+                          "display_font, text_font, mono_font (fontconfig family names), cards (footage or solid), "
+                          "marks, graphics (the look of callouts and lower thirds: label, ink, paper or bare), "
+                          "signature_line, ai_label, voice, tone (a list of writing rules). Keys left out keep "
+                          "the default."),
     ],
     note: Annotated[
         str,
@@ -4285,6 +4328,10 @@ async def rerender(
         SubtitleStyle | None,
         Field(description=SUBTITLE_STYLE_HELP + " Omit to keep the style the session has."),
     ] = None,
+    graphics_style: Annotated[
+        GraphicsStyle | None,
+        Field(description=GRAPHICS_STYLE_HELP + " Omit to keep the look the film has."),
+    ] = None,
 ) -> dict:
     """Rebuild narration audio and mux it onto an existing finished video.
 
@@ -4305,24 +4352,27 @@ async def rerender(
         return error
     assert session is not None
     job = FinishJob(session_id, Path(session["video_path"]).parent, 0, tool="rerender")
-    job.task = asyncio.create_task(_run_rerender(job, session, voice, provider, subtitles, subtitle_style))
+    job.task = asyncio.create_task(
+        _run_rerender(job, session, voice, provider, subtitles, subtitle_style, graphics_style))
     finish_jobs[session_id] = job
     return await _await_finish(job)
 
 
 async def _run_rerender(job: "FinishJob", session: dict, voice: str | None, provider: str | None,
-                        subtitles: bool | None, subtitle_style: str | None) -> dict:
+                        subtitles: bool | None, subtitle_style: str | None,
+                        graphics_style: str | None = None) -> dict:
     """rerender's work, run as a job: a call cut off at the client's timeout
     used to stop it before the subtitles (Sluss takes 4 and 5, 2026-11-03)."""
     try:
-        return await _rerender(job, session, voice, provider, subtitles, subtitle_style)
+        return await _rerender(job, session, voice, provider, subtitles, subtitle_style, graphics_style)
     except Exception as exc:  # a job's failure is reported, never lost
         return {"ok": False, "status": "failed",
                 "error": {"type": "rerender_failed", "message": str(exc)}}
 
 
 async def _rerender(job: "FinishJob", session: dict, voice: str | None, provider: str | None,
-                    subtitles: bool | None, subtitle_style: str | None) -> dict:
+                    subtitles: bool | None, subtitle_style: str | None,
+                    graphics_style: str | None = None) -> dict:
     session_id = job.session_id
     new_voice = (voice or "").strip() or None
     new_provider = None
@@ -4453,6 +4503,8 @@ async def _rerender(job: "FinishJob", session: dict, voice: str | None, provider
         store.update_session_subtitles(session_id, subtitles)
     if subtitle_style is not None:
         store.update_session_subtitle_style(session_id, subtitle_style)
+    if graphics_style is not None:
+        store.update_session_graphics_style(session_id, graphics_style)
     job.stage = "subtitles"
     try:
         subtitled = await asyncio.to_thread(apply_subtitles, session_id)
@@ -4756,6 +4808,9 @@ async def review_session(session_id: str) -> dict:
     # 6. What each shot framed, and what each line claims.
     findings.extend(checks.shot_findings(camera, steps))
     findings.extend(checks.move_findings(camera, steps, parts))
+    if session.get("output_dir"):
+        findings.extend(checks.graphic_findings(graphic_cues(
+            parts, offsets_by_part(session), load_graphics(Path(session["output_dir"])))))
     claims_to_check: list[dict] = []
     if session.get("output_dir"):
         texts = checks.read_page_texts(Path(session["output_dir"]))

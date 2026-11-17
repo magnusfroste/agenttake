@@ -14,6 +14,7 @@ import subprocess
 from typing import Any
 
 from .camera import Camera
+from .graphics import GRAPHICS_FILE, load_graphics, shift_graphics
 from .render import GLIDES_FILE, probe_duration, run_media
 from .review import PAGE_TEXT_FILE
 
@@ -41,8 +42,8 @@ def join_recordings(first: Path, second: Path) -> float:
 
 
 def take_in(directory: Path, pickup: Path, start: float, camera: Any) -> None:
-    """Bring a pickup's camera moves, glides, voice clips and page texts into
-    the session, on the session's clock."""
+    """Bring a pickup's camera moves, glides, graphics, voice clips and page
+    texts into the session, on the session's clock."""
     if camera is not None:
         own = Camera.load(directory) or Camera(camera.width, camera.height, camera.scale)
         # The pickup opens wide, whatever the film's last shot was.
@@ -55,6 +56,9 @@ def take_in(directory: Path, pickup: Path, start: float, camera: Any) -> None:
         kept = json.loads(record.read_text()) if record.is_file() else []
         kept += [{**glide, "offset": round(float(glide["offset"]) + start, 3)} for glide in json.loads(glides.read_text())]
         record.write_text(json.dumps(kept))
+    graphics = shift_graphics(load_graphics(pickup), start)
+    if graphics:
+        (directory / GRAPHICS_FILE).write_text(json.dumps(load_graphics(directory) + graphics))
     for path in [*pickup.glob("narration-*"), *pickup.glob("glide-*")]:
         shutil.move(str(path), directory / path.name)
     texts = pickup / PAGE_TEXT_FILE

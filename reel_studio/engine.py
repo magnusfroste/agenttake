@@ -57,6 +57,7 @@ from .annotations import (
 )
 from .refs import semantic_ref
 from . import signature as sig
+from .graphics import CALLOUT_MIN_SECONDS, callout_seconds, frame_box, record_graphic
 from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, PANELS_JS, SHOT_FACTS_JS, describe_cover, focus_covered
 from .schema import resolve_secret, secret_names, Action, mask_stylesheet
 from .tts import synthesize
@@ -771,6 +772,9 @@ class BrowserSession:
     pending_land: str | None = None
     # What the next shot frames, measured when it is set up (review.shot_findings).
     pending_facts: dict | None = None
+    # The graphics the next narrated step shows (set_graphics): a callout,
+    # a caption, and the words on the page they go with.
+    pending_graphics: dict | None = None
     # The camera is framing an open dialog on its own (_frame_dialog).
     dialog_framed: bool = False
     # The camera is framing a small form alone on its page (_frame_form).
@@ -1694,6 +1698,45 @@ class BrowserSession:
         except PlaywrightError:
             self.sticky_caption = None
 
+    def set_graphics(self, callout: str | None = None, caption: str | None = None,
+                     target_text: str | None = None) -> None:
+        """Graphics for the next narrated step, burned in at render
+        (graphics.py): a callout pointing at target_text, in on the word of
+        the line that names it, and a caption, a lower third for the step."""
+        callout, caption = (callout or "").strip(), (caption or "").strip()
+        self.pending_graphics = (
+            {"callout": callout, "caption": caption, "target_text": (target_text or "").strip()}
+            if callout or caption else None
+        )
+
+    async def _graphic_entry(self, line: str, line_seconds: float, move_seconds: float) -> dict:
+        """What the pending graphics show on the step that starts now: where
+        the words they go with are in the frame the camera ends on, and when
+        the callout comes in. A callout whose words are not in that frame is
+        not shown ("dropped" says why)."""
+        wanted = self.pending_graphics or {}
+        view = (self.camera.view() if self.camera is not None
+                else {"x": 0.0, "y": 0.0, "w": float(self.width), "h": float(self.height), "zoom": 1.0})
+        box = None
+        if wanted.get("target_text"):
+            try:
+                target = await self._visible_text_target(wanted["target_text"])
+                box = frame_box(await self._text_box(target, wanted["target_text"]) if target is not None else None, view)
+            except PlaywrightError:
+                box = None
+        entry: dict = {}
+        if wanted.get("caption"):
+            entry["caption"] = {"text": wanted["caption"], **({"box": box} if box else {})}
+        if wanted.get("callout"):
+            if box is None:
+                entry["dropped"] = f"the words it points at ({wanted.get('target_text')!r}) are not in the frame"
+            else:
+                entry["callout"] = {
+                    "text": wanted["callout"], "box": box,
+                    "at": callout_seconds(wanted["callout"], line, line_seconds, move_seconds, line_seconds),
+                }
+        return entry
+
     def _move_seconds(self, line_seconds: float) -> float:
         """How long the pending shot's move takes under a line this long: a
         move tied to its line has landed while most of the line is still to
@@ -2375,6 +2418,7 @@ class BrowserSession:
             offset = action_completed_at
         if self.pending_shot is None and card is None and not action.offscreen:
             await self._frame_dialog()
+        moved_seconds = 0.0
         if self.pending_shot is not None and self.camera is not None and card is None:
             # The shot's move starts where this step's footage starts in the
             # video: at its narration, after the action has settled. Timed
@@ -2382,12 +2426,22 @@ class BrowserSession:
             # the settle — footage the segmented render cuts — so most
             # push-ins reached the video as a jump to the zoomed frame, not a
             # move (found comparing cut boundaries, 2026-10-09).
-            if self.camera.move(offset, *self.pending_shot, ease=self._move_seconds(duration)):
+            ease = self._move_seconds(duration)
+            if self.camera.move(offset, *self.pending_shot, ease=ease):
+                moved_seconds = ease
                 if self.pending_facts:
                     self.camera.keys[-1]["facts"] = self.pending_facts
                 await self._redraw_sticky_caption()
             self.pending_shot = None
             self.pending_land = None
+        graphic: dict = {}
+        if self.pending_graphics and not action.offscreen and card is None:
+            # Placed in the frame the camera ends on, which is known now.
+            graphic = await self._graphic_entry(narration, duration, moved_seconds)
+            self.pending_graphics = None
+            if graphic.get("callout"):
+                # Read before the step ends, under however short a line.
+                annotation_duration = max(annotation_duration, graphic["callout"]["at"] + CALLOUT_MIN_SECONDS)
         hold_duration = annotation_hold_seconds(duration, annotation_duration)
         if action.offscreen:
             # Done, but not part of the video: it adds nothing to the timeline
@@ -2405,6 +2459,9 @@ class BrowserSession:
             self.timeline_cards.append(card is not None)
             if card is not None:
                 record_card(self.directory, offset, *card)
+            shown = {key: graphic[key] for key in ("callout", "caption") if graphic.get(key)}
+            if shown:
+                record_graphic(self.directory, offset, shown)
         if hold_duration and card is None:
             elapsed = time.monotonic() - (self.t0 + offset)
             padding_applied = elapsed < hold_duration
@@ -2462,6 +2519,8 @@ class BrowserSession:
         }
         if open_overlays is not None:
             result["open_overlays"] = open_overlays
+        if graphic:
+            result["graphics"] = graphic
         lost = self.recording_check()
         if lost:
             result["recording_lost"] = lost

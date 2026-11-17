@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .camera import EASE_SECONDS, HOLD_EASE, PUSH_ZOOM, panel_is_cut
+from .graphics import CALLOUT_MIN_SECONDS
 from .render import FONT_PATH, STORYBOARD_DIR, storyboard_still_at
 
 
@@ -841,6 +842,31 @@ def move_findings(camera: Any, steps: Sequence[dict], parts: Sequence[dict] | No
                        "stays close and pans (move=\"stay\"), or a wide beat (camera=1) between them.",
             })
         run = []
+    return findings
+
+
+# Graphics over the page ----------------------------------------------------
+
+# A callout on screen for less than this is a flash, not something to read.
+CALLOUT_BRIEF = 1.2
+
+
+def graphic_findings(cues: Sequence[dict]) -> list[dict]:
+    """What the film's graphics (graphics.graphic_cues) do wrong: a callout
+    the cut left too short to read. The shoot gives each CALLOUT_MIN_SECONDS;
+    a trimmed part or a rerender with a faster voice can take that away."""
+    findings: list[dict] = []
+    for cue in cues:
+        shown = float(cue["end"]) - float(cue["start"])
+        if cue.get("kind") == "callout" and shown < CALLOUT_BRIEF:
+            findings.append({
+                "category": "callout_too_brief", "severity": "low",
+                "location": f"{cue['start']:.1f}s", "at_seconds": round(float(cue["start"]), 2),
+                "measured": {"shown_seconds": round(shown, 2), "text": cue["text"]},
+                "message": f"The callout {cue['text']!r} is on screen for {shown:.1f} s: too short to read "
+                           f"while the line is spoken (it wants {CALLOUT_MIN_SECONDS:g} s).",
+                "fix": "Give the beat a longer line, or name the callout's words earlier in it.",
+            })
     return findings
 
 
