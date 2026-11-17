@@ -10,13 +10,42 @@ import subprocess
 import tempfile
 from typing import TYPE_CHECKING, Callable, Sequence, cast
 import textwrap
+import time
+
+from . import signature as sig
 
 if TYPE_CHECKING:
     from .camera import Camera
+    from .signature import Signature
 
 
-FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT_PATH = sig.FALLBACK_FONT
 CARD_DURATION = 3.0
+
+
+# ffmpeg's AVERROR_EXTERNAL as an exit status, the low byte of the error.
+FFMPEG_ENCODER_FAILED = 187
+MEDIA_RETRY_PAUSE = 2.0
+# A film's join decodes every part at once, and ffmpeg gives each input and
+# the filter graph a thread per core: 377 threads for 18 parts on eight cores,
+# against the 512 AgentHotel allows a guest. Too close: take 6's first finish
+# failed there twice. At two each it peaks at 111 and takes the same time.
+JOIN_THREADS = "2"
+
+
+def run_media(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+    """subprocess.run with check=True for ffmpeg, once more if it died of
+    something passing: a signal, or the encoder failing to start (exit 187).
+    Both are what running out of threads looks like, and the same command
+    went through on the next finish (Sluss takes 5 and 6). An ffmpeg that
+    exits with an error of its own would only fail the same way again."""
+    try:
+        return subprocess.run(command, check=True, **kwargs)
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode >= 0 and exc.returncode != FFMPEG_ENCODER_FAILED:
+            raise
+        time.sleep(MEDIA_RETRY_PAUSE)
+        return subprocess.run(command, check=True, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -61,12 +90,38 @@ def start_recording(
     )
 
 
+# How long the recorder gets to write out what it holds. On a busy host it can
+# need much more than the twelve seconds it had: it was then killed before
+# writing its index, and the whole recording was unreadable (Sluss take 4, and
+# three test films in a row on 2026-11-09 at load 8 on eight cores).
+RECORDER_STOP_SECONDS = 180
+
+# A recording that has not grown for this long has stopped taking frames: the
+# encoder writes several kilobytes a second even of a still page.
+RECORDING_STALL_SECONDS = 30.0
+
+
+def recording_problem(alive: bool, size: int, last_size: int, last_growth_at: float, now: float) -> str | None:
+    """Why the screen recording is no longer taking the session, or None.
+
+    Certera take 10 (2026-11-14): the recorder stopped taking frames 566 s into
+    a 14-minute session while every step still answered ok, and the director
+    learned only from the review that the last four beats had no footage.
+    """
+    if not alive:
+        return "the screen recorder exited"
+    if size <= last_size and now - last_growth_at >= RECORDING_STALL_SECONDS:
+        return f"the screen recording has not grown for {now - last_growth_at:.0f} s"
+    return None
+
+
+
 def stop_recording(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
     try:
         process.send_signal(signal.SIGINT)
-        process.wait(timeout=12)
+        process.wait(timeout=RECORDER_STOP_SECONDS)
     except subprocess.TimeoutExpired:
         process.terminate()
         try:
@@ -104,14 +159,13 @@ def mux_narration(
         if output_size is None:
             video_path.replace(output_path)
         else:
-            subprocess.run(
+            run_media(
                 [
                     "ffmpeg", "-loglevel", "error", "-y", "-i", str(video_path),
                     "-vf", f"scale={output_size[0]}:{output_size[1]}",
                     "-an", "-c:v", "libx264", "-preset", "veryfast",
                     "-pix_fmt", "yuv420p", str(output_path),
                 ],
-                check=True,
             )
         return output_path
 
@@ -146,7 +200,7 @@ def _render_video_only(
     else:
         command.extend(["-c:v", "copy"])
     command.extend(["-an", str(output_path)])
-    subprocess.run(command, check=True)
+    run_media(command)
 
 
 def _has_branding(config: RenderConfig) -> bool:
@@ -185,11 +239,10 @@ CARD_URL_MAX_BYTES = 10 * 1024 * 1024
 def _still(video: Path, at_end: bool, output: Path) -> Path | None:
     """One full-size frame from the start or the end of a video."""
     try:
-        subprocess.run(
+        run_media(
             ["ffmpeg", "-loglevel", "error", "-y",
              *(["-sseof", "-0.12"] if at_end else ["-ss", "0.3"]),
              "-i", str(video), "-frames:v", "1", str(output)],
-            check=True,
         )
     except subprocess.CalledProcessError:
         return None
@@ -247,10 +300,12 @@ def card_backgrounds(
 
     "auto" takes the first frame of the video for the title and its last
     frame for the close — the product itself, as a hero image. An image URL
-    is used for both; one that cannot be fetched falls back to "auto".
+    is used for both; one that cannot be fetched falls back to "auto". A
+    house whose signature sets its cards solid turns "auto" into "solid": the
+    look is the instance's, not the director's. A film's own image still wins.
     """
     choice = (config.title_background or "auto").strip()
-    if choice == "solid":
+    if choice == "solid" or (choice == "auto" and sig.current().cards == "solid"):
         return None, None
     if choice.startswith("https://"):
         image = _download_image(choice, temporary / "card-background")
@@ -262,32 +317,115 @@ def card_backgrounds(
     )
 
 
+# Whole numbers only: "1.2" and "3,000" would count as something else.
+_CARD_NUMBER = re.compile(r"(?<![\d.,])\d{1,7}(?![\d]|[.,]\d)")
+# Past the dissolve in, then up to the value in under a second.
+COUNT_START, COUNT_SECONDS = 0.4, 0.9
+
+
+def _count_up_line(lines: Sequence[str]) -> tuple[int, re.Match[str]] | None:
+    """The line and number to count up: only a card with exactly one number,
+    and not a year, which is no quantity."""
+    found = [(index, match) for index, line in enumerate(lines) for match in _CARD_NUMBER.finditer(line)]
+    if len(found) != 1 or re.fullmatch(r"(19|20)\d\d", found[0][1].group()):
+        return None
+    return found[0]
+
+
+def _count_up_expression(value: int) -> str:
+    """drawtext's expansion of a number counting up. It starts at the same
+    number of digits, so the line stays put while it runs."""
+    start = 0 if value < 10 else 10 ** (len(str(value)) - 1)
+    progress = f"pow(min(1,max(0,t-{COUNT_START})/{COUNT_SECONDS}),0.5)"
+    return f"%{{eif\\:min({value},floor({start}+({value - start})*{progress}))\\:d}}"
+
+
+def card_filters(
+    width: int,
+    height: int,
+    lines: Sequence[tuple[str, int] | tuple[str, int, str]],
+    text_colour: str,
+    on_image: bool,
+    signature: "Signature | None" = None,
+    rule: bool = False,
+    small_print: Sequence[str] = (),
+    count_up: bool = False,
+) -> list[str]:
+    """The drawtext (and drawbox) filters of a card: its lines centred, each
+    in the display face, or in the face its tuple names; an accent rule
+    under the first line when the signature asks for one; small print along
+    the bottom in the mono face. Separate from _card so a test can read what
+    a card says without rendering it."""
+    signature = signature or sig.current()
+    display = sig.font_file(signature.display_font)
+    mono = sig.font_file(signature.mono_font, "regular")
+    filters: list[str] = []
+    expanded_lines: list[tuple[str, int, str]] = []
+    for entry in lines:
+        text, size = entry[0], entry[1]
+        face = entry[2] if len(entry) > 2 else display
+        wrapped = wrap_card_text(text, max_chars=28 if size >= 36 else 54)
+        expanded_lines.extend((line, size, face) for line in wrapped)
+    center_offset = (len(expanded_lines) - 1) * 0.7
+    colour = "white" if on_image else text_colour
+    counted = _count_up_line([text for text, _, _ in expanded_lines]) if count_up else None
+    for index, (text, size, face) in enumerate(expanded_lines):
+        drawn = _escape_drawtext(text)
+        if counted is not None and counted[0] == index:
+            found = counted[1]
+            drawn = (_escape_drawtext(text[:found.start()]) + _count_up_expression(int(found.group()))
+                     + _escape_drawtext(text[found.end():]))
+        filters.append(
+            "drawtext="
+            f"fontfile={face}:text='{drawn}':"
+            f"fontcolor={colour}:fontsize={size}:"
+            + ("shadowcolor=black@0.55:shadowx=2:shadowy=2:" if on_image else "")
+            + f"x=(w-text_w)/2:y=(h-text_h)/2+{index * 1.4 - center_offset}*{size}"
+        )
+    if rule and expanded_lines:
+        # The signature's mark: a short rule in the accent under the text,
+        # where a headline's underline would be. drawbox has no text_h, so a
+        # line's height is taken as three quarters of its size, which is
+        # what a display face measures.
+        last = len(expanded_lines) - 1
+        last_size = expanded_lines[last][1]
+        bottom_of_text = (height - 0.75 * last_size) / 2 + (last * 1.4 - center_offset) * last_size + 0.75 * last_size
+        length = max(48, width // 12)
+        thickness = max(3, height // 180)
+        filters.append(
+            f"drawbox=x=(iw-{length})/2:y={round(bottom_of_text + 0.6 * last_size)}:w={length}:h={thickness}:"
+            f"color={signature.accent}@0.95:t=fill"
+        )
+    bottom = max(20, height // 24)
+    size = max(16, height // 40)
+    for index, text in enumerate(line for line in small_print if line.strip()):
+        filters.append(
+            "drawtext="
+            f"fontfile={mono}:text='{_escape_drawtext(text)}':"
+            f"fontcolor={colour}@0.78:fontsize={size}:"
+            + ("shadowcolor=black@0.55:shadowx=1:shadowy=1:" if on_image else "")
+            + f"x=(w-text_w)/2:y=h-{bottom}-{(index + 1) * size * 1.5:.0f}"
+        )
+    return filters
+
+
 def _card(
     output_path: Path,
     width: int,
     height: int,
     accent: str,
-    lines: Sequence[tuple[str, int]],
+    lines: Sequence[tuple[str, int] | tuple[str, int, str]],
     background: Path | None = None,
     duration: float = CARD_DURATION,
     text_colour: str = "white",
+    rule: bool = False,
+    small_print: Sequence[str] = (),
+    count_up: bool = False,
 ) -> None:
-    if not Path(FONT_PATH).is_file():
+    signature = sig.current()
+    if not Path(sig.font_file(signature.display_font)).is_file():
         raise RuntimeError(f"Title-card font is missing: {FONT_PATH}")
-    drawtext = []
-    expanded_lines: list[tuple[str, int]] = []
-    for text, size in lines:
-        wrapped = wrap_card_text(text, max_chars=28 if size >= 36 else 54)
-        expanded_lines.extend((line, size) for line in wrapped)
-    center_offset = (len(expanded_lines) - 1) * 0.7
-    for index, (text, size) in enumerate(expanded_lines):
-        drawtext.append(
-            "drawtext="
-            f"fontfile={FONT_PATH}:text='{_escape_drawtext(text)}':"
-            f"fontcolor={text_colour if background is None else 'white'}:fontsize={size}:"
-            + ("shadowcolor=black@0.55:shadowx=2:shadowy=2:" if background else "")
-            + f"x=(w-text_w)/2:y=(h-text_h)/2+{index * 1.4 - center_offset}*{size}"
-        )
+    drawtext = card_filters(width, height, lines, text_colour, background is not None, signature, rule, small_print, count_up)
     if background is not None:
         # A hero section: the image fills the frame, drifts in a little over
         # the card, and is blurred and dimmed just enough for the text to read
@@ -319,7 +457,7 @@ def _card(
         if result.returncode == 0 and output_path.is_file():
             return
         # An image ffmpeg cannot read: the solid card below.
-    subprocess.run(
+    run_media(
         [
             "ffmpeg", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i",
@@ -328,7 +466,6 @@ def _card(
             "-an", "-c:v", "libx264", "-preset", "veryfast",
             "-pix_fmt", "yuv420p", str(output_path),
         ],
-        check=True,
     )
 
 
@@ -360,14 +497,68 @@ def _overlay_qr(card: Path, qr: Path, width: int, height: int) -> None:
         out.replace(card)
 
 
-def _closing_card(outro: Path, width: int, height: int, config: RenderConfig, background: Path | None, temporary: Path) -> None:
+# The window mark: the page inset on the house's ink, with rounded corners.
+WINDOW_MARGIN = 0.04
+WINDOW_RADIUS = 0.022
+
+
+def window_geometry(width: int, height: int) -> tuple[int, int, int, int]:
+    """The inset page's width, height, left and top: the film's own shape."""
+    inner_h = int(height * (1 - 2 * WINDOW_MARGIN)) // 2 * 2
+    inner_w = int(inner_h * width / height) // 2 * 2
+    return inner_w, inner_h, (width - inner_w) // 2, (height - inner_h) // 2
+
+
+def window_frame(out: Path, width: int, height: int, ink: str) -> Path:
+    """A still of the ink with a rounded hole, to lay over the inset page. One
+    frame: overlay repeats its last, so a film of any length needs no more."""
+    inner_w, inner_h, left, top = window_geometry(width, height)
+    scale = 2  # drawn large and scaled down, for smooth corners
+    x0, y0, x1, y1 = left * scale, top * scale, (left + inner_w) * scale, (top + inner_h) * scale
+    r = int(height * WINDOW_RADIUS) * scale
+    outside = (f"gt(hypot(max(max({x0 + r}-X,X-{x1 - r}),0),max(max({y0 + r}-Y,Y-{y1 - r}),0)),{r})")
+    run_media([
+        "ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+        f"color=c=0x{ink.lstrip('#')}:s={width * scale}x{height * scale}",
+        "-frames:v", "1", "-vf",
+        f"format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='255*{outside}',scale={width}:{height}:flags=lanczos",
+        str(out),
+    ])
+    return out
+
+
+def _title_card(intro: Path, width: int, height: int, config: RenderConfig, background: Path | None) -> None:
+    signature = sig.current()
     _card(
-        outro, width, height, config.accent,
+        intro, width, height, (signature.ink or config.accent) if background is None else config.accent,
+        [(config.title.strip(), max(36, width // 22)),
+         (config.subtitle.strip(), max(20, width // 48))]
+        if config.subtitle.strip()
+        else [(config.title.strip(), max(36, width // 22))],
+        background,
+        text_colour=signature.paper,
+        # A house with a signature underlines its title in the accent.
+        rule=not signature.is_default,
+    )
+
+
+def _closing_card(outro: Path, width: int, height: int, config: RenderConfig, background: Path | None, temporary: Path) -> None:
+    signature = sig.current()
+    _card(
+        outro, width, height, (signature.ink or config.accent) if background is None else config.accent,
         [
             (config.cta_text.strip() or "Learn more", max(28, width // 32)),
-            (config.cta_url.strip(), max(22, width // 44)),
+            # A house sets the address in its mono face; the default keeps
+            # the one face it always had.
+            (config.cta_url.strip(), max(22, width // 44))
+            if signature.is_default
+            else (config.cta_url.strip(), max(22, width // 44), sig.font_file(signature.mono_font, "regular")),
         ],
         background,
+        text_colour=signature.paper,
+        # The house signs its film: its line and the AI label, small, at
+        # the foot of the closing card, on every film the instance makes.
+        small_print=[line for line in (signature.ai_label, signature.signature_line) if line],
     )
     if config.closing_qr:
         qr = make_qr(config.cta_url.strip(), temporary / "closing-qr.png")
@@ -393,14 +584,7 @@ def _compose_video(
     )
     if config.title.strip():
         intro = temporary / "intro.mp4"
-        _card(
-            intro, width, height, config.accent,
-            [(config.title.strip(), max(36, width // 22)),
-             (config.subtitle.strip(), max(20, width // 48))]
-            if config.subtitle.strip()
-            else [(config.title.strip(), max(36, width // 22))],
-            intro_background,
-        )
+        _title_card(intro, width, height, config, intro_background)
         parts.append(intro)
         intro_duration = CARD_DURATION
     parts.append(body_path)
@@ -411,12 +595,11 @@ def _compose_video(
     base = temporary / "branded-base.mp4"
     concat = temporary / "branded.txt"
     concat.write_text("".join(f"file '{path}'\n" for path in parts))
-    subprocess.run(
+    run_media(
         [
             "ffmpeg", "-loglevel", "error", "-y", "-f", "concat",
             "-safe", "0", "-i", str(concat), "-c", "copy", str(base),
         ],
-        check=True,
     )
     shifted = [
         (offset + intro_duration, clip)
@@ -493,7 +676,7 @@ def _mux_segment_audio(
         "-t", f"{duration:.3f}", "-c:v", "copy", "-c:a", "aac",
         str(output_path),
     ])
-    subprocess.run(command, check=True)
+    run_media(command)
 
 
 SEGMENT_FLOOR = 1.0
@@ -503,6 +686,12 @@ SEGMENT_FLOOR = 1.0
 QUIET_FLOOR = 0.6
 SEGMENT_TAIL_PAD = 0.4
 LEAD_IN_CAP = 1.0
+# The actions that change what is on screen from the moment they begin: a
+# shot before one of them ends where it began, not where it settled.
+PAGE_CHANGING_ACTIONS = frozenset({
+    "goto", "click", "click_and_wait", "type", "select_option", "press_key",
+    "scroll", "scroll_to_text",
+})
 
 
 @dataclass(frozen=True)
@@ -651,11 +840,10 @@ def _render_glide_pan(
     if output_size is not None:
         filters.append(f"scale={output_size[0]}:{output_size[1]}")
     filters.append("format=yuv420p")
-    subprocess.run(
+    run_media(
         ["ffmpeg", "-loglevel", "error", "-y", "-loop", "1", "-framerate", "25",
          "-t", f"{output_duration:.3f}", "-i", str(image), "-vf", ",".join(filters),
          "-an", "-c:v", "libx264", "-preset", "veryfast", "-r", "25", str(output_path)],
-        check=True,
     )
     return output_path
 
@@ -698,6 +886,28 @@ def load_cards(directory: Path) -> dict[float, dict]:
     except (OSError, ValueError):
         return {}
     return {round(float(card["offset"]), 3): card for card in cards if str(card.get("text") or "").strip()}
+
+
+def read_cards(directory: Path) -> list[dict]:
+    """The mid-film cards, in the order they were recorded."""
+    cards = load_cards(directory)
+    return [cards[offset] for offset in sorted(cards)]
+
+
+def clean_card_text(text: str | None) -> str:
+    return "\n".join(line.strip() for line in (text or "").strip().splitlines())
+
+
+def change_card(directory: Path, offset: float, **changes: str) -> None:
+    """Change the card recorded at this step offset (edit_cards)."""
+    record = directory / CARDS_FILE
+    cards = json.loads(record.read_text())
+    for card in cards:
+        if round(float(card["offset"]), 3) == offset:
+            card.update(changes)
+    temporary = record.with_suffix(".tmp")
+    temporary.write_text(json.dumps(cards))
+    temporary.replace(record)
 
 
 def record_card(directory: Path, offset: float, text: str, background: str) -> None:
@@ -746,13 +956,19 @@ def render_card_segment(
     over a flat colour. Built like the title card; dark text on a light
     colour, so it reads."""
     width, height = size
+    signature = sig.current()
     background = card_background(card.get("background")) or "brand"
-    colour = accent if background in {"brand", "blur"} else background
+    # "brand" is the house's ink when it has one, else this film's accent.
+    colour = ((signature.ink or accent) if background == "brand" else accent) if background in {"brand", "blur"} else background
     lines = [(line, max(36, width // 26)) for line in card_text_lines(card["text"])]
     _card(
         output_path, width, height, colour, lines,
         still if background == "blur" else None, duration,
-        "#111111" if _light(colour) else "white",
+        "#111111" if _light(colour) else (signature.paper if background == "brand" else "white"),
+        # The house's mark, on the house's ground: a brand card is often the
+        # only card a film has, when it opens straight on a question.
+        rule=background == "brand" and not signature.is_default,
+        count_up=background == "brand" and "count_up" in signature.marks,
     )
     return output_path
 
@@ -795,6 +1011,7 @@ def plan_segments(
     stalls: Callable[[float, float], list[tuple[float, float]]] | None = None,
     order: Sequence[float] | None = None,
     cards: Sequence[bool] | None = None,
+    cuts: Sequence[float] | None = None,
 ) -> tuple[list[Segment], list[dict]]:
     """The windows of the recording a segmented render keeps, in order.
 
@@ -831,6 +1048,13 @@ def plan_segments(
     ``cards`` marks the steps that are mid-film cards: generated, not cut
     from the recording, so a card lasts card_seconds of its line whatever
     footage follows it.
+
+    ``cuts`` are the recording times at which an action, visible or not,
+    began changing the page. A step's footage ends at the first cut after
+    it: its offset is when an action settled, but the screen changed when it
+    began, so a shot before an offscreen goto ran into the next page loading
+    (a white heise.de, a fresh chat page: Sluss take 5, 2026-11-03). A line
+    longer than that footage holds the last frame, and is no warning.
     """
     ordered = sorted(
         (offset, index, clip, max(0.0, duration))
@@ -846,6 +1070,10 @@ def plan_segments(
         next_offset = (
             ordered[index + 1][0] if index + 1 < len(ordered) else video_duration
         )
+        later_cuts = [cut for cut in (cuts or ()) if offset < cut < next_offset]
+        cut_short = bool(later_cuts)
+        if cut_short:
+            next_offset = min(later_cuts)
         available = max(0.0, next_offset - offset)
         if available <= 0:
             continue
@@ -882,11 +1110,12 @@ def plan_segments(
         )
         keep_duration = min(available, target)
         if narration_duration > available:
-            warnings.append({
-                "index": index,
-                "needed_seconds": round(narration_duration, 3),
-                "available_seconds": round(available, 3),
-            })
+            if not cut_short:
+                warnings.append({
+                    "index": index,
+                    "needed_seconds": round(narration_duration, 3),
+                    "available_seconds": round(available, 3),
+                })
             keep_duration = narration_duration + SEGMENT_TAIL_PAD
         segments.append(Segment(
             f"{index:04d}", offset, min(available, keep_duration), keep_duration, clip,
@@ -915,18 +1144,21 @@ def segmented_render(
     speeds: Sequence[float] | None = None,
     glides: Sequence[float | None] | None = None,
     order: Sequence[float] | None = None,
+    cuts: Sequence[float] | None = None,
 ) -> SegmentedRenderResult:
     """Render kept step windows from the original continuous recording.
 
     ``pages`` is the URL each step ended on, in the order of ``steps``; with
     transitions "smooth" it tells a page change (a hard cut) from a jump on
     the same page (a dissolve). ``order`` plays the steps in another order
-    than they were recorded in (see plan_segments). A step with a card in
-    cards.json beside the recording plays as that card (render_card_segment).
+    than they were recorded in, and ``cuts`` are where actions began changing
+    the page (both: see plan_segments). A step with a card in cards.json
+    beside the recording plays as that card (render_card_segment).
     """
     config = config or RenderConfig()
     if camera is not None:
         output_size = camera.output_size(output_size)
+        camera = camera.with_hold_moves([(float(offset), float(seconds)) for offset, clip, seconds in steps if clip is not None])
     video_duration = probe_duration(video_path)
     lapsing = speeds is not None and any(speed and speed > 1.0 for speed in speeds)
     cards = load_cards(video_path.parent)
@@ -935,6 +1167,7 @@ def segmented_render(
         (lambda start, end: active_seconds(video_path, start, end)) if lapsing else None,
         glides, lambda start, end: frozen_spans(video_path, start, end), order,
         [round(offset, 3) in cards for offset, _, _ in steps] if cards else None,
+        cuts,
     )
     pans = load_glides(video_path.parent) if glides is not None else {}
     if pans:
@@ -1050,13 +1283,12 @@ def segmented_render(
         concat_list.write_text(
             "".join(f"file '{path}'\n" for path in segment_paths)
         )
-        subprocess.run(
+        run_media(
             [
                 "ffmpeg", "-loglevel", "error", "-y", "-f", "concat",
                 "-safe", "0", "-i", str(concat_list), "-c", "copy",
                 str(joined),
             ],
-            check=True,
         )
         if _has_branding(config) or config.music == "subtle":
             _compose_video(
@@ -1097,11 +1329,10 @@ BIG_CHANGE_DB = 24.0
 def _edge_frame(video: Path, at_end: bool, directory: Path) -> Path:
     frame = directory / f"{video.stem}.{'end' if at_end else 'start'}.png"
     if not frame.exists():
-        subprocess.run(
+        run_media(
             ["ffmpeg", "-loglevel", "error", "-y",
              *(["-sseof", "-0.08"] if at_end else []), "-i", str(video),
              "-frames:v", "1", "-vf", "scale=480:270,format=gray", str(frame)],
-            check=True,
         )
     return frame
 
@@ -1192,14 +1423,7 @@ def _assemble_smooth(
     )
     if config.title.strip():
         intro = temporary / "intro.mp4"
-        _card(
-            intro, width, height, config.accent,
-            [(config.title.strip(), max(36, width // 22)),
-             (config.subtitle.strip(), max(20, width // 48))]
-            if config.subtitle.strip()
-            else [(config.title.strip(), max(36, width // 22))],
-            intro_background,
-        )
+        _title_card(intro, width, height, config, intro_background)
         parts.append((intro, None))
         joins.append(CARD_FADE)
     parts.extend(zip(segment_paths, clips))
@@ -1229,11 +1453,31 @@ def _assemble_smooth(
     if config.cta_url.strip():
         kinds.append(("outro", None))
 
-    command = ["ffmpeg", "-loglevel", "error", "-y"]
+    command = ["ffmpeg", "-loglevel", "error", "-y", "-filter_complex_threads", JOIN_THREADS]
     for path, _ in parts:
-        command += ["-i", str(path)]
+        command += ["-threads", JOIN_THREADS, "-i", str(path)]
     chain: list[str] = []
-    label = "[0:v]"
+    # The window mark: a page is scaled in, and the ink with its rounded hole
+    # laid over it, in this same pass, so the footage is not encoded an extra
+    # time. Cards stay full frame.
+    house = sig.current()
+    first_segment = 1 if config.title.strip() else 0
+    framed = [first_segment + index for index in range(len(segment_paths))
+              if not (cards and cards[index])] if "window" in house.marks else []
+    if framed:
+        frame = window_frame(temporary / "window.png", width, height, house.ground)
+        command += ["-i", str(frame)]
+        inner_w, inner_h, left, top = window_geometry(width, height)
+        copies = "".join(f"[f{index}]" for index in framed)
+        chain.append(f"[{len(parts)}:v]format=rgba,split={len(framed)}{copies}" if len(framed) > 1
+                     else f"[{len(parts)}:v]format=rgba[f{framed[0]}]")
+        chain += [
+            f"[{index}:v]scale={inner_w}:{inner_h}:flags=lanczos,pad={width}:{height}:{left}:{top}:"
+            f"color=0x{house.ground.lstrip('#')}[p{index}];[p{index}][f{index}]overlay=0:0[w{index}]"
+            for index in framed
+        ]
+    source = lambda index: f"[w{index}]" if index in framed else f"[{index}:v]"
+    label = source(0)
     end = probe_duration(parts[0][0])
     placed = [{"kind": kinds[0][0], "step": kinds[0][1], "start": 0.0, "duration": round(end, 3)}]
     audio: list[tuple[float, Path]] = []
@@ -1243,7 +1487,7 @@ def _assemble_smooth(
         overlap = joins[index - 1] or CUT_FRAME
         start = max(0.0, end - overlap)
         chain.append(
-            f"{label}[{index}:v]xfade=transition=fade:duration={overlap:.3f}"
+            f"{label}{source(index)}xfade=transition=fade:duration={overlap:.3f}"
             f":offset={start:.3f}[v{index}]"
         )
         label = f"[v{index}]"
@@ -1259,7 +1503,7 @@ def _assemble_smooth(
     )
     command += ["-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
                 "-r", "25", str(body)]
-    subprocess.run(command, check=True)
+    run_media(command)
     _mux_segment_audio(body, audio, output_path, end, config.music)
     return placed
 
@@ -1290,10 +1534,10 @@ def write_storyboard(directory: Path, video: Path, timeline: Sequence[dict]) -> 
         at = storyboard_still_at(part)
         name: str | None = f"part-{number:03d}.jpg"
         try:
-            subprocess.run(
+            run_media(
                 ["ffmpeg", "-loglevel", "error", "-y", "-ss", f"{at:.3f}", "-i", str(video),
                  "-frames:v", "1", "-vf", "scale=480:270", "-q:v", "4", str(frames_dir / name)],
-                check=True, timeout=30,
+                timeout=30,
             )
         except (OSError, subprocess.SubprocessError):
             name = None
@@ -1367,7 +1611,7 @@ def _render_video_segment(
         "-an", "-c:v", "libx264", "-preset", "veryfast",
         "-pix_fmt", "yuv420p", str(output_path),
     ])
-    subprocess.run(command, check=True)
+    run_media(command)
     return output_path
 
 
@@ -1402,7 +1646,7 @@ def rerender_narration(
               if output_size is not None else ["-c:v", "copy"]),
             str(temp_path),
         ]
-        subprocess.run(command, check=True)
+        run_media(command)
         if _has_branding(config) or config.music == "subtle":
             _compose_video(
                 temp_path, clips, output_path, video_duration,
@@ -1455,7 +1699,7 @@ def rerender_narration(
         "-map", video_map, "-map", "[a]",
         *video_codec, "-c:a", "aac", str(temp_path),
     ])
-    subprocess.run(command, check=True)
+    run_media(command)
     if _has_branding(config) or config.music == "subtle":
         _compose_video(
             temp_path, clips, output_path,
@@ -1556,12 +1800,15 @@ def subtitles_ass(cues: Sequence[tuple[float, float, str]], width: int, height: 
     box = SUBTITLE_STYLES.get(style, SUBTITLE_STYLES["soft"])
     size = max(18, round(min(width, height) / 22))
     margin = max(24, round(height * 0.07))
+    # The house's text face, by name: libass finds it through fontconfig,
+    # and falls back to a face it has when the name is not installed.
+    face = sig.current().text_font.replace(",", " ")
     escape = lambda t: t.replace("\\", "\\\\").replace("{", "(").replace("}", ")").replace("\n", " ")
     lines = [
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}", "WrapStyle: 0", "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,DejaVu Sans,{size},&H00FFFFFF,&H00FFFFFF,{box},{box},1,0,0,0,100,100,0,0,3,{max(6, size // 3)},0,2,{round(width * 0.08)},{round(width * 0.08)},{margin},1",
+        f"Style: Default,{face},{size},&H00FFFFFF,&H00FFFFFF,{box},{box},1,0,0,0,100,100,0,0,3,{max(6, size // 3)},0,2,{round(width * 0.08)},{round(width * 0.08)},{margin},1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for start, end, text in cues:
@@ -1577,11 +1824,11 @@ def burn_subtitles(video: Path, cues: Sequence[tuple[float, float, str]], style:
     script = video.with_name("subtitles.ass")
     script.write_text(subtitles_ass(cues, width, height, style), encoding="utf-8")
     temporary = video.with_name("video.subtitled.mp4")
-    subprocess.run(
+    run_media(
         ["ffmpeg", "-loglevel", "error", "-y", "-i", str(video), "-vf", f"ass={script.name}",
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
          "-c:a", "copy", "-movflags", "+faststart", str(temporary)],
-        check=True, cwd=str(video.parent), timeout=900,
+        cwd=str(video.parent), timeout=900,
     )
     temporary.replace(video)
     return True

@@ -13,6 +13,7 @@ shot before.
 director_guide()                       ← this handbook
 plan_storyboard(beats=[...])           → plan_id, checklist, estimated_seconds
   fix every item marked "fix", plan_storyboard(beats, plan_id=...) again
+rehearse_beats(plan_id, beats=[...])   ← try the beats that depend on a live page, nothing recorded
 start_session(start_url=<first beat's url>, title=..., subtitles=true, show_pointer=false, ...)
 shoot_storyboard(session_id, plan_id=...)   → per beat: ok, or failed and why
   call again while "to_come" is not empty (one call records a few minutes)
@@ -22,6 +23,64 @@ review_session(session_id), finish(session_id)
 apply_retakes(session_id), rerender(session_id)   ← only if you retook a beat
 contact_sheet(session_id)              ← look at the film before you share it
 ```
+
+## The whole film, start to done
+
+You need nothing but these tools. Every reply says what comes next under
+`next`.
+
+1. **Plan.** `plan_storyboard(beats, target_seconds=60)`, and again with its
+   `plan_id` until `ready` is true.
+2. **Rehearse.** `rehearse_beats(plan_id, beats=[...])` for the beats on live
+   pages. Nothing is recorded. Each answers with the page's text around the
+   beat's words, what the frame cuts and a still. Use it to read a source too.
+3. **Open one session.** `start_session` with `start_url`, `subtitles=true`,
+   `color_scheme`, `show_pointer=false`, `mask=["input[type=password]",
+   "[data-secret]"]`, `cta_url`, and `width` and `height` if not 1920x1080.
+   A `title` adds a title card. The look is the signature's: pass no `accent`.
+4. **Shoot.** `shoot_storyboard(session_id, plan_id)`, and again while
+   `to_come` is not empty. `status: "shooting"` means `shoot_status` until
+   `done`.
+5. **Retake** a failed beat at most twice with `shoot_beat`, after fixing what
+   its reason names. A beat that fails twice is cut or goes to a person.
+6. **Finish.** `finish` once, then `finish_status` while it answers
+   `rendering`. If you retook a beat: `apply_retakes`, then `rerender`.
+7. **Judge.** `review_session` and `contact_sheet`. The verdict says where the
+   film stands:
+
+   | `verdict` | what it means |
+   |---|---|
+   | `fix` | Findings of high or medium severity are open and you may still mend them. `next` says what. |
+   | `ready_for_approval` | Nothing high or medium is open. Low findings are yours to weigh. |
+   | `needs_human` | What is open has used its reshoots and fresh take, and more is a person's call. Report it. |
+
+8. **Mend.** In the edit when the footage is right: `edit_step`, `edit_cards`,
+   `update_step_narration`, then `rerender`. When one beat's footage is wrong,
+   change it with `edit_beat(beat=n, changes={...}, session_id=...)` and
+   `reshoot_beat(session_id, beat=n)`: only that beat is shot again, and the
+   film is cut with it. When most of the film is wrong, one `fresh_take`. It
+   can break what was fine, so compare both. Then judge the film again.
+9. **Deliver.** Download the film from `video_url`, because a finished session
+   can be pruned later. Report the watch URL, the duration, each beat's status
+   and every source URL. A person approves a film on its watch page, and only
+   then is it listed in the theater. Re-rendering withdraws the approval.
+
+**A score is not a verdict on the film.** The measures find what can be
+measured. Go through the contact sheet beat by beat as well. `contact_sheet`
+carries the picture in its reply; if you cannot see images, say so in your
+report instead of calling the film seen. On every beat:
+
+- It is there, in order, and its page had loaded.
+- Nothing is left open: a cookie banner, a menu, a chat bubble, a link address.
+- The picture is what the line names, and nothing plays twice.
+- Nothing secret is readable.
+
+**Text has to match the page.** `wait_for_text` and a highlight's `text` come
+from what the page renders, not from a search snippet. AgentTake opens pages
+from its own server, so a site that blocks data centres shows a bot check
+even if it opens for you: pick another source.
+
+**A friction with AgentTake itself** goes to `submit_backlog`, one thing each.
 
 ## A beat
 
@@ -52,9 +111,15 @@ contact_sheet(session_id)              ← look at the film before you share it
 | `image` | `url` (an https image), `caption` optional | The still with a slow Ken Burns drift; `caption` is a lower third, above the subtitles. |
 | `page_tour` | `url`, `wait_for_text` optional, `until_text` optional | A glide down from the hero, as long as the line: slow at first, then a steady pace a viewer can follow. With `until_text` (a heading further down, as the page shows it) it stops with that heading near the top; without, it goes about 400 px a second and stops where the line ends, not at the footer. **Once per page**: a second tour of it glides over the same sections again. |
 | `login` | `url`, `username`, `password_secret`, `wait_for_text` | Signs in offscreen and lands on the page after it. `password_secret` is the NAME of a secret AgentTake has (start_session lists them); the password never passes through you. `wait_for_text` is something the page after sign-in shows. The line is optional. |
-| `system` | `url`, `wait_for_text`, `zoom` optional | A page in the product, or one section of any page, held with a gentle push-in on `wait_for_text` (the section's heading). `zoom` (0.5–2) makes small text readable. |
+| `system` | `url`, `wait_for_text`, `zoom` optional | A page in the product, or one section of any page, held with a gentle push-in on `wait_for_text` (the section's heading). `zoom` (0.5–2) is the page's own zoom. |
 | `live_answer` | `input_text`, `wait_for_text` optional, `timeout` (seconds, default 120), `url` optional | Types the question and sends it offscreen, reads the page until the answer has stopped growing for 3 s (minutes if need be), then shows it close, above the subtitles. With `wait_for_text` (words only the answer has) the answer must contain them and is framed on them; without, it is framed on its first words. |
 | `cta` | `url`, `wait_for_text` optional | The page the viewer should go to; with `wait_for_text` the shot scrolls to it and pushes in there. Pair it with start_session's `cta_url` for the closing card and its QR code. |
+
+**`camera`** (1–2.5) says how close the camera goes on `source`, `highlight`,
+`system`, `live_answer` and `cta`, which default to 1.12, 1.8, 1.3, 1.5 and
+1.12. A frame that cuts text wants it lower, small text wants it higher. On a
+`system` shot `zoom` changes the page and `camera` the framing:
+`rehearse_beats` shows what you get.
 
 Every narrated step waits for its text before the line plays, so a page that
 has not loaded is a failed beat with a reason, not a blank frame in the film.
@@ -185,8 +250,14 @@ A beat that shot fine but could look better can be retaken the same way.
 
 `shoot_beat` only works before `finish`. A flaw you find on the contact
 sheet afterwards is mended in the edit when the footage is right
+`review_session` measures the film: each finding gives its beat, `at_seconds`,
+what it `measured` and a `fix`. `claims_to_check` lists lines stating a share,
+with the percentages on their screen: compare them yourself.
+
 (`edit_step`: `hidden`, `hold_seconds`, `position`; `update_step_narration`;
-then `rerender`), or in a fresh take when it is not.
+`edit_cards` for a card, the title or the closing card; then `rerender`, and
+`finish_status` if it answers with a job_id), or in a fresh take when it is not.
+A corrected line or card stays in the storyboard, so a fresh take starts from it.
 `fresh_take(session_id)` starts a new session exactly as the first was
 started (size, voice, cards, subtitles, mask, colour scheme) with AgentTake's
 own copy of the storyboard, every beat still to shoot, and answers with the
@@ -194,3 +265,17 @@ beats. Change one with `plan_storyboard(beats, plan_id=<the new plan_id>)`,
 then `shoot_storyboard(<the new session_id>)`. Unchanged lines reuse their
 voice clips, so it costs minutes, not quota. Delete the flawed session once
 the new take passes.
+
+## Data that belongs to someone
+
+A film is a publication. `plan_storyboard` refuses a beat that types or says a
+personal number outside Skatteverket's test list, a card number or a secret, and
+`review_session` stops at `needs_human` when such a thing is on a screen in the
+film. Use test data. Swedish test personal numbers are in
+[Skatteverket's open list](https://skatteverket.entryscape.net/rowstore/dataset/b4de7df7-63c0-4e7e-bb59-1f156a591763), and
+AgentTake carries a copy, so nothing has to be looked up elsewhere.
+
+`get_plan(session_id)` reads a storyboard back, and `edit_beat` changes one
+beat of it. After a retake that replaced something that must not stay,
+`purge_replaced_takes(session_id, confirm=True)` paints the old take black in the
+recording and deletes its page text, voice clips and screenshots.

@@ -88,6 +88,7 @@ def test_theater_page_contains_manage_controls(client):
     http, store, server = client
     tmp_path = os.environ["REEL_OUTPUT_DIR"]
     session_id = make_finished(store, tmp_path, "cafe1234")
+    store.set_approved(session_id, True)
     page = http.get("/theater").text
     assert "manage-toggle" in page
     assert f'data-delete-id="{session_id}"' in page
@@ -117,3 +118,35 @@ def test_llms_txt_documents_http_delete():
 
     text = build_llms_txt("https://example.test")
     assert "DELETE /api/videos/{id}?confirm=true" in text
+
+
+def auth():
+    return {"Authorization": f"Bearer {TOKEN}"}
+
+
+def test_a_film_reaches_the_public_list_only_when_approved(client):
+    http, store, server = client
+    tmp_path = os.environ["REEL_OUTPUT_DIR"]
+    session_id = make_finished(store, tmp_path, "feed0001")
+    assert session_id not in [item["id"] for item in http.get("/api/videos").json()]
+    assert f'data-session-id="{session_id}"' not in http.get("/theater").text
+    assert http.get(f"/watch/{session_id}").status_code == 200, "the link still works"
+    assert "noindex" in http.get(f"/watch/{session_id}").text
+    assert 'data-approve-id' in http.get(f"/watch/{session_id}").text
+    assert session_id in [item["id"] for item in http.get("/api/videos/pending", headers=auth()).json()]
+
+    assert http.post(f"/api/videos/{session_id}/approve", headers=auth()).json()["approved"] is True
+    assert session_id in [item["id"] for item in http.get("/api/videos").json()]
+    assert "noindex" not in http.get(f"/watch/{session_id}").text
+
+    assert http.post(f"/api/videos/{session_id}/approve?revoke=true", headers=auth()).json()["approved"] is False
+    assert session_id not in [item["id"] for item in http.get("/api/videos").json()]
+
+
+def test_approving_takes_the_token(client):
+    http, store, server = client
+    tmp_path = os.environ["REEL_OUTPUT_DIR"]
+    session_id = make_finished(store, tmp_path, "feed0002")
+    assert http.post(f"/api/videos/{session_id}/approve").status_code == 401
+    assert http.get("/api/videos/pending").status_code == 401
+    assert http.post("/api/videos/ffff0000/approve", headers=auth()).status_code == 404

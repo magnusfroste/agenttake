@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import urllib.parse
@@ -28,8 +29,17 @@ from starlette.types import ASGIApp
 from .engine import BrowserSession, output_root
 from . import store
 from . import retention
+from . import sensitive
+from . import signature
+
+# Every instance keeps its own backlog; the roadmap they share is the
+# upstream project's issue tracker. An item is proposed there with a
+# prefilled link, or filed outright when REEL_GITHUB_TOKEN is set.
+UPSTREAM_REPO = os.environ.get("REEL_UPSTREAM_REPO", "magnusfroste/agenttake").strip().strip("/")
+UPSTREAM_URL = f"https://github.com/{UPSTREAM_REPO}"
 from .render import (
     FONT_PATH,
+    PAGE_CHANGING_ACTIONS,
     RenderConfig,
     probe_duration,
     rerender_narration,
@@ -41,9 +51,16 @@ from .render import (
     wants_lead_in,
     burn_subtitles,
     STORYBOARD_DIR,
+    WINDOW_MARGIN,
     QUIET_FLOOR,
     SEGMENT_FLOOR,
+    CARD_TEXT_MAX,
+    card_background,
+    change_card,
+    clean_card_text,
+    read_cards,
 )
+from . import pickup
 from .camera import MAX_OUTPUT_SCALE, MAX_ZOOM, Camera
 from . import review as checks
 from . import storyboard as boards
@@ -104,17 +121,26 @@ def transport_security_from_env() -> TransportSecuritySettings:
     )
 
 
-mcp = FastMCP("agenttake", transport_security=transport_security_from_env())
+mcp = FastMCP(
+    "agenttake",
+    instructions=(
+        "AgentTake shoots narrated web films. To direct one, call director_guide first: it has the "
+        "whole procedure. Then every reply says what comes next under `next`, and after finish "
+        "review_session gives a `verdict`: fix, ready_for_approval or needs_human."
+    ),
+    transport_security=transport_security_from_env(),
+)
 sessions: dict[str, BrowserSession] = {}
 
 
-def feedback_result(payload: dict, screenshot: object = None) -> CallToolResult:
-    """Return structured JSON plus an MCP image when one is available."""
+def feedback_result(payload: dict, *screenshots: object) -> CallToolResult:
+    """Return structured JSON plus an MCP image for each still available."""
     content: list[object] = [
         TextContent(type="text", text=json.dumps(payload)),
     ]
-    if screenshot:
-        content.append(Image(path=screenshot).to_image_content())
+    for screenshot in screenshots:
+        if screenshot:
+            content.append(Image(path=screenshot).to_image_content())
     return CallToolResult(content=content, structuredContent=payload)
 
 
@@ -196,6 +222,7 @@ def page_shell(
     structured_data: str = "",
     og_image_path: str | None = None,
     share_title: str | None = None,
+    noindex: bool = False,
 ) -> str:
     """Wrap public page content in the shared landing/docs layout.
 
@@ -221,7 +248,7 @@ def page_shell(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{escaped_title} · AgentTake</title>
   <meta name="description" content="{escaped_description}">
-  <link rel="canonical" href="{canonical_url}">
+  <link rel="canonical" href="{canonical_url}">{'<meta name="robots" content="noindex">' if noindex else ''}
   <link rel="icon" href="/favicon.svg?v={ASSET_VERSION}" type="image/svg+xml">
   <link rel="alternate icon" href="/favicon.png?v={ASSET_VERSION}" type="image/png">
   <meta property="og:type" content="website">
@@ -241,7 +268,7 @@ def page_shell(
 </head>
 <body>
   <main>
-    <nav><strong>AgentTake</strong><span><a href="/">Home</a> · <a href="/theater">Theater</a> · <a href="/backlog">Backlog</a> · <a href="/bug_report">Bug reports</a> · <a href="/docs">Docs</a></span></nav>
+    <nav><strong>AgentTake</strong><span><a href="/">Home</a> · <a href="/theater">Theater</a> · <a href="/backlog">Backlog</a> · <a href="/bug_report">Bug reports</a> · <a href="/docs">Docs</a> · <a href="{UPSTREAM_URL}" rel="noopener">GitHub ↗</a></span></nav>
     {content}
   </main>
 </body>
@@ -286,7 +313,7 @@ its progress and, when done, the video URL.
 After `finish`: `storyboard` shows the film part by part; `edit_step` hides a step,
 sets a hold or a speed, or gives it a `position` in the video (a beat recorded again
 at the end of the session plays where it belongs, with its camera and glide);
-`update_step_narration` rewrites a line; `rerender` applies them without recording
+`update_step_narration` rewrites a line, `edit_cards` a card; `rerender` applies them without recording
 again. Before sharing, `set_watch_page` gives the watch page a title, a description
 and the moment its link-preview image is taken from.
 `subtitles=true` (start_session or rerender) burns the narration in, for feeds that play muted;
@@ -335,7 +362,8 @@ token-protected `prune` tool to clean old finished sessions manually.
 ## Public resources
 
 - `/theater` — finished narrated videos
-- `/backlog` and `/bug_report` — public roadmap and bug reports
+- `/backlog` and `/bug_report` — this instance's backlog and bug reports, each item proposable upstream as a GitHub issue
+- `get_signature` / `set_signature` — the house style (colours, type, sign-off, AI label, voice, writing rules) every film carries, versioned; the director reads it at the end of `director_guide`
 - `/docs` — detailed API documentation
 - `/api/videos`, `/api/backlog`, `/api/bug_reports` — JSON feeds
 
@@ -541,6 +569,11 @@ def apply_subtitles(session_id: str) -> bool:
     return burn_subtitles(video, cues, session.get("subtitle_style") or "soft")
 
 
+def public_watch_url(session_id: str) -> str:
+    """The film's watch page, absolute when this service knows its address."""
+    return f"{os.environ.get('REEL_PUBLIC_BASE_URL', '').rstrip('/')}/watch/{session_id}"
+
+
 def public_video_url(session_id: str) -> str | None:
     """The finished video's absolute URL at the address this service has now."""
     base = os.environ.get("REEL_PUBLIC_BASE_URL", "").rstrip("/")
@@ -640,6 +673,18 @@ def video_card(session: dict) -> str:
         </div>
       </div>
     </article>"""
+
+
+def approval_banner(session_id: str, title: str, approved: bool) -> str:
+    """On a watch page: whether a person has approved this film, and the button."""
+    safe_id, safe_title = html.escape(session_id, quote=True), html.escape(title, quote=True)
+    if approved:
+        return (f'<p class="muted" style="margin-bottom:16px;">Approved and listed in the theater. '
+                f'<button type="button" class="delete-button" data-approve-id="{safe_id}" data-approve-title="{safe_title}" '
+                f'data-approve-revoke="true">Withdraw</button></p>')
+    return (f'<div class="card" style="margin-bottom:16px;"><strong>Awaiting approval.</strong> '
+            f'Only people with the link can see this film. '
+            f'<button type="button" class="button" data-approve-id="{safe_id}" data-approve-title="{safe_title}">Approve</button></div>')
 
 
 def video_refresh_script(container_id: str, featured: bool = False) -> str:
@@ -785,11 +830,67 @@ def video_admin_script() -> str:
           },
         );
       });
+      const authorized = async (send) => {
+        let token = askToken(false);
+        if (!token) return null;
+        let response = await send(token);
+        if (response.status === 401) {
+          sessionStorage.removeItem(TOKEN_KEY);
+          token = askToken(true);
+          if (!token) return null;
+          response = await send(token);
+        }
+        return response;
+      };
+      document.addEventListener("click", async (event) => {
+        const button = event.target.closest("[data-approve-id]");
+        if (!button) return;
+        event.preventDefault();
+        const revoke = button.dataset.approveRevoke === "true";
+        const verb = revoke ? "Withdraw" : "Approve";
+        if (!window.confirm(`${verb} "${button.dataset.approveTitle}"?`)) return;
+        const response = await authorized((token) => fetch(
+          `/api/videos/${button.dataset.approveId}/approve${revoke ? "?revoke=true" : ""}`,
+          { method: "POST", headers: { Authorization: `Bearer ${token}` } },
+        ));
+        if (!response) return;
+        if (!response.ok) { window.alert(`${verb} failed with status ${response.status}.`); return; }
+        window.location.reload();
+      });
+      const showPending = async () => {
+        const section = document.getElementById("pending-videos");
+        const list = document.getElementById("pending-list");
+        if (!section || !list) return;
+        const response = await authorized((token) => fetch("/api/videos/pending", {
+          headers: { Authorization: `Bearer ${token}` }, cache: "no-store",
+        }));
+        if (!response || !response.ok) return;
+        const items = await response.json();
+        list.replaceChildren(...items.map((item) => {
+          const card = document.createElement("article");
+          card.className = "card";
+          const link = document.createElement("a");
+          link.href = `/watch/${item.id}`;
+          link.textContent = item.title || item.id;
+          const approve = document.createElement("button");
+          approve.type = "button";
+          approve.className = "button";
+          approve.style.marginLeft = "12px";
+          approve.dataset.approveId = item.id;
+          approve.dataset.approveTitle = item.title || item.id;
+          approve.textContent = "Approve";
+          card.append(link, approve);
+          return card;
+        }));
+        section.hidden = items.length === 0;
+      };
       const toggle = document.getElementById("manage-toggle");
       if (toggle) {
         toggle.addEventListener("click", () => {
           const managing = document.body.classList.toggle("managing");
           toggle.textContent = managing ? "Done managing" : "Manage videos";
+          if (managing) showPending();
+          else document.getElementById("pending-videos").hidden = true;
         });
       }
     })();
@@ -799,7 +900,7 @@ def video_admin_script() -> str:
 def landing_page(base_url: str = "/") -> str:
     """Render the marketing landing page without exposing credentials."""
     endpoint = html.escape(mcp_endpoint())
-    latest = store.list_finished_sessions()[:1]
+    latest = store.list_finished_sessions(approved=True)[:1]
     featured = latest[0] if latest else None
     featured_content = (
         f"""<div id="featured-video" data-session-id="{html.escape(featured["id"], quote=True)}">
@@ -968,6 +1069,7 @@ def watch_page(session_id: str, base_url: str = "/") -> str | None:
       <p class="muted">{html.escape(duration)} · {html.escape(finished_at)}</p>
     </section>
     
+    {approval_banner(session_id, title, bool(session.get("approved_at")))}
     <div style="background:#080b11; border:1px solid #2a354d; border-radius:14px; overflow:hidden; margin-bottom:32px;">
       <video controls autoplay preload="auto" poster="{html.escape(poster, quote=True)}" style="width:100%; max-height:75vh; display:block;" src="{video_url(session_id)}"></video>
     </div>
@@ -1018,12 +1120,13 @@ def watch_page(session_id: str, base_url: str = "/") -> str | None:
         base_url,
         og_image_path=poster,
         share_title=title if (session.get("page_title") or "").strip() else None,
+        noindex=not session.get("approved_at"),
     )
 
 
 def theater_page(base_url: str = "/") -> str:
-    """Render the public showcase of finished videos."""
-    videos = store.list_finished_sessions()
+    """Render the public showcase of the films a person has approved."""
+    videos = store.list_finished_sessions(approved=True)
     cards = "".join(video_card(video) for video in videos)
     if not cards:
         cards = '<div class="placeholder" data-empty><p>No finished videos yet. Check back soon.</p></div>'
@@ -1034,6 +1137,11 @@ def theater_page(base_url: str = "/") -> str:
       <p class="lede">Watch the latest narrated product stories directed by
       agents with AgentTake.</p>
       <button id="manage-toggle" class="button secondary" type="button" style="margin-top:16px;">Manage videos</button>
+    </section>
+    <section id="pending-videos" hidden style="margin-bottom:28px;">
+      <h2>Awaiting approval</h2>
+      <p class="muted">Only people with the link can see these.</p>
+      <div id="pending-list" class="theater-grid"></div>
     </section>
     <div id="theater-videos" class="theater-grid">
       {cards}
@@ -1048,6 +1156,55 @@ def theater_page(base_url: str = "/") -> str:
         "/theater",
         base_url,
     )
+
+
+def _issue_body(item: dict) -> str:
+    detail = (item.get("detail") or "").strip() or "(no detail)"
+    return (
+        f"{detail}\n\n"
+        f"Category: {item['category']} · Severity: {item['severity']}\n"
+        "Filed by a directing agent through AgentTake's `submit_backlog`."
+    )
+
+
+def upstream_issue_url(item: dict) -> str:
+    """A prefilled new-issue link for a backlog item: the instance owner reads
+    it, then proposes it upstream with one click and no token. Nothing about
+    the instance goes along, and the text is theirs to edit before sending —
+    an agent's detail can quote their pages."""
+    query = urllib.parse.urlencode(
+        {"title": item["title"], "body": _issue_body(item), "labels": "from-take"}
+    )
+    return f"{UPSTREAM_URL}/issues/new?{query}"
+
+
+async def file_upstream_issue(item: dict) -> tuple[str | None, str | None]:
+    """Open the item as an upstream issue when REEL_GITHUB_TOKEN is set, so the
+    maintainer's own instances need no click. Returns (issue_url, error): no
+    token gives (None, None); a refusal leaves the item local with its
+    propose link and says why. Never raises."""
+    token = os.environ.get("REEL_GITHUB_TOKEN", "").strip()
+    if not token:
+        return None, None
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                f"https://api.github.com/repos/{UPSTREAM_REPO}/issues",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "agenttake",
+                },
+                json={"title": item["title"], "body": _issue_body(item), "labels": ["from-take"]},
+            )
+    except Exception as exc:  # noqa: BLE001 - the backlog entry must survive any failure here
+        return None, f"GitHub unreachable: {type(exc).__name__}"
+    if response.status_code != 201:
+        return None, f"GitHub answered {response.status_code}"
+    url = str(response.json().get("html_url") or "")
+    return (url or None), (None if url else "GitHub returned no issue URL")
 
 
 def backlog_item(item: dict) -> str:
@@ -1065,6 +1222,12 @@ def backlog_item(item: dict) -> str:
     note = html.escape(item.get("note") or "")
     updated_at = html.escape(item.get("updated_at") or created_at)
     muted = " backlog-item-muted" if status_key in {"shipped", "wont_fix"} else ""
+    if item.get("issue_url"):
+        upstream = (f'<p><a href="{html.escape(item["issue_url"], quote=True)}" rel="noopener">'
+                    'Filed upstream ↗</a></p>')
+    else:
+        upstream = (f'<p><a class="button secondary" href="{html.escape(upstream_issue_url(item), quote=True)}" '
+                    'rel="noopener">Propose upstream →</a></p>')
     return f"""
     <article class="backlog-item card{muted}" data-backlog-id="{html.escape(item["id"], quote=True)}">
       <h3>{title}</h3>
@@ -1075,6 +1238,7 @@ def backlog_item(item: dict) -> str:
       </div>
       <p>{detail or '<span class="muted">No additional detail.</span>'}</p>
       {f'<p class="muted">Note: {note}</p>' if note else ''}
+      {upstream}
       <p class="muted">Updated {updated_at}</p>
     </article>"""
 
@@ -1099,10 +1263,12 @@ def backlog_page(base_url: str = "/") -> str:
         cards = '<div class="placeholder"><p>No backlog items yet. Agents can submit the next improvement through MCP.</p></div>'
     content = f"""
     <section class="hero" style="padding-bottom: 28px;">
-      <div class="eyebrow">Open-source roadmap</div>
+      <div class="eyebrow">This instance's backlog</div>
       <h1>Agent backlog.</h1>
-    <p class="lede">A public list of the improvements agents ask for while
-      directing real product stories.</p>
+    <p class="lede">What agents asked for while directing on this instance.
+      Read an item, then propose it to the AgentTake project with one click;
+      the roadmap every instance shares is
+      <a href="{UPSTREAM_URL}/issues" rel="noopener">its issues on GitHub</a>.</p>
     <div class="status-summary">{backlog_status_summary(items)}</div>
     </section>
     <div class="theater-grid">
@@ -1112,7 +1278,7 @@ def backlog_page(base_url: str = "/") -> str:
     return page_shell(
         "Agent backlog",
         content,
-        "Explore the open roadmap of improvements requested by directing agents.",
+        "Improvements directing agents asked for on this instance, each one a click from the AgentTake project's issues.",
         "/backlog",
         base_url,
     )
@@ -1126,10 +1292,12 @@ def bug_report_page(base_url: str = "/") -> str:
         cards = '<div class="placeholder"><p>No bug reports yet. Agents can submit one through MCP.</p></div>'
     content = f"""
     <section class="hero" style="padding-bottom: 28px;">
-      <div class="eyebrow">Open-source bug reports</div>
+      <div class="eyebrow">This instance's bug reports</div>
       <h1>Bug reports.</h1>
-    <p class="lede">Known product and directing-agent problems submitted from
-      real recording sessions.</p>
+    <p class="lede">Problems agents hit while recording on this instance.
+      Read one, then propose it to the AgentTake project with one click; known
+      bugs across instances are
+      <a href="{UPSTREAM_URL}/issues" rel="noopener">its issues on GitHub</a>.</p>
     <div class="status-summary">{backlog_status_summary(items)}</div>
     </section>
     <div class="theater-grid">
@@ -1216,7 +1384,8 @@ def _render_config(
 ) -> RenderConfig:
     normalized_accent = accent.strip()
     if not re.fullmatch(r"#?[0-9a-fA-F]{6}", normalized_accent):
-        normalized_accent = "#1f2a44"
+        # Not given, or not a colour: the house's accent, from the signature.
+        normalized_accent = signature.current().accent
     elif not normalized_accent.startswith("#"):
         normalized_accent = f"#{normalized_accent}"
     normalized_music = music.strip().lower()
@@ -1353,6 +1522,19 @@ def docs_page(base_url: str = "/") -> str:
       LinkedIn, X or Slack show: the title, a description, and the moment of the
       film the 1200x630 preview image is taken from. Nothing is re-rendered.</p>
       <p><strong>Returns:</strong> <code>{{"ok": true, "watch_url": "...", "poster_url": "..."}}</code></p></div>
+    <div class="tool card"><h3><code>rehearse_beats(plan_id, beats, send_live?)</code></h3>
+      <p>Tries beats in a real browser without recording, also behind a
+      sign-in: ok or why not, the seconds it took, what the page showed, what
+      the frame cuts, and a still. A live answer's prompt is not sent unless
+      <code>send_live</code> is true.</p></div>
+    <div class="tool card"><h3><code>reshoot_beat(session_id, beat)</code></h3>
+      <p>Shoots one beat of a finished film again and cuts the film with it.
+      The other beats stay as they are, and a failed beat leaves the film as
+      it was.</p></div>
+    <div class="tool card"><h3><code>edit_cards(session_id, card?, text?, background?, title?, subtitle?, cta_text?, cta_url?)</code></h3>
+      <p>Lists or changes a finished video's mid-film cards, title and closing
+      card. A change is also kept for a fresh take; <code>rerender</code> cuts
+      it in.</p></div>
     <div class="tool card"><h3><code>update_step_narration(session_id, index, narration, voice?)</code></h3>
       <p>Replace the narration text (and optionally the voice) for one step
       in a finished session. The recorded browser video is not changed.</p>
@@ -1369,14 +1551,35 @@ def docs_page(base_url: str = "/") -> str:
       past the original video.</p></div>
     <div class="tool card"><h3><code>submit_backlog(title, detail?, category?, severity?, session_id?)</code></h3>
       <p>Submit a tool-improvement request when the agent hits friction.
-      Categories are <code>feature</code>, <code>bug</code>, or
-      <code>friction</code>; severities are <code>low</code>,
-      <code>normal</code>, or <code>high</code>. Requests are stored in the
-      public roadmap.</p></div>
+      Categories are <code>feature</code>, <code>bug</code>,
+      <code>friction</code> or <code>signature</code> (the look or the voice
+      of the house style); severities are <code>low</code>,
+      <code>normal</code>, or <code>high</code>. Requests are stored in this
+      instance's backlog, where each has a one-click link to propose it to the
+      AgentTake project (<code>propose_url</code> in the result); with
+      <code>REEL_GITHUB_TOKEN</code> set it is filed as an issue upstream right
+      away and the result carries <code>issue_url</code>.</p></div>
+    <div class="tool card"><h3><code>get_signature()</code></h3>
+      <p>This instance's <strong>signature</strong>: the house style every
+      film it makes carries — accent, ink and paper colours, the display, text
+      and mono faces, the closing card's sign-off line and AI label, the house
+      voice, and the rules narration is written by — with its version and
+      changelog. The director never picks a look; <code>director_guide</code>
+      ends with the signature, and a film records the version it was shot
+      with. Set it as a file (<code>REEL_SIGNATURE</code>, or
+      <code>signature.json</code> under <code>REEL_OUTPUT_DIR</code>) or with
+      <code>set_signature</code>.</p></div>
+    <div class="tool card"><h3><code>set_signature(document, note?)</code></h3>
+      <p>Replace the signature. The version goes up by one and the note joins
+      the changelog. A colour or font that does not parse keeps its default
+      and is named under <code>problems</code>. The owner's tool; an agent
+      that finds friction with the look files
+      <code>submit_backlog(category="signature")</code>.</p></div>
     <div class="tool card"><h3><code>list_backlog(limit=50, status?)</code></h3>
       <p>List recent agent backlog requests, optionally filtered by status.
-      The public roadmap is available at <a href="/backlog">/backlog</a> and
-      its JSON feed at <code>/api/backlog</code>.</p></div>
+      This instance's backlog is at <a href="/backlog">/backlog</a> with a
+      JSON feed at <code>/api/backlog</code>; the shared roadmap is
+      <a href="{UPSTREAM_URL}/issues">the project's issues</a>.</p></div>
     <div class="tool card"><h3><code>update_backlog(id, status, note?)</code></h3>
       <p>Move a backlog item through <code>open</code>, <code>planned</code>,
       <code>in_progress</code>, <code>shipped</code>, or
@@ -1424,14 +1627,14 @@ def docs_page(base_url: str = "/") -> str:
       This requires <code>confirm=true</code>. Active sessions are protected
       unless <code>force=true</code> is passed, which aborts any live runtime
       and removes stale sessions orphaned by a restart.</p>
-      <p><strong>HTTP:</strong> <code>DELETE /api/videos/{session_id}?confirm=true</code>
+      <p><strong>HTTP:</strong> <code>DELETE /api/videos/{{session_id}}?confirm=true</code>
       performs the same deletion with the same bearer token and returns
       <code>{{"deleted": true, "session_id": ...}}</code>. The theater's
       <em>Manage videos</em> mode uses this endpoint.</p>
     </div>
     <div class="tool card"><h3><code>act_batch(session_id, steps)</code></h3>
       <p>Run up to 20 actions in one call. Each step is
-      <code>{"action": ..., "narration": ...}</code> with the same contract as
+      <code>{{"action": ..., "narration": ...}}</code> with the same contract as
       <code>act</code>. Steps execute in order and stop at the first failure,
       returning one result per executed step plus the final screenshot.</p>
     </div>
@@ -1556,9 +1759,41 @@ async def videos_api(request: Request) -> Response:
                 "finished_at": video["finished_at"],
                 "video_url": video_url(video["id"]),
             }
-            for video in store.list_finished_sessions()
+            for video in store.list_finished_sessions(approved=True)
         ]
     )
+
+
+@mcp.custom_route("/api/videos/pending", methods=["GET"], include_in_schema=False)
+async def videos_pending_api(request: Request) -> Response:
+    """Finished films no person has approved yet. Needs the bearer token."""
+    return JSONResponse(
+        [
+            {
+                "id": video["id"],
+                "title": display_title_for(video),
+                "duration_seconds": video["duration_seconds"],
+                "finished_at": video["finished_at"],
+            }
+            for video in store.list_finished_sessions(approved=False)
+        ]
+    )
+
+
+@mcp.custom_route("/api/videos/{session_id}/approve", methods=["POST"], include_in_schema=False)
+async def api_approve_video(request: Request) -> Response:
+    """A person approves a film, or withdraws it with revoke=true.
+
+    Protected by the bearer token, and on purpose not an MCP tool: the agent
+    that made a film does not approve it.
+    """
+    session_id = request.path_params["session_id"]
+    if not re.fullmatch(r"[0-9a-f]+", session_id):
+        return JSONResponse({"approved": False, "reason": "not_found"}, status_code=404)
+    approve = request.query_params.get("revoke", "").strip().lower() not in {"1", "true", "yes"}
+    if not store.set_approved(session_id, approve):
+        return JSONResponse({"approved": False, "reason": "not_found"}, status_code=404)
+    return JSONResponse({"approved": approve, "session_id": session_id})
 
 
 @mcp.custom_route("/backlog", methods=["GET"], include_in_schema=False)
@@ -1749,10 +1984,19 @@ recipes. What follows is the hand-directed way, act by act.
      first. focus_text frames a line from its first word — right for a result,
      a version line, a heading; it takes the first visible match, so pick words
      that appear once (a card's own description, not its title that the
-     sidebar repeats). focus_ref centres an element — right for a button. A
-     card has no ref of its own: use a line of its text. The reply's
-     camera_frame is the rectangle the shot will show, in page pixels;
-     camera_note means the focus was not found.
+     sidebar repeats). focus_ref frames an element whole — right for a button,
+     a panel, a picture. It is a ref from observe or a CSS selector: something
+     drawn in an iframe (a preview, a design) is focus_ref "iframe" or a
+     selector of its frame. A card has no ref of its own: use a line of its
+     text. The reply's camera_frame is the rectangle the shot will show, in
+     page pixels; camera_note means the focus was not found — fix it, or the
+     camera pushes in on the middle of the screen.
+   - A small modal dialog a step opens is framed by itself, and the camera goes
+     back to wide when it closes; you need no begin_shot for it. So is a small
+     form alone on its page (sign in, sign up).
+   - A wait{ms} on screen holds the picture that long in the video: a result
+     the line has already named can breathe without a line of its own.
+   - A link that opens a new tab opens in the film's own tab: the film has one.
    - A medium frame shows two thirds of the page width: a heading and a button
      at opposite ends of a wide card do not both fit. Frame the one the voice
      is talking about.
@@ -1783,7 +2027,7 @@ recipes. What follows is the hand-directed way, act by act.
 10. Run review_session and re-record what it flags. Then call finish once. A render
    longer than about a minute answers with status rendering and a job_id: follow
    it with finish_status every 30 s or so, never a second finish. Narration
-   wording is fixed after finish: update_step_narration for each line, then rerender.
+   wording is fixed after finish: update_step_narration for each line, edit_cards for a card, then rerender. A long rerender answers with a job_id: follow it with finish_status.
    finish reviews the film too, and looks at the picture under every line: a
    page that had not loaded (blank_frame) or a menu, listbox or popover left
    open from an earlier step (overlay_left_open) keeps it from "excellent".
@@ -1894,7 +2138,11 @@ async def start_session(
     output_size: str | None = None,
     title: str = "",
     subtitle: str = "",
-    accent: str = "#1f2a44",
+    accent: Annotated[
+        str,
+        Field(description="A hex colour for the cards. Left out, the instance's signature decides "
+                          "(get_signature); before a signature is set that is #1f2a44."),
+    ] = "",
     cta_url: str = "",
     cta_text: str = "Learn more",
     music: str = "none",
@@ -1995,6 +2243,10 @@ async def start_session(
         planned_beats = plan_beats(beats)
     except ValueError as exc:
         return {"ok": False, "error": {"type": "invalid_beats", "message": str(exc)}}
+    house = signature.current()
+    if house.voice and voice == "en-US-JennyNeural":
+        # The schema's default voice means "whatever the house speaks in".
+        voice = house.voice
     # Speak one word in the chosen voice before anything records. A take
     # whose voice failed mid-way cost an agent 18 minutes for 71 seconds and
     # came back with lines missing (2026-10-10); failing here costs nothing.
@@ -2055,6 +2307,9 @@ async def start_session(
         "transitions": transitions, "title_background": title_background, "closing_qr": closing_qr,
         "subtitles": subtitles, "subtitle_style": subtitle_style, "mask": mask,
         "color_scheme": color_scheme, "show_pointer": show_pointer,
+        # Which house style this film was shot in, so a later film can be
+        # read against it after the signature has moved on.
+        "signature": {"name": house.name, "version": house.version},
     })
     result: dict = {"session_id": session.session_id}
     if planned_beats:
@@ -2216,8 +2471,23 @@ async def _run_action(
         parsed_action.speed,
         payload.get("open_overlays"),
         payload.get("focus_cover"),
+        started_seconds=payload.get("started_at_seconds"),
     )
+    if narration.strip() and payload.get("ok") and not parsed_action.offscreen:
+        await _remember_page_text(session, session_id, parsed_action)
     return payload, screenshot
+
+
+async def _remember_page_text(session: Any, session_id: str, action: Action) -> None:
+    """What the screen says under this line, for the review's claim check. In
+    a file beside the film: get_session's reply should not carry every page."""
+    try:
+        text = (action.text or "") if action.type == "card" else await session.page_text()
+        record = {"step": store.next_step_index(session_id) - 1, "text": str(text)[:checks.PAGE_TEXT_MAX]}
+        with (Path(session.directory) / checks.PAGE_TEXT_FILE).open("a", encoding="utf-8") as out:
+            out.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, AttributeError, TypeError):
+        pass  # the film stands without its claim check
 
 
 @mcp.tool()
@@ -2437,14 +2707,32 @@ def _attach_storyboard(plan_id: str, session_id: str, beats: list[dict]) -> None
     """Shoot this plan in this session, and let the review hold the take
     against its lines."""
     store.attach_storyboard(plan_id, session_id)
-    store.update_session_beats(session_id, [
-        {"line": beat["line"], "label": beat["label"]} for beat in beats if beat.get("line")
-    ])
+    store.update_session_beats(session_id, _planned_lines(beats))
+
+
+def _planned_lines(beats: list[dict]) -> list[dict]:
+    return [{"line": beat["line"], "label": beat["label"]} for beat in beats if beat.get("line")]
+
+
+def _keep_in_storyboard(session_id: str, step_index: int, **fields: Any) -> bool:
+    """Write a correction made after finish into the storyboard, on the beat
+    whose last take recorded this step, so a fresh take starts from it. Take
+    5's two corrected lines were in the film and not in its storyboard
+    (found 2026-11-08). The review holds the film against the same lines."""
+    plan = store.session_storyboard(session_id)
+    for beat in (plan or {}).get("beats", []):
+        attempts = beat.get("state", {}).get("attempts") or []
+        if attempts and step_index in (attempts[-1].get("steps") or []):
+            beat.update(fields)
+            store.update_storyboard_beats(plan["plan_id"], plan["beats"])
+            store.update_session_beats(session_id, _planned_lines(plan["beats"]))
+            return True
+    return False
 
 
 def _beat_identity(beat: dict) -> tuple:
     return tuple(beat.get(key) for key in (
-        "shot", "line", "url", "text", "wait_for_text", "input_text", "background", "caption", "zoom",
+        "shot", "line", "url", "text", "wait_for_text", "input_text", "background", "caption", "zoom", "camera",
         "username", "password_secret", "timeout",
     ))
 
@@ -2511,11 +2799,100 @@ async def plan_storyboard(
         "next": (
             f"Fix the {fix_count_words(fixes)} marked fix, then plan_storyboard(beats, plan_id={plan_id!r}) again."
             if fixes else
-            f"start_session(start_url=<the first beat's url>, ...), then shoot_storyboard(session_id, plan_id={plan_id!r})."
+            f"Try the beats on live pages first: rehearse_beats(plan_id={plan_id!r}, beats=[...]). "
+            f"Then start_session(start_url=<the first beat's url>, ...), then shoot_storyboard(session_id, plan_id={plan_id!r})."
             if not attached else
             "shoot_storyboard(session_id)."
         ),
     }
+
+
+def _find_plan(session_id: str, plan_id: str) -> tuple[dict | None, dict | None]:
+    """The plan asked for, or the error that says why there is none."""
+    if not session_id and not plan_id:
+        return None, {"ok": False, "error": {"type": "missing_argument", "message": "Give session_id or plan_id."}}
+    if plan_id:
+        plan = store.get_storyboard(plan_id)
+        if plan is None:
+            return None, {"ok": False, "error": {"type": "unknown_plan", "message": f"No storyboard {plan_id}"}}
+        return plan, None
+    if store.get_session(session_id) is None:
+        return None, _unknown_session(session_id)
+    plan = store.session_storyboard(session_id)
+    if plan is None:
+        return None, {"ok": False, "error": {"type": "no_storyboard", "message": f"{session_id} has no storyboard"},
+                      "hint": "plan_storyboard(beats, session_id=...) attaches one."}
+    return plan, None
+
+
+def _plan_beats(plan: dict) -> list[dict]:
+    """A plan's beats as plan_storyboard takes them."""
+    fields = boards.StoryBeat.model_fields
+    return [{key: value for key, value in beat.items() if key in fields and value not in (None, "")}
+            for beat in plan["beats"]]
+
+
+@mcp.tool()
+async def get_plan(
+    session_id: Annotated[str, Field(description="The film whose storyboard to read.")] = "",
+    plan_id: Annotated[str, Field(description="Or the plan's own id.")] = "",
+) -> dict:
+    """Read a storyboard back: every beat as it stands, and how it was shot.
+
+    Use it after any step that lost track of the plan, and before edit_beat.
+    Each beat has its number and, under `shot_state`, its status and takes.
+    """
+    plan, error = _find_plan(session_id, plan_id)
+    if error:
+        return error
+    assert plan is not None
+    beats = [{"number": beat.get("number", position + 1), **fields,
+              "shot_state": {"status": plan["beats"][position].get("state", {}).get("status", "planned"),
+                             "takes": len(plan["beats"][position].get("state", {}).get("attempts") or [])}}
+             for position, (beat, fields) in enumerate(zip(plan["beats"], _plan_beats(plan)))]
+    return {"ok": True, "plan_id": plan["plan_id"], "session_id": plan.get("session_id"),
+            "target_seconds": plan.get("target_seconds"), "beats": beats, "checklist": plan.get("checklist") or [],
+            "next": "edit_beat(beat=n, changes={...}, session_id or plan_id) changes one beat."}
+
+
+@mcp.tool()
+async def edit_beat(
+    beat: Annotated[int, Field(description="The beat's number, as get_plan reports it.")],
+    changes: Annotated[dict[str, Any], Field(description="The fields to change, as in plan_storyboard. null removes a field.")],
+    session_id: Annotated[str, Field(description="The film whose storyboard to change.")] = "",
+    plan_id: Annotated[str, Field(description="Or the plan's own id.")] = "",
+) -> dict:
+    """Change one beat of a storyboard, leaving every other beat as it is.
+
+    The whole plan is checked again, as plan_storyboard would. Beats already
+    shot keep their takes. A changed beat of a finished film goes into the
+    film with reshoot_beat.
+    """
+    plan, error = _find_plan(session_id, plan_id)
+    if error:
+        return error
+    assert plan is not None
+    fields = boards.StoryBeat.model_fields
+    unknown = sorted(key for key in changes if key not in fields)
+    if unknown or not changes:
+        return {"ok": False, "error": {"type": "unknown_field", "message": f"Not a beat's field: {', '.join(unknown) or 'no changes given'}"},
+                "hint": f"A beat has: {', '.join(fields)}."}
+    beats = _plan_beats(plan)
+    if not 1 <= beat <= len(beats):
+        return {"ok": False, "error": {"type": "unknown_beat", "message": f"beat is 1-{len(beats)}"}}
+    for key, value in changes.items():
+        if value is None:
+            beats[beat - 1].pop(key, None)
+        else:
+            beats[beat - 1][key] = value
+    result = await plan_storyboard(beats, plan_id=plan["plan_id"], target_seconds=int(plan.get("target_seconds") or 60))
+    if not result.get("ok"):
+        return result
+    attached = store.get_session(plan["session_id"]) if plan.get("session_id") else None
+    fixes = [item for item in result["checklist"] if item["severity"] == "fix"]
+    if not fixes and attached and attached.get("status") == "finished":
+        result["next"] = f"reshoot_beat({plan['session_id']!r}, beat={beat}), then review_session."
+    return {**result, "beat": beat, "changed": sorted(changes)}
 
 
 def fix_count_words(count: int) -> str:
@@ -2790,10 +3167,17 @@ async def fresh_take(
                 "error": {"type": "no_start_settings",
                           "message": f"{session_id} was started before AgentTake kept a session's settings"},
                 "hint": "start_session again with the same settings, then plan_storyboard(beats) and shoot_storyboard."}
-    started = await start_session(**start_args)
+    # The signature a film was shot in is a record, not a setting: the fresh
+    # take is shot in the house style of today, and records that. The same
+    # goes for how many fresh takes it descends from.
+    started = await start_session(**{key: value for key, value in start_args.items()
+                                     if key not in ("signature", "generation")})
     if not started.get("session_id"):
         return started
     new_id = started["session_id"]
+    fresh = store.get_session(new_id) or {}
+    store.update_session_start_args(new_id, {**(fresh.get("start_args") or start_args),
+                                             "generation": int(start_args.get("generation") or 0) + 1})
     beats = [{**beat, "state": {"status": "planned", "attempts": []}} for beat in plan["beats"]]
     plan_id = uuid.uuid4().hex[:12]
     store.save_storyboard(plan_id, beats, plan["checklist"], plan.get("target_seconds") or 60, new_id)
@@ -2813,6 +3197,200 @@ async def fresh_take(
         if key in started:
             result[key] = started[key]
     return result
+
+
+REHEARSE_MAX_BEATS = 6
+REHEARSE_MAX_SECONDS = 240.0
+REHEARSAL_PREFIX = "rehearsal-"
+rehearsal_jobs: dict[str, "FinishJob"] = {}
+
+
+async def _rehearsal_act(live: Any, action: dict, narration: str) -> tuple[dict, object]:
+    """One action of a rehearsal: no voice, no step stored. A line's text is
+    still checked for what lies over it, as it is when the beat is shot."""
+    parsed = Action.model_validate(action)
+    payload, _ = await live.act(parsed, "")
+    if narration.strip() and payload.get("ok") and parsed.wait_for_text:
+        try:
+            payload["focus_cover"] = await live.cover_of(parsed.wait_for_text)
+        except Exception:
+            payload["focus_cover"] = None
+    return payload, None
+
+
+REHEARSAL_TEXT_CHARS, REHEARSAL_TEXT_BEFORE = 3000, 300
+
+
+def _page_excerpt(full: str, anchor: str | None, main: str = "") -> str:
+    """What a director can read of the page: around the words the beat is
+    about, else the page's main content. The start of a page is its navigation
+    (a final-test agent could not read a Wikipedia article through it)."""
+    at = full.lower().find(" ".join(anchor.split()).lower()) if anchor else -1
+    if at >= 0:
+        start = max(0, at - REHEARSAL_TEXT_BEFORE)
+        return full[start:start + REHEARSAL_TEXT_CHARS]
+    return (" ".join(main.split()) or full)[:REHEARSAL_TEXT_CHARS]
+
+
+async def _rehearse_one(job: "FinishJob", live: Any, beat: dict, send_live: bool, out: Path) -> dict:
+    number = beat["number"]
+    job.stage = f"beat {number}"
+    started = time.monotonic()
+    camera = getattr(live, "camera", None)
+    if camera is not None:
+        # Each beat is framed from wide, as if it were the only one.
+        camera.keys.clear()
+
+    async def act(_: str, action: dict, narration: str) -> tuple[dict, object]:
+        return await _rehearsal_act(live, action, narration)
+
+    outcome = await boards.run_ops(live, job.session_id, boards.rehearsal_ops(beat, send_live), act)
+    report: dict[str, Any] = {"beat": number, "label": beat["label"], "shot": beat["shot"], "ok": outcome["ok"],
+                              "seconds": round(time.monotonic() - started, 1)}
+    if not outcome["ok"]:
+        report["reason"] = outcome["reason"]
+    if outcome.get("notes"):
+        report["notes"] = outcome["notes"]
+    if beat["shot"] == "live_answer" and not send_live:
+        found = bool((await live.form_fields()).get("message"))
+        report["not_sent"] = "The prompt was not sent. send_live=true sends it, and it lands in the product's log."
+        if outcome["ok"] and not found:
+            report.update(ok=False, reason="no message field on the page")
+    if beat["shot"] != "login":
+        # What the screen shows, also when the beat failed: it says why.
+        report["url"] = live.page.url
+        full = " ".join((await live.page_text()).split())
+        anchor = beat.get("wait_for_text") or beat.get("text") or beat.get("until_text")
+        report["page_text"] = _page_excerpt(full, anchor, await live.main_text())
+        report["page_text_chars"] = len(full)
+        still, frame = await live.frame_preview()
+        if still:
+            target = out / f"beat-{number}.jpg"
+            shutil.move(str(still), target)
+            report["still"] = str(target)
+            report["camera_frame"] = frame
+        keys = [key for key in (camera.keys if camera is not None else []) if key.get("facts")]
+        if keys:
+            step = {"idx": number, "offset_seconds": keys[-1]["t"], "offscreen": False, "ok": True,
+                    "narration_text": beat.get("line") or "-", "action_type": "wait"}
+            framed = Camera(camera.width, camera.height, camera.scale, [keys[-1]])
+            report["findings"] = [
+                {key: value for key, value in finding.items() if key not in ("location", "at_seconds")}
+                for finding in checks.shot_findings(framed, [step])
+            ]
+    return report
+
+
+async def _run_rehearsal(job: "FinishJob", beats: list[dict], send_live: bool, size: tuple[int, int],
+                         color_scheme: str | None) -> dict:
+    out = output_root() / job.session_id
+    live = None
+    try:
+        for old in output_root().glob(f"{REHEARSAL_PREFIX}*"):
+            if old != out:
+                shutil.rmtree(old, ignore_errors=True)
+        out.mkdir(parents=True, exist_ok=True)
+        start = next((beat.get("url") or beat.get("page_url") for beat in beats
+                      if str(beat.get("url") or beat.get("page_url") or "").startswith("http")), "about:blank")
+        live = await BrowserSession.create(
+            start, size[0], size[1], "en-US-JennyNeural", "edge",
+            mask_selectors=["input[type=password]", "[data-secret]"], color_scheme=color_scheme, show_pointer=False,
+        )
+        began = time.monotonic()
+        reports: list[dict] = []
+        not_reached: list[int] = []
+        for beat in beats:
+            if time.monotonic() - began > REHEARSE_MAX_SECONDS:
+                not_reached.append(beat["number"])
+                continue
+            if beat["shot"] == "card" and boards.render_card_action(beat) is not None:
+                reports.append({"beat": beat["number"], "label": beat["label"], "shot": "card", "ok": True,
+                                "seconds": 0.0, "notes": ["a card is drawn by the render: nothing to rehearse"]})
+                continue
+            reports.append(await _rehearse_one(job, live, beat, send_live, out))
+        result: dict[str, Any] = {"ok": True, "status": "done", "job_id": job.session_id, "beats": reports}
+        if not_reached:
+            result["not_reached"] = not_reached
+            result["hint"] = f"Out of time after {REHEARSE_MAX_SECONDS:g} s: rehearse the rest in another call."
+        return result
+    except Exception as exc:  # a job's failure is reported, never lost
+        return {"ok": False, "status": "failed", "job_id": job.session_id,
+                "error": {"type": "rehearsal_failed", "message": str(exc)}}
+    finally:
+        if live is not None:
+            try:
+                await live.abort()
+            except Exception:
+                pass
+            shutil.rmtree(live.directory, ignore_errors=True)
+
+
+async def _rehearsal_reply(job: "FinishJob") -> CallToolResult:
+    assert job.task is not None
+    try:
+        result = await asyncio.wait_for(asyncio.shield(job.task), FINISH_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        return feedback_result({"ok": True, "status": "rehearsing", "job_id": job.session_id, "stage": job.stage,
+                                "hint": "Still rehearsing. Call rehearse_status(job_id) until status is done."})
+    if result.get("status") == "done":
+        result = {**result, "next": "A beat that failed or a finding: change it with plan_storyboard(beats, plan_id) "
+                                    "and rehearse it again. Otherwise start_session, then shoot_storyboard."}
+    return feedback_result(result, *[beat.get("still") for beat in result.get("beats", [])])
+
+
+@mcp.tool()
+async def rehearse_beats(
+    plan_id: Annotated[str, Field(description="The plan_storyboard plan the beats are in.")],
+    beats: Annotated[list[int], Field(description="The numbers of the beats to try, six at most: the ones that "
+                                                  "depend on a live page. A sign-in before them is done for you.")],
+    send_live: Annotated[bool, Field(description="Really send a live_answer's prompt. Off by default: a sent "
+                                                 "prompt lands in the product's own log and moves its numbers.")] = False,
+    width: int = 1920,
+    height: int = 1080,
+    color_scheme: Annotated[str | None, Field(description="light or dark, as start_session will have it.")] = None,
+) -> CallToolResult:
+    """Try beats of a plan in a real browser, without recording anything.
+
+    Each beat runs its own recipe, on the page it will be shot on, also behind
+    a sign-in. No voice is spoken and no session is made. For each beat: ok or
+    why not, the seconds it took, the address and text the page showed, what
+    the frame cut or lost (findings), and a still of the frame. Fix a beat with
+    plan_storyboard(beats, plan_id) and try it again before start_session. A
+    long rehearsal answers with a job_id: follow it with rehearse_status.
+    """
+    plan = store.get_storyboard(plan_id)
+    if plan is None:
+        return feedback_result({"ok": False, "error": {"type": "unknown_plan", "message": f"No storyboard {plan_id}"}})
+    if not 1 <= len(beats) <= REHEARSE_MAX_BEATS:
+        return feedback_result({"ok": False, "error": {"type": "invalid_beats",
+                                                       "message": f"Rehearse 1-{REHEARSE_MAX_BEATS} beats at a time"}})
+    known = {beat["number"]: beat for beat in plan["beats"]}
+    unknown = [number for number in beats if number not in known]
+    if unknown:
+        return feedback_result({"ok": False, "error": {"type": "unknown_beat", "message": f"No beat {unknown[0]}: "
+                                                       f"this plan has 1-{len(plan['beats'])}"}})
+    if sessions or any(job.running() for job in (*finish_jobs.values(), *rehearsal_jobs.values())):
+        return feedback_result({"ok": False, "error": {"type": "busy", "message": "A recording, a render or a rehearsal is running"},
+                                "hint": "Rehearse before start_session, one at a time."})
+    last = max(beats)
+    chosen = [beat for beat in plan["beats"]
+              if beat["number"] in beats or (beat["shot"] == "login" and beat["number"] < last)]
+    job_id = f"{REHEARSAL_PREFIX}{uuid.uuid4().hex[:12]}"
+    job = FinishJob(job_id, None, 0, tool="rehearse_beats")
+    job.task = asyncio.create_task(_run_rehearsal(job, chosen, send_live, (width, height), color_scheme))
+    rehearsal_jobs[job_id] = job
+    return await _rehearsal_reply(job)
+
+
+@mcp.tool()
+async def rehearse_status(
+    job_id: Annotated[str, Field(description="The job_id rehearse_beats answered with.")],
+) -> CallToolResult:
+    """Follow a rehearsal that was still running when it answered."""
+    job = rehearsal_jobs.get(job_id)
+    if job is None:
+        return feedback_result({"ok": False, "error": {"type": "unknown_job", "message": f"No rehearsal {job_id}"}})
+    return await _rehearsal_reply(job)
 
 
 @mcp.tool()
@@ -2846,6 +3424,17 @@ async def apply_retakes(session_id: str) -> dict:
     plan = store.session_storyboard(session_id)
     if plan is None:
         return {"ok": False, "error": {"type": "no_storyboard", "message": f"{session_id} has no storyboard"}}
+    placed, skipped = _place_retakes(session_id, plan)
+    result: dict = {"ok": True, "placed": placed}
+    if skipped:
+        result["skipped"] = skipped
+    result["hint"] = ("rerender(session_id) cuts the video in this order; storyboard shows it."
+                      if placed else "No retakes to place.")
+    return result
+
+
+def _place_retakes(session_id: str, plan: dict) -> tuple[list[dict], list[dict]]:
+    """Hide earlier takes of each retaken beat and play the last where it belongs."""
     placed: list[dict] = []
     skipped: list[dict] = []
     beats = plan["beats"]
@@ -2876,12 +3465,173 @@ async def apply_retakes(session_id: str) -> dict:
         placed.append({"beat": beat["number"], "hidden": earlier, "plays": last["visible"],
                        "moved": anchor is not None})
     store.update_storyboard_beats(plan["plan_id"], beats)
-    result: dict = {"ok": True, "placed": placed}
-    if skipped:
-        result["skipped"] = skipped
-    result["hint"] = ("rerender(session_id) cuts the video in this order; storyboard shows it."
-                      if placed else "No retakes to place.")
-    return result
+    return placed, skipped
+
+
+async def _shoot_pickup(job: "FinishJob", session: dict, plan: dict, target: dict) -> dict:
+    """Shoot one beat in a recording of its own and join it onto the session's."""
+    session_id = job.session_id
+    directory = Path(session["video_path"]).parent
+    args = session.get("start_args") or {}
+    start = next((url for url in (target.get("url"), target.get("page_url")) if str(url or "").startswith("http")), "about:blank")
+    size = (int(session["output_width"]), int(session["output_height"])) if session.get("output_width") and session.get("output_height") else None
+    state = _beat_state(target)
+    status, before = state["status"], store.next_step_index(session_id)
+    report: dict | None = None
+    live = await BrowserSession.create(
+        start, int(args.get("width") or 1920), int(args.get("height") or 1080), session["voice"], session.get("provider", "edge"),
+        size, None, mask_selectors=args.get("mask") or ["input[type=password]", "[data-secret]"],
+        color_scheme=args.get("color_scheme"), show_pointer=bool(args.get("show_pointer", False)),
+    )
+    sessions[session_id] = live
+    try:
+        job.stage = "shooting"
+
+        async def act(_: str, action: dict, narration: str) -> tuple[dict, object]:
+            return await _rehearsal_act(live, action, narration)
+
+        # A sign-in before the beat, as the film had: nothing of it is kept.
+        for beat in plan["beats"]:
+            if beat["shot"] == "login" and beat["number"] < target["number"]:
+                signed_in = await boards.run_ops(live, session_id, boards.recipe(beat, retake=True), act)
+                if not signed_in["ok"]:
+                    report = {"beat": target["number"], "ok": False, "reason": f"the sign-in failed: {signed_in['reason']}"}
+                    break
+        if report is None:
+            report = await _shoot_beat(session_id, plan, target, retake=True)
+            # The recording has to outlast the line, or its last frame is
+            # frozen under the end of it: the recording stops right after the
+            # beat here, where a film's next beat would have kept it going.
+            spoken = [float(step.get("narration_duration") or 0.0) for step in (store.get_session(session_id) or {}).get("steps", [])
+                      if step["idx"] >= before and (step.get("narration_text") or "").strip()]
+            if report["ok"] and spoken:
+                await asyncio.sleep(min(spoken[-1] + PICKUP_TAIL_SECONDS, 40.0))
+    finally:
+        sessions.pop(session_id, None)
+        await live.abort()
+    if not report["ok"]:
+        # The film stands as it was: nothing of the failed pickup is kept.
+        store.delete_steps_from(session_id, before)
+        if state["attempts"] and (state["attempts"][-1].get("steps") or [-1])[0] >= before:
+            state["attempts"].pop()
+        state["status"] = status
+        store.update_storyboard_beats(plan["plan_id"], plan["beats"])
+        shutil.rmtree(live.directory, ignore_errors=True)
+        return {"ok": False, "status": "failed", "beat": target["number"],
+                "error": {"type": "reshoot_failed", "message": report.get("reason") or "the beat failed"},
+                "hint": "The film is unchanged. Fix the beat with plan_storyboard(beats, plan_id) and try it with rehearse_beats."}
+    job.stage = "joining"
+    picked = Path(live.directory)
+    offset = await asyncio.to_thread(pickup.join_recordings, directory / "screen.mp4", picked / "screen.mp4")
+    store.shift_steps(session_id, before, offset)
+    await asyncio.to_thread(pickup.take_in, directory, picked, offset, getattr(live, "camera", None))
+    shutil.rmtree(picked, ignore_errors=True)
+    job.stage = "rendering"
+    placed, _ = _place_retakes(session_id, plan)
+    current = store.get_session(session_id)
+    assert current is not None
+    result = await _rerender(job, current, None, None, None, None)
+    if result.get("ok"):
+        result["next"] = "review_session(session_id): its verdict says whether the film is ready."
+    return {**result, "beat": target["number"], "take": len(state["attempts"]), "placed": placed}
+
+
+async def _run_pickup(job: "FinishJob", session: dict, plan: dict, target: dict) -> dict:
+    try:
+        return await _shoot_pickup(job, session, plan, target)
+    except Exception as exc:  # a job's failure is reported, never lost
+        return {"ok": False, "status": "failed", "error": {"type": "reshoot_failed", "message": str(exc)}}
+
+
+@mcp.tool()
+async def reshoot_beat(
+    session_id: str,
+    beat: Annotated[int, Field(description="The beat's number, as plan_storyboard reports it.")],
+) -> dict:
+    """Shoot one beat of a finished film again and cut the film with it.
+
+    Change the beat first with edit_beat if it needs changing, and try it
+    with rehearse_beats. Only this beat is recorded, a
+    sign-in before it is done for you, unchanged lines reuse their voice, and
+    the other beats stay exactly as they are. If the beat fails, the film is
+    left as it was. A beat gets three takes in all. It answers like finish:
+    follow finish_status while status is rendering, then review_session.
+    """
+    job = finish_jobs.get(session_id)
+    if job is not None and job.running():
+        return await _await_finish(job)
+    session, error = _editable_session(session_id)
+    if error:
+        return error
+    assert session is not None
+    plan = store.session_storyboard(session_id)
+    if plan is None:
+        return {"ok": False, "error": {"type": "no_storyboard", "message": f"{session_id} has no storyboard"}}
+    target = next((candidate for candidate in plan["beats"] if candidate["number"] == beat), None)
+    if target is None:
+        return {"ok": False, "error": {"type": "unknown_beat", "message": f"beat is 1-{len(plan['beats'])}"}}
+    if target["shot"] == "login" or (target["shot"] == "card" and boards.render_card_action(target) is not None):
+        return {"ok": False, "error": {"type": "nothing_to_reshoot", "message": f"a {target['shot']} has no footage in the film"},
+                "hint": "A card is changed with edit_cards, then rerender."}
+    if len(_beat_state(target)["attempts"]) >= MAX_BEAT_TAKES:
+        return {"ok": False, "error": {"type": "reshoot_limit", "message": f"beat {beat} has had {MAX_BEAT_TAKES} takes"},
+                "hint": "Report it: more is a person's call."}
+    if not (Path(session["video_path"]).parent / "screen.mp4").is_file():
+        return {"ok": False, "error": {"type": "recording_missing", "message": "The session's recording was pruned"},
+                "hint": "fresh_take(session_id) shoots the film again."}
+    if sessions or any(other.running() for other in (*finish_jobs.values(), *rehearsal_jobs.values())):
+        return {"ok": False, "error": {"type": "busy", "message": "A recording, a render or a rehearsal is running"},
+                "hint": "Try again when it is done."}
+    job = FinishJob(session_id, Path(session["video_path"]).parent, 0, tool="reshoot_beat")
+    job.task = asyncio.create_task(_run_pickup(job, session, plan, target))
+    finish_jobs[session_id] = job
+    return await _await_finish(job)
+
+
+async def _run_purge(job: "FinishJob", session: dict, plan: dict) -> dict:
+    try:
+        directory = Path(session["video_path"]).parent
+        job.stage = "blanking"
+        result = await asyncio.to_thread(retention.purge_replaced_takes, job.session_id, session.get("steps", []), plan, directory)
+        return {**result, "next": "review_session(session_id). The film is unchanged."}
+    except Exception as exc:  # a job's failure is reported, never lost
+        return {"ok": False, "status": "failed", "error": {"type": "purge_failed", "message": str(exc)}}
+
+
+@mcp.tool()
+async def purge_replaced_takes(
+    session_id: str,
+    confirm: Annotated[bool, Field(description="true removes them for good.")] = False,
+) -> dict:
+    """Remove what a replaced take left behind, for good.
+
+    A retake leaves the earlier take in the recording, and in the page text,
+    voice clips and screenshots beside it. When the earlier take showed
+    something it must not, this paints it black in the recording and deletes
+    the rest. The film is not touched. After it those takes cannot come back.
+    Answers like finish: follow finish_status while status is rendering.
+    """
+    job = finish_jobs.get(session_id)
+    if job is not None and job.running():
+        return await _await_finish(job)
+    session, error = _editable_session(session_id)
+    if error:
+        return error
+    assert session is not None
+    plan = store.session_storyboard(session_id)
+    if plan is None:
+        return {"ok": False, "error": {"type": "no_storyboard", "message": f"{session_id} has no storyboard"}}
+    if not confirm:
+        indexes, ranges = retention.replaced_takes(session.get("steps", []), plan)
+        return {"ok": False, "reason": "confirmation_required", "steps": len(indexes), "stretches": len(ranges),
+                "hint": "purge_replaced_takes(session_id, confirm=True) removes them for good."}
+    if sessions or any(other.running() for other in (*finish_jobs.values(), *rehearsal_jobs.values())):
+        return {"ok": False, "error": {"type": "busy", "message": "A recording, a render or a rehearsal is running"},
+                "hint": "Try again when it is done."}
+    job = FinishJob(session_id, Path(session["video_path"]).parent, 0, tool="purge_replaced_takes")
+    job.task = asyncio.create_task(_run_purge(job, session, plan))
+    finish_jobs[session_id] = job
+    return await _await_finish(job)
 
 
 def director_guide_text() -> str:
@@ -2889,16 +3639,66 @@ def director_guide_text() -> str:
     for candidate in (Path(__file__).resolve().parent.parent / "docs" / "storyboard.md",
                       Path.cwd() / "docs" / "storyboard.md"):
         if candidate.is_file():
-            return candidate.read_text(encoding="utf-8")
-    return "The director handbook (docs/storyboard.md) is not installed with this AgentTake."
+            handbook = candidate.read_text(encoding="utf-8")
+            break
+    else:
+        handbook = "The director handbook (docs/storyboard.md) is not installed with this AgentTake."
+    # The house style comes last: the director reads the shot menu and the
+    # rules, then the voice this instance's films speak in.
+    return handbook.rstrip() + "\n\n" + signature.guide_section(signature.current())
 
 
 @mcp.tool()
 async def director_guide() -> str:
     """The director handbook for storyboards: the shot menu, a 60-second story
     template and the rules (a source for every claim, headlines and short
-    quotes only, never a synthetic real person). Read it before plan_storyboard."""
+    quotes only, never a synthetic real person), and this instance's house
+    style: the voice to write in. Read it before plan_storyboard."""
     return director_guide_text()
+
+
+@mcp.tool()
+async def get_signature() -> dict:
+    """This instance's signature: the house style every film it makes carries
+    (colours, type, the closing card's sign-off and AI label, the house voice,
+    the rules narration is written by) with its version and changelog. The
+    director does not choose a look; it writes in this voice. A film records
+    the signature version it was shot with."""
+    current = signature.current()
+    _, problems = signature.load()
+    result = current.to_dict()
+    result["path"] = str(signature.signature_path())
+    result["is_default"] = current.is_default
+    if problems:
+        result["problems"] = problems
+    return result
+
+
+@mcp.tool()
+async def set_signature(
+    document: Annotated[
+        dict,
+        Field(description="The whole signature as JSON: name, accent, ink (empty: the accent), paper, "
+                          "display_font, text_font, mono_font (fontconfig family names), signature_line, "
+                          "ai_label, voice, tone (a list of writing rules). Keys left out keep the default."),
+    ],
+    note: Annotated[
+        str,
+        Field(description="What changed and why, for the changelog: one line."),
+    ] = "",
+) -> dict:
+    """Replace this instance's signature. The version goes up by one and the
+    note joins the changelog, so films shot before and after can be told
+    apart. A colour or font that does not parse keeps its default and is named
+    under problems; the save still happens. The owner's tool: an agent that
+    finds friction with the look files it with submit_backlog(category="signature")
+    instead."""
+    saved, problems = signature.save(document, note)
+    result = saved.to_dict()
+    result["path"] = str(signature.signature_path())
+    if problems:
+        result["problems"] = problems
+    return result
 
 
 @mcp.prompt(name="storyboard", description="How to write a storyboard AgentTake shoots: the shot menu, a 60-second template, the rules")
@@ -3140,21 +3940,22 @@ async def contact_sheet(
         Field(description="One frame every this many seconds (default 2, at least 0.5). A long "
                           "film is spaced out to at most 96 frames; the reply says the interval used."),
     ] = 2,
-) -> dict:
+) -> CallToolResult:
     """The whole finished video as one picture: a frame every few seconds,
     six to a row, each stamped with its time.
 
-    Returns the image's URL. Look at it before you share the film: a blank
-    page under a line, a menu left open, a beat that never happened all show
-    at a glance — storyboard has one still per part and can miss what
-    happens inside a part.
+    The reply carries the picture itself, scaled down, and the URL of the
+    full-size one. Look at it before you share the film: a blank page under a
+    line, a menu left open, a beat that never happened all show at a glance
+    — storyboard has one still per part and can miss what happens inside a
+    part.
     """
     session = store.get_session(session_id)
     if session is None:
-        return _unknown_session(session_id)
+        return feedback_result(_unknown_session(session_id))
     video_path_value = session.get("video_path")
     if not video_path_value or not Path(video_path_value).is_file():
-        return {"ok": False, "error": {"type": "not_finished", "message": "Finish the session first"}}
+        return feedback_result({"ok": False, "error": {"type": "not_finished", "message": "Finish the session first"}})
     video = Path(video_path_value)
     # The file's own length: the stored one can fall short of it (80.1 s
     # stored, 83 s in the file, for the last Nordbrygg take), and a sheet one
@@ -3168,11 +3969,13 @@ async def contact_sheet(
     sheet = frames_dir / CONTACT_SHEET_NAME
     layout = await asyncio.to_thread(checks.write_contact_sheet, video, sheet, duration, every_seconds)
     if layout is None:
-        return {"ok": False, "error": {"type": "contact_sheet_failed", "message": "ffmpeg could not tile the video"}}
+        return feedback_result({"ok": False, "error": {"type": "contact_sheet_failed", "message": "ffmpeg could not tile the video"}})
     base = os.environ.get("REEL_PUBLIC_BASE_URL", "").rstrip("/")
     # The version keeps a viewer from showing the sheet of an earlier render.
     url = f"{base}/videos/{session_id}/{STORYBOARD_DIR}/{CONTACT_SHEET_NAME}?v={int(sheet.stat().st_mtime)}"
-    return {"ok": True, "url": url, "path": str(sheet), "duration": round(duration, 2), **layout}
+    small = await asyncio.to_thread(checks.write_small_sheet, sheet, frames_dir / f"small-{CONTACT_SHEET_NAME}")
+    return feedback_result({"ok": True, "url": url, "path": str(sheet), "duration": round(duration, 2), **layout,
+                            "next": "Go through it beat by beat against your lines. Then review_session's verdict."}, small)
 
 
 @mcp.tool()
@@ -3201,6 +4004,11 @@ async def edit_step(
     if position is not None and not 0 <= position < len(session["steps"]):
         return {"ok": False, "error": {"type": "invalid_edit",
                                        "message": f"position is 0-{len(session['steps']) - 1}"}}
+    plan = store.session_storyboard(session_id)
+    purged = {int(idx) for beat in (plan or {}).get("beats", []) for attempt in beat.get("state", {}).get("attempts") or []
+              if attempt.get("purged") for idx in attempt.get("steps") or []}
+    if hidden is False and index in purged:
+        return {"ok": False, "error": {"type": "invalid_edit", "message": f"Step {index} was removed with purge_replaced_takes."}}
     step = store.edit_step(session_id, index, hidden, hold_seconds, speed)
     if step is None:
         return {"ok": False, "error": {"type": "unknown_step", "message": f"No step {index}"}}
@@ -3265,6 +4073,14 @@ def _editable_session(session_id: str) -> tuple[dict | None, dict | None]:
                 "message": f"Unknown session_id: {session_id}",
             },
         }
+    if _finishing(session_id):
+        # A rerender reads the lines when it starts and stores them as it
+        # goes: an edit made meanwhile would be lost.
+        return None, {
+            "ok": False,
+            "error": {"type": "session_busy", "message": f"{session_id} is still rendering"},
+            "hint": "finish_status(job_id) until it is done, then edit and rerender.",
+        }
     video_path = Path(session["video_path"]) if session.get("video_path") else None
     if session["status"] != "finished" or video_path is None or not video_path.is_file():
         return None, {
@@ -3287,7 +4103,11 @@ async def update_step_narration(
     narration: str,
     voice: str | None = None,
 ) -> dict:
-    """Update one finished session's storyboard narration."""
+    """Change one line of a finished video; rerender then speaks it.
+
+    The line is also written into the session's storyboard, so a fresh_take
+    starts from it: in_storyboard says whether it was.
+    """
     session, error = _editable_session(session_id)
     if error:
         return error
@@ -3302,7 +4122,96 @@ async def update_step_narration(
     updated = store.update_step_narration(
         session_id, index, narration.strip(), voice.strip() if voice else None
     )
-    return {"ok": True, "step": updated}
+    kept = bool(narration.strip()) and _keep_in_storyboard(session_id, index, line=narration.strip())
+    return {"ok": True, "step": updated, "in_storyboard": kept, "next": "rerender(session_id) speaks the line."}
+
+
+BRANDING_FIELDS = ("title", "subtitle", "cta_text", "cta_url")
+
+
+def _cards_report(session_id: str, session: dict) -> dict:
+    directory = Path(session["video_path"]).parent
+    steps = {round(float(step["offset_seconds"]), 3): step["idx"] for step in session.get("steps", [])
+             if step.get("action_type") == "card" and step.get("offset_seconds") is not None}
+    return {
+        "cards": [{"card": number, "step": steps.get(round(float(card["offset"]), 3)),
+                   "text": card["text"], "background": card.get("background") or "brand"}
+                  for number, card in enumerate(read_cards(directory))],
+        **{field: session.get(field) or "" for field in BRANDING_FIELDS},
+    }
+
+
+@mcp.tool()
+async def edit_cards(
+    session_id: str,
+    card: Annotated[int | None, Field(description="Which mid-film card to change, from 0, as the reply lists them.")] = None,
+    text: Annotated[str | None, Field(description="The card's new text: one or two lines, 140 characters at most.")] = None,
+    background: Annotated[str | None, Field(description="The card's new background: brand, blur or a hex colour such as #0b1320.")] = None,
+    title: Annotated[str | None, Field(description="The title card's text. An empty string leaves the title card out.")] = None,
+    subtitle: Annotated[str | None, Field(description="The small line under the title.")] = None,
+    cta_text: Annotated[str | None, Field(description="The closing card's words.")] = None,
+    cta_url: Annotated[str | None, Field(description="The closing card's address, and its QR code.")] = None,
+) -> dict:
+    """See or change the cards of a finished video.
+
+    With only session_id it lists them: every mid-film card, the title and
+    the closing card. A change goes into the session's storyboard and start
+    settings as well, so a fresh_take carries it. Call rerender to cut the
+    video with it. To change what is spoken over a card, use
+    update_step_narration.
+    """
+    session, error = _editable_session(session_id)
+    if error:
+        return error
+    assert session is not None
+    directory = Path(session["video_path"]).parent
+    branding = {field: value.strip() for field, value in
+                (("title", title), ("subtitle", subtitle), ("cta_text", cta_text), ("cta_url", cta_url))
+                if value is not None}
+    if branding.get("cta_url") and not re.fullmatch(r"https?://\S+", branding["cta_url"]):
+        return {"ok": False, "error": {"type": "invalid_edit", "message": "cta_url is an http(s) address"}}
+    in_storyboard: bool | None = None
+    if card is None and (text is not None or background is not None):
+        return {"ok": False, "error": {"type": "invalid_edit", "message": "Say which card: card=0 is the first"},
+                **_cards_report(session_id, session)}
+    if card is not None:
+        cards = read_cards(directory)
+        if not 0 <= card < len(cards):
+            return {"ok": False, "error": {"type": "unknown_card", "message": f"No card {card}: this film has {len(cards)}"},
+                    **_cards_report(session_id, session)}
+        if text is None and background is None:
+            return {"ok": False, "error": {"type": "invalid_edit", "message": "Give the card a new text or background"}}
+        changes: dict[str, str] = {}
+        if text is not None:
+            cleaned = clean_card_text(text)
+            if not cleaned or len(cleaned) > CARD_TEXT_MAX:
+                return {"ok": False, "error": {"type": "invalid_edit",
+                                               "message": f"A card's text is 1-{CARD_TEXT_MAX} characters: one or two lines"}}
+            changes["text"] = cleaned
+        if background is not None:
+            colour = card_background(background)
+            if colour is None:
+                return {"ok": False, "error": {"type": "invalid_edit",
+                                               "message": "A card's background is brand, blur or a hex colour such as #0b1320"}}
+            changes["background"] = colour
+        offset = round(float(cards[card]["offset"]), 3)
+        change_card(directory, offset, **changes)
+        step = next((step["idx"] for step in session.get("steps", [])
+                     if step.get("action_type") == "card" and step.get("offset_seconds") is not None
+                     and round(float(step["offset_seconds"]), 3) == offset), None)
+        in_storyboard = step is not None and _keep_in_storyboard(session_id, step, **changes)
+    if branding:
+        store.update_session_branding(session_id, branding)
+        if session.get("start_args"):
+            store.update_session_start_args(session_id, {**session["start_args"], **branding})
+    changed = card is not None or bool(branding)
+    current = store.get_session(session_id) or session
+    result: dict = {"ok": True, **_cards_report(session_id, current)}
+    if in_storyboard is not None:
+        result["in_storyboard"] = in_storyboard
+    result["hint"] = ("Call rerender(session_id) to cut the video with this."
+                      if changed else "edit_cards(session_id, card=0, text=...) changes a card.")
+    return result
 
 
 @mcp.tool()
@@ -3377,10 +4286,39 @@ async def rerender(
     With voice (and provider), every line is spoken again in that voice — the
     same take with another narrator, no re-recording. Without, lines that
     have not changed reuse their recorded audio.
+
+    A render that takes longer than about a minute answers with status
+    rendering and a job_id: follow it with finish_status, and do not call
+    rerender again. It runs to the end, subtitles included, even when this
+    call is cut off.
     """
+    job = finish_jobs.get(session_id)
+    if job is not None and job.running():
+        return await _await_finish(job)
     session, error = _editable_session(session_id)
     if error:
         return error
+    assert session is not None
+    job = FinishJob(session_id, Path(session["video_path"]).parent, 0, tool="rerender")
+    job.task = asyncio.create_task(_run_rerender(job, session, voice, provider, subtitles, subtitle_style))
+    finish_jobs[session_id] = job
+    return await _await_finish(job)
+
+
+async def _run_rerender(job: "FinishJob", session: dict, voice: str | None, provider: str | None,
+                        subtitles: bool | None, subtitle_style: str | None) -> dict:
+    """rerender's work, run as a job: a call cut off at the client's timeout
+    used to stop it before the subtitles (Sluss takes 4 and 5, 2026-11-03)."""
+    try:
+        return await _rerender(job, session, voice, provider, subtitles, subtitle_style)
+    except Exception as exc:  # a job's failure is reported, never lost
+        return {"ok": False, "status": "failed",
+                "error": {"type": "rerender_failed", "message": str(exc)}}
+
+
+async def _rerender(job: "FinishJob", session: dict, voice: str | None, provider: str | None,
+                    subtitles: bool | None, subtitle_style: str | None) -> dict:
+    session_id = job.session_id
     new_voice = (voice or "").strip() or None
     new_provider = None
     if new_voice:
@@ -3422,6 +4360,7 @@ async def rerender(
     render_speeds: list[float] = []
     render_glides: list[float | None] = []
     render_order: list[int] = []
+    render_cuts: list[float] = []
     lead_in = wants_lead_in(session["steps"])
     steps = session["steps"]
     # Where each step plays (edit_step position); the steps themselves stay in
@@ -3454,6 +4393,11 @@ async def rerender(
             clips.append((offset, clip))
         else:
             duration = float(step.get("narration_duration") or 0.0)
+        if step.get("action_type") in PAGE_CHANGING_ACTIONS:
+            # Where the shot before this action ends. A take recorded before
+            # starts were stored has only the settle time, which is later.
+            started = step.get("started_seconds")
+            render_cuts.append(float(offset if started is None else started))
         if step.get("offscreen"):
             continue
         render_steps.append((offset, clip, step_hold_seconds(step, duration)))
@@ -3477,7 +4421,7 @@ async def rerender(
             segmented_render, source_video, render_steps, video_path, output_size,
             render_config, Camera.load(output_dir), render_pages,
             render_floors, lead_in, render_speeds, render_glides,
-            order=render_order,
+            order=render_order, cuts=render_cuts,
         )
         await asyncio.to_thread(write_storyboard, output_dir, video_path, getattr(result, "timeline", []) or [])
         warnings = result.warnings
@@ -3498,23 +4442,31 @@ async def rerender(
         if reordered:
             warnings = ["Steps play in recording order: moving a step needs the segmented render (REEL_SEGMENTED)."]
     store.update_session_duration(session_id, duration)
+    # What a person approved is not this cut any more.
+    store.set_approved(session_id, False)
     if subtitles is not None:
         store.update_session_subtitles(session_id, subtitles)
     if subtitle_style is not None:
         store.update_session_subtitle_style(session_id, subtitle_style)
+    job.stage = "subtitles"
     try:
         subtitled = await asyncio.to_thread(apply_subtitles, session_id)
     except Exception as exc:
         subtitled = False
         warnings = list(warnings) + [f"Subtitles could not be added: {exc}"]
+    else:
+        if not subtitled and (store.get_session(session_id) or {}).get("subtitles"):
+            warnings = list(warnings) + ["This film has subtitles on, but no line matched a part: the video has none."]
     return {
         "ok": True,
+        "status": "done",
         "subtitles": subtitled,
         "duration": round(duration, 3),
         # From the address the service has now, not the one stored at finish:
         # after a move to another hostname the stored URL is dead.
         "video_url": public_video_url(session_id) or session["video_url"],
         "warnings": warnings,
+        "next": "review_session(session_id): its verdict says whether the film is ready.",
     }
 
 
@@ -3526,23 +4478,35 @@ async def submit_backlog(
     severity: str = "normal",
     session_id: str | None = None,
 ) -> dict:
-    """Submit an agent tool-improvement request to the public backlog."""
+    """Submit an agent tool-improvement request to this instance's backlog.
+
+    The result carries propose_url, a prefilled link the instance owner can
+    open to file it upstream — or, with REEL_GITHUB_TOKEN set, issue_url of
+    the issue filed right away.
+    """
     title = title.strip()
     if not title:
         raise ValueError("title must not be empty")
     category = category.strip().lower()
-    if category not in {"feature", "bug", "friction"}:
+    if category not in {"feature", "bug", "friction", "signature"}:
         category = "feature"
     severity = severity.strip().lower()
     if severity not in {"low", "normal", "high"}:
         severity = "normal"
-    return store.create_backlog(
+    item = store.create_backlog(
         title,
         detail.strip(),
         category,
         severity,
         session_id,
     )
+    issue_url, error = await file_upstream_issue(item)
+    if issue_url:
+        return store.set_backlog_issue(item["id"], issue_url) or item
+    item["propose_url"] = upstream_issue_url(item)
+    if error:
+        item["upstream_error"] = error
+    return item
 
 
 @mcp.tool()
@@ -3594,7 +4558,8 @@ def _extract_review_frames(session_id: str, video_path: Path, duration: float | 
     return frames
 
 
-BLOCKS_EXCELLENT = {"beat_missing", "beat_out_of_order", "blank_frame", "overlay_left_open", "focus_covered"}
+BLOCKS_EXCELLENT = {"beat_missing", "beat_out_of_order", "blank_frame", "overlay_left_open", "focus_covered",
+                    "blank_flash", "focus_cropped", "claim_contradicted", "step_not_in_film", "sensitive_on_screen"}
 
 
 @mcp.tool()
@@ -3602,9 +4567,17 @@ async def review_session(session_id: str) -> dict:
     """Analyze a recording or finished session for secrets, alignment, pacing, and review frames.
 
     With beats planned at start_session, every planned line must be recorded,
-    in order. After finish, the frame under each narrated line is checked for
-    a page that had not loaded (step_frames, with their paths); a menu or
-    popover left open from an earlier step under a line is flagged too.
+    in order. After finish, the film itself is measured: a screen that goes
+    empty, a picture that changes under a line, a long still, text the frame
+    cuts, what a line is about being too small or out of frame, a number the
+    screen does not show. A finding names its beat, at_seconds, what was
+    measured, and in `fix` what to do about it. claims_to_check lists the lines
+    that state a share ("nearly half") with the percentages on their screen:
+    compare them yourself.
+
+    `verdict` says where the film stands: not_finished, fix (with what to do
+    in `next`), ready_for_approval, or needs_human when what is left takes a
+    person. A person approves a film; nothing here publishes one.
     """
     session = store.get_session(session_id)
     if session is None:
@@ -3754,12 +4727,36 @@ async def review_session(session_id: str) -> dict:
     # 4. The picture under every line: a page that had not loaded plays as a
     # blank screen with a voice over it.
     step_frames: list[dict] = []
+    parts = read_storyboard(video_path.parent) if video_path is not None else []
     if video_path is not None and video_path.is_file():
         step_frames = await asyncio.to_thread(
-            checks.step_frames, video_path, read_storyboard(video_path.parent), steps,
+            checks.step_frames, video_path, parts, steps,
             video_path.parent / "review_frames",
         )
         findings.extend(checks.blank_frame_findings(step_frames))
+        # 5. The moving picture, measured frame by frame.
+        margin = WINDOW_MARGIN if "window" in signature.current().marks else 0.0
+        scanned = await asyncio.to_thread(checks.scan_frames, video_path, checks.SCAN_FPS, margin)
+        holds: dict[int, list[float]] = {}
+        if camera is not None:
+            for step in steps:
+                if step.get("offset_seconds") is not None and not step.get("offscreen") and (step.get("narration_text") or "").strip():
+                    moves = camera.hold_moves([(float(step["offset_seconds"]), float(step.get("narration_duration") or 0.0))])
+                    if moves:
+                        holds[int(step["idx"])] = [move["seconds_in"] for move in moves]
+        findings.extend(await asyncio.to_thread(checks.film_findings, scanned, parts, steps, checks.SCAN_FPS, holds))
+
+    findings.extend(checks.lost_step_findings(parts, steps))
+
+    # 6. What each shot framed, and what each line claims.
+    findings.extend(checks.shot_findings(camera, steps))
+    claims_to_check: list[dict] = []
+    if session.get("output_dir"):
+        texts = checks.read_page_texts(Path(session["output_dir"]))
+        claims, claims_to_check = checks.claim_findings(steps, texts)
+        findings.extend(claims)
+        findings.extend(sensitive.findings(steps, texts, checks.frame_texts(camera, steps)))
+    _place_findings(findings, session_id, steps, parts)
 
     # Pedagogical pacing score
     score = 100
@@ -3788,9 +4785,98 @@ async def review_session(session_id: str) -> dict:
         "step_frames": step_frames,
         "findings": findings,
     }
+    if claims_to_check:
+        result["claims_to_check"] = claims_to_check
+    result.update(_verdict(session_id, session, findings, claims_to_check))
+    result["approved"] = bool(session.get("approved_at"))
     if comparison is not None:
         result["beats"] = comparison
     return result
+
+
+# A fresh take costs a whole shoot and can break beats that were fine, so an
+# agent gets one before a person decides (Sluss take 6's fresh take cut its
+# GitHub beat mid-word while it mended the audit beat).
+MAX_UNATTENDED_FRESH_TAKES = 1
+# A beat's first take and two more, as for a beat that fails while shooting.
+MAX_BEAT_TAKES = 3
+PICKUP_TAIL_SECONDS = 1.0
+
+
+def _verdict(session_id: str, session: dict, findings: list[dict], claims_to_check: list[dict]) -> dict:
+    """Where the film stands, and what to do next: what lets an agent run the
+    loop from the replies alone."""
+    high = [finding for finding in findings if finding["severity"] == "high"]
+    if session.get("status") != "finished":
+        return {"verdict": "not_finished", "next": (
+            ["Retake what the high findings name with shoot_beat(session_id, beat=n), then finish(session_id)."]
+            if high else ["finish(session_id), then follow finish_status if it answers with a job_id."]
+        )}
+    exposed = [finding for finding in findings if finding["category"] == "sensitive_on_screen"]
+    if exposed:
+        # Not the agent's to wave through: a film is a publication.
+        return {"verdict": "needs_human", "next": [
+            *[f"Beat {finding.get('beat', '?')}: {finding['message']} {finding['fix']}" for finding in exposed[:8]],
+            "Do not hand this film over as ready. Mend it and call review_session again, or report it to a person.",
+        ]}
+    plan = store.session_storyboard(session_id)
+    waiting = [beat for beat in (plan or {}).get("beats", [])
+               if len(beat.get("state", {}).get("attempts") or []) > 1 and not beat["state"].get("placed")
+               and beat["state"]["attempts"][-1].get("ok") and beat["state"]["attempts"][-1].get("visible")]
+    if waiting:
+        return {"verdict": "fix", "next": [
+            "Retakes are not in place yet: apply_retakes(session_id), then rerender(session_id), then review_session(session_id)."
+        ]}
+    open_findings = [finding for finding in findings if finding["severity"] in ("high", "medium")]
+    compare = (["Compare each line in claims_to_check with the percentages beside it. A line the screen "
+                "contradicts is changed with update_step_narration, then rerender."]
+               if claims_to_check else [])
+    look = "Look at contact_sheet(session_id) against your beats: the measures cannot tell whether the picture is what the line means."
+    if not open_findings:
+        return {"verdict": "ready_for_approval", "next": [
+            *compare, look, f"Hand the film to whoever commissioned it. A person approves it on its watch page ({public_watch_url(session_id)}), "
+            "which lists it in the theater. Until then only people with the link can see it."
+        ]}
+    lines = [f"Beat {finding.get('beat', '?')} ({finding.get('label') or finding.get('location')}), "
+             f"{finding['category']}: {finding.get('fix') or finding['message']}" for finding in open_findings[:8]]
+    used = int((session.get("start_args") or {}).get("generation") or 0)
+    takes = {beat.get("number"): len(beat.get("state", {}).get("attempts") or []) for beat in (plan or {}).get("beats", [])}
+    can_reshoot = any(finding.get("beat") in takes and takes[finding["beat"]] < MAX_BEAT_TAKES for finding in open_findings)
+    if used < MAX_UNATTENDED_FRESH_TAKES or can_reshoot:
+        return {"verdict": "fix", "next": [
+            *lines, *compare,
+            "Mend in the edit when the footage is right (edit_step, edit_cards, update_step_narration, then "
+            "rerender). When one beat's footage is wrong, change it with edit_beat(beat=n, changes, session_id) and "
+            "reshoot_beat(session_id, beat=n). When most of the film is wrong, one fresh_take(session_id). "
+            "Then review_session on the film you keep.",
+        ]}
+    return {"verdict": "needs_human", "next": [
+        f"This film has had {used} fresh take; another one is a person's call. Mend what the edit can, then report what is left:",
+        *lines, *compare,
+    ]}
+
+
+def _place_findings(findings: list[dict], session_id: str, steps: list[dict], parts: list[dict]) -> None:
+    """Say which beat a finding is on and where in the film it starts."""
+    plan = store.session_storyboard(session_id)
+    beats: dict[int, dict] = {}
+    for beat in (plan or {}).get("beats", []):
+        attempts = beat.get("state", {}).get("attempts") or []
+        for idx in (attempts[-1].get("steps") or []) if attempts else []:
+            beats[idx] = beat
+    visible = [step for step in steps if step.get("offset_seconds") is not None and not step.get("offscreen")]
+    starts = {int(visible[part["step"]].get("idx", 0)): float(part["start"]) for part in parts
+              if part.get("kind") == "step" and part.get("step") is not None and part["step"] < len(visible)}
+    for finding in findings:
+        match = re.fullmatch(r"step\[(\d+)\]", str(finding.get("location")))
+        if match:
+            idx = int(match.group(1))
+            if idx in beats:
+                finding["beat"], finding["label"] = beats[idx].get("number"), beats[idx].get("label")
+            if finding.get("at_seconds") is None and idx in starts:
+                finding["at_seconds"] = round(starts[idx], 2)
+        if finding.get("at_seconds") is None:
+            finding.pop("at_seconds", None)
 
 
 # A render can outlast what an MCP client waits for a reply: five-minute
@@ -3801,12 +4887,14 @@ FINISH_WAIT_SECONDS = 55.0
 
 
 class FinishJob:
-    """A finish running in the background, kept until the process ends."""
+    """A finish or a rerender running in the background, kept until the
+    process ends: it goes on when the call that started it is cut off."""
 
-    def __init__(self, session_id: str, directory: Path | None, planned_parts: int) -> None:
+    def __init__(self, session_id: str, directory: Path | None, planned_parts: int, tool: str = "finish") -> None:
         self.session_id = session_id
         self.directory = directory
         self.planned_parts = planned_parts
+        self.tool = tool
         self.started = time.monotonic()
         self.stage = "rendering"
         self.task: asyncio.Task | None = None
@@ -3851,20 +4939,20 @@ async def _await_finish(job: FinishJob) -> dict:
             "ok": True,
             **job.progress(),
             "hint": "The video is still rendering. Call finish_status(job_id) about every 30 s "
-            "until status is done; it then gives the video URL and the review. Do not call "
-            "finish again: it would only report this same job.",
+            f"until status is done; it then gives the video URL{' and the review' if job.tool == 'finish' else ''}. "
+            f"Do not call {job.tool} again: it would only report this same job.",
         }
 
 
 @mcp.tool()
 async def finish_status(
-    job_id: Annotated[str, Field(description="The job_id finish answered with (the session id).")],
+    job_id: Annotated[str, Field(description="The job_id finish or rerender answered with (the session id).")],
 ) -> dict:
-    """Follow a finish that was still rendering when it answered.
+    """Follow a finish or a rerender that was still rendering when it answered.
 
     status is rendering (with the stage, seconds so far and parts rendered),
-    done (with video_url and the review, as finish gives them), or failed
-    (with the error).
+    done (with video_url, and the review after a finish), or failed (with
+    the error).
     """
     job = finish_jobs.get(job_id)
     if job is None:
@@ -4015,7 +5103,8 @@ async def _render_and_publish(job: FinishJob, session: Any) -> dict:
     sessions.pop(session_id, None)
     # After subtitles: burning them rewrites the file, and the URL is versioned by it.
     return {"ok": True, "status": "done", "video_path": str(video_path),
-            "video_url": public_video_url(session_id) or video_url, "review": review}
+            "video_url": public_video_url(session_id) or video_url, "review": review,
+            **{key: review[key] for key in ("verdict", "next") if isinstance(review, dict) and key in review}}
 
 
 @mcp.tool()

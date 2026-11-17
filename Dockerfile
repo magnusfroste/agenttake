@@ -6,9 +6,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HOST=0.0.0.0 \
     PORT=8000
 
+# libatomic1: Playwright 1.65's driver needs it, and the image did not have it.
+# A change to pyproject.toml reinstalled Playwright and failed the take-01
+# build with exit 127 (2026-11-09).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
+        libatomic1 \
         python3 \
         python3-pip \
         python3-venv \
@@ -36,6 +40,14 @@ RUN mkdir -p reel_studio && touch reel_studio/__init__.py \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-inter fonts-ibm-plex \
     && rm -rf /var/lib/apt/lists/*
+
+# Skatteverket's open list of test personal numbers, for the check that keeps
+# a real one out of a film. Not in git; its own layer, so a code change does
+# not fetch it again. A build without network still works: every number is
+# then stopped.
+ENV REEL_TEST_NUMBERS=/app/test-data/skatteverket-test-personnummer.txt.gz
+COPY reel_studio/fetch_test_numbers.py ./reel_studio/fetch_test_numbers.py
+RUN python3 reel_studio/fetch_test_numbers.py
 
 COPY README.md ./
 COPY reel_studio ./reel_studio

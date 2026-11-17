@@ -1,13 +1,13 @@
 """Durable SQLite metadata for recording sessions and storyboard steps."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import sqlite3
 import threading
 import urllib.parse
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 import uuid
 
 from .engine import output_root
@@ -15,6 +15,10 @@ from .engine import output_root
 
 _lock = threading.Lock()
 BACKLOG_STATUSES = ("open", "planned", "in_progress", "shipped", "wont_fix")
+BACKLOG_COLUMNS = (
+    "id, title, detail, category, severity, session_id, status, "
+    "note, updated_at, created_at, issue_url"
+)
 
 
 def db_path() -> Path:
@@ -159,6 +163,10 @@ def init_schema() -> None:
             connection.execute("ALTER TABLE steps ADD COLUMN focus_cover TEXT")
         if "position" not in columns:
             connection.execute("ALTER TABLE steps ADD COLUMN position INTEGER")
+        if "started_seconds" not in columns:
+            # When the action began changing the page; offset_seconds is when
+            # it settled. NULL on a take recorded before this.
+            connection.execute("ALTER TABLE steps ADD COLUMN started_seconds REAL")
         session_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
@@ -167,6 +175,10 @@ def init_schema() -> None:
             connection.execute(
                 "ALTER TABLE sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'edge'"
             )
+        if "approved_at" not in session_columns:
+            # A person's approval. Films that were already public stay so.
+            connection.execute("ALTER TABLE sessions ADD COLUMN approved_at TEXT")
+            connection.execute("UPDATE sessions SET approved_at = finished_at WHERE status = 'finished'")
         for column in ("output_width", "output_height"):
             if column not in session_columns:
                 connection.execute(f"ALTER TABLE sessions ADD COLUMN {column} INTEGER")
@@ -208,6 +220,9 @@ def init_schema() -> None:
             connection.execute("ALTER TABLE backlog ADD COLUMN note TEXT")
         if "updated_at" not in backlog_columns:
             connection.execute("ALTER TABLE backlog ADD COLUMN updated_at TEXT")
+        if "issue_url" not in backlog_columns:
+            # The upstream issue the item was filed as; NULL until it is.
+            connection.execute("ALTER TABLE backlog ADD COLUMN issue_url TEXT")
         connection.execute(
             "UPDATE backlog SET updated_at = created_at WHERE updated_at IS NULL"
         )
@@ -290,6 +305,7 @@ def append_step(
     speed: float = 1.0,
     open_overlays: dict[str, int] | None = None,
     focus_cover: dict | None = None,
+    started_seconds: float | None = None,
 ) -> None:
     init_schema()
     with _lock, _connect() as connection:
@@ -303,8 +319,8 @@ def append_step(
                 (session_id, idx, action_type, target, url, title, narration_text,
                  voice, narration_duration, offset_seconds, screenshot_path, ok,
                  error_type, created_at, quiet, offscreen, annotation_seconds, narration_clip, speed,
-                 open_overlays, focus_cover)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 open_overlays, focus_cover, started_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -328,6 +344,7 @@ def append_step(
                 float(speed or 1.0),
                 json.dumps(open_overlays) if open_overlays is not None else None,
                 json.dumps(focus_cover) if focus_cover is not None else None,
+                started_seconds,
             ),
         )
 
@@ -499,6 +516,17 @@ def update_session_subtitles(session_id: str, on: bool) -> None:
         connection.execute("UPDATE sessions SET subtitles = ? WHERE id = ?", (int(bool(on)), session_id))
 
 
+def update_session_branding(session_id: str, fields: dict[str, str]) -> None:
+    """A finished film's title and closing card (edit_cards)."""
+    init_schema()
+    allowed = {key: value for key, value in fields.items() if key in {"title", "subtitle", "cta_text", "cta_url"}}
+    if not allowed:
+        return
+    assignments = ", ".join(f"{key} = ?" for key in allowed)
+    with _lock, _connect() as connection:
+        connection.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", (*allowed.values(), session_id))
+
+
 def update_session_start_args(session_id: str, start_args: dict[str, Any]) -> None:
     init_schema()
     with _lock, _connect() as connection:
@@ -589,19 +617,33 @@ def list_sessions(limit: int = 20) -> list[dict[str, Any]]:
     return [{**dict(row), "beats": _from_json(row["beats"], [])} for row in rows]
 
 
-def list_finished_sessions() -> list[dict[str, Any]]:
+def list_finished_sessions(approved: bool | None = None) -> list[dict[str, Any]]:
+    """Finished films, newest first: all of them, or only those a person has
+    (approved=True) or has not (approved=False) approved."""
     init_schema()
+    condition = {None: "", True: " AND approved_at IS NOT NULL", False: " AND approved_at IS NULL"}[approved]
     with _lock, _connect() as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT id, start_url, title, page_title, duration_seconds, finished_at, video_path,
-                   video_url, output_dir
+                   video_url, output_dir, approved_at
             FROM sessions
-            WHERE status = 'finished'
+            WHERE status = 'finished'{condition}
             ORDER BY finished_at DESC, created_at DESC
             """
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def set_approved(session_id: str, approved: bool) -> bool:
+    """A person's decision on a finished film. False when there is no such film."""
+    init_schema()
+    with _lock, _connect() as connection:
+        changed = connection.execute(
+            "UPDATE sessions SET approved_at = CASE WHEN ? THEN ? ELSE NULL END WHERE id = ? AND status = 'finished'",
+            (int(approved), _now(), session_id),
+        ).rowcount
+    return bool(changed)
 
 
 def delete_session(session_id: str) -> None:
@@ -610,7 +652,24 @@ def delete_session(session_id: str) -> None:
     with _lock, _connect() as connection:
         connection.execute("DELETE FROM steps WHERE session_id = ?", (session_id,))
         connection.execute("DELETE FROM shots WHERE session_id = ?", (session_id,))
+        connection.execute("DELETE FROM storyboards WHERE session_id = ?", (session_id,))
         connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+
+def delete_orphan_storyboards(older_than_days: int = 7) -> int:
+    """Remove plans whose film is gone, and plans never attached to a film
+    that have lain for ``older_than_days``. A plan holds what a film typed."""
+    init_schema()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+    with _lock, _connect() as connection:
+        return connection.execute(
+            """
+            DELETE FROM storyboards
+            WHERE (session_id IS NOT NULL AND session_id NOT IN (SELECT id FROM sessions))
+               OR (session_id IS NULL AND updated_at < ?)
+            """,
+            (cutoff,),
+        ).rowcount
 
 
 def create_backlog(
@@ -632,18 +691,35 @@ def create_backlog(
         "note": None,
         "updated_at": _now(),
         "created_at": _now(),
+        "issue_url": None,
     }
     with _lock, _connect() as connection:
         connection.execute(
             """
             INSERT INTO backlog
                 (id, title, detail, category, severity, session_id, status,
-                 note, updated_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 note, updated_at, created_at, issue_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             tuple(item.values()),
         )
     return item
+
+
+def set_backlog_issue(item_id: str, issue_url: str) -> dict[str, Any] | None:
+    """Record the upstream issue an item was filed as (server.file_upstream_issue)."""
+    init_schema()
+    with _lock, _connect() as connection:
+        cursor = connection.execute(
+            "UPDATE backlog SET issue_url = ?, updated_at = ? WHERE id = ?",
+            (issue_url, _now(), item_id),
+        )
+        if cursor.rowcount == 0:
+            return None
+        row = connection.execute(
+            f"SELECT {BACKLOG_COLUMNS} FROM backlog WHERE id = ?", (item_id,)
+        ).fetchone()
+    return dict(row)
 
 
 def list_backlog(
@@ -666,8 +742,7 @@ def list_backlog(
         parameters.append(limit)
         rows = connection.execute(
             f"""
-            SELECT id, title, detail, category, severity, session_id, status,
-                   note, updated_at, created_at
+            SELECT {BACKLOG_COLUMNS}
             FROM backlog
             {where}
             ORDER BY created_at DESC
@@ -699,12 +774,7 @@ def update_backlog(
         if cursor.rowcount == 0:
             return None
         row = connection.execute(
-            """
-            SELECT id, title, detail, category, severity, session_id, status,
-                   note, updated_at, created_at
-            FROM backlog WHERE id = ?
-            """,
-            (item_id,),
+            f"SELECT {BACKLOG_COLUMNS} FROM backlog WHERE id = ?", (item_id,)
         ).fetchone()
     return dict(row)
 
@@ -923,6 +993,34 @@ def update_session_beats(session_id: str, beats: list[dict]) -> None:
             "UPDATE sessions SET beats = ? WHERE id = ?",
             (json.dumps(beats) if beats else None, session_id),
         )
+
+
+def shift_steps(session_id: str, from_index: int, seconds: float) -> None:
+    """Move steps later on the recording's clock: a pickup joined onto it."""
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.execute(
+            "UPDATE steps SET offset_seconds = offset_seconds + ?, started_seconds = started_seconds + ? "
+            "WHERE session_id = ? AND idx >= ?",
+            (seconds, seconds, session_id, from_index),
+        )
+
+
+def delete_steps_from(session_id: str, from_index: int) -> None:
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.execute("DELETE FROM steps WHERE session_id = ? AND idx >= ?", (session_id, from_index))
+
+
+def scrub_steps(session_id: str, indexes: Sequence[int]) -> None:
+    """Empty these steps of what they recorded. The rows stay, out of the film:
+    the renderer counts steps by their place in the list."""
+    init_schema()
+    with _lock, _connect() as connection:
+        connection.executemany(
+            "UPDATE steps SET target = '', url = '', title = '', narration_text = '', narration_clip = NULL, "
+            "screenshot_path = NULL, offscreen = 1 WHERE session_id = ? AND idx = ?",
+            [(session_id, int(index)) for index in indexes])
 
 
 def next_step_index(session_id: str) -> int:

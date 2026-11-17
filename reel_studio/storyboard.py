@@ -24,6 +24,8 @@ from typing import Any, Awaitable, Callable, Literal, get_args
 
 from pydantic import BaseModel, Field, ValidationError
 
+from . import sensitive
+from . import signature as sig
 from .review import describe_cover, focus_covered, normalize_line
 from .schema import OFFSCREEN_WAIT_MAX_MS, secret_names
 
@@ -36,6 +38,8 @@ SHOT_TYPES: tuple[str, ...] = get_args(ShotType)
 # What each shot needs besides its line, and what it does with it: the menu
 # the director picks from, stated once for the tool schema, the checks and
 # the handbook.
+# The shots whose recipe moves the camera: only these take a beat's camera.
+CAMERA_SHOTS = {"source", "highlight", "system", "live_answer", "cta"}
 SHOT_FIELDS: dict[str, str] = {
     "source": "url, wait_for_text (the headline): opens the article, closes a consent banner offscreen without accepting it, "
               "settles, then a slow push-in on the headline",
@@ -51,11 +55,12 @@ SHOT_FIELDS: dict[str, str] = {
                  "hero, slow at first, to until_text or as far as a readable pace gets in the line, once per page",
     "login": "url (the sign-in page), username, password_secret (a secret's NAME), wait_for_text (what the "
              "page after sign-in shows): signs in offscreen, line optional",
-    "system": "url, wait_for_text, zoom optional (page zoom 0.5-2, for readable text): a page, or one "
-              "section of a page, held with a push-in on wait_for_text",
+    "system": "url, wait_for_text, zoom optional (page zoom 0.5-2, for readable text), camera optional (how "
+              "close the camera goes, 1-2.5, default 1.3): a page, or one section of a page, held with a "
+              "push-in on wait_for_text",
     "live_answer": "input_text, wait_for_text optional (words the answer must have), timeout optional (seconds, "
                    "default 120), url optional (default: the page before): sends offscreen, waits until the "
-                   "answer stops growing, shows it",
+                   "answer stops growing, shows it; camera optional (1-2.5, default 1.5)",
     "cta": "url, wait_for_text optional: the page the viewer should go to",
 }
 
@@ -142,7 +147,12 @@ class StoryBeat(BaseModel):
     date: str | None = None
     username: str | None = None
     password_secret: str | None = None
-    zoom: float | None = Field(default=None, ge=0.5, le=2.0)
+    zoom: float | None = Field(default=None, ge=0.5, le=2.0, description="system: the page's own zoom.")
+    camera: float | None = Field(
+        default=None, ge=1.0, le=2.5,
+        description="How close the camera goes: 1 is the whole page, 2.5 the closest. "
+                    "source, highlight, system, live_answer and cta have a default of their own.",
+    )
     input_text: str | None = None
     until_text: str | None = Field(default=None, description="page_tour: the heading the glide stops at.")
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
@@ -156,7 +166,10 @@ def beats_json_schema() -> dict[str, Any]:
         "line": {"type": "string", "description": "The narration, spoken once over the shot"},
         "label": {"type": "string"},
         "source": {"type": "string", "description": "The URL a claim comes from"},
-        "zoom": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+        "zoom": {"type": "number", "minimum": 0.5, "maximum": 2.0, "description": "system: the page's own zoom"},
+        "camera": {"type": "number", "minimum": 1.0, "maximum": 2.5,
+                   "description": "How close the camera goes: 1 is the whole page. source, highlight, system, "
+                                  "live_answer and cta only"},
         "timeout": {"type": "number", "minimum": 1, "maximum": OFFSCREEN_WAIT_MAX_MS / 1000},
     }
     for name in ("url", "wait_for_text", "text", "background", "caption", "publication", "date", "username",
@@ -238,7 +251,9 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
     Every beat comes back, broken ones included, so the checklist can name
     them all at once; a beat that does not parse at all is left out. A beat
     that may stay on the page before gets that page's url as ``page_url``,
-    and a highlight on a page a source beat opened inherits its source.
+    and a highlight on a page a source beat opened inherits its source. If an
+    image or a card shot as a page came between, the browser is no longer on
+    that page, and the beat gets ``reopens`` to open it again.
     """
     beats: list[dict] = []
     items: list[dict] = []
@@ -246,6 +261,8 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
     seen_tours: dict[str, int] = {}
     page_url: str | None = None
     page_source: str | None = None
+    # Whether the browser has left page_url for a page of the video's own.
+    left_page = False
     for number, entry in enumerate(raw or [], start=1):
         try:
             parsed = entry if isinstance(entry, StoryBeat) else StoryBeat.model_validate(entry)
@@ -285,6 +302,9 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
                 items.append(_item(number, label, "fix", "invalid_url", f"{name} must be an http(s) URL"))
         if shot == "image" and beat.get("url") and not beat["url"].startswith("https://"):
             items.append(_item(number, label, "fix", "invalid_url", "an image url must be https"))
+        if beat.get("camera") is not None and shot not in CAMERA_SHOTS:
+            items.append(_item(number, label, "warn", "camera_not_used",
+                               f"a {shot} shot has no camera move, so camera does nothing here"))
         if shot == "card" and beat.get("background") and not _background_ok(beat["background"]):
             items.append(_item(number, label, "fix", "invalid_background",
                                "background is auto, brand, blur, a colour (#123456, navy) or an https image URL"))
@@ -296,6 +316,8 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
                                    f"a {shot} shot without url stays on the page before, and there is none"))
             beat["page_url"] = page_url
             beat["inherits_url"] = True
+            if left_page and page_url:
+                beat["reopens"] = True
         if shot in CLAIM_SHOTS and not beat.get("source"):
             # The page a quote is on is its source: the article a source shot
             # or the highlight itself opens. A highlight on a page some other
@@ -337,9 +359,19 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
             # stays on the page names its url, so a retake can go back to it.
             # A source card leaves the browser on the card.
             page_url = page_source = None
+            left_page = False
         elif beat.get("url") and shot not in ("card", "image"):
             page_url = beat["url"]
             page_source = beat.get("source") if shot == "source" else None
+            left_page = False
+        elif shot == "image" or (shot == "card" and beat.get("text") and render_card_action(beat) is None):
+            # Planning kept the article for the highlight after an image, but
+            # shooting the image opened the image's page, and the highlight
+            # looked for its quote there (Perch Scan, 2026-11-04). A card the
+            # render cuts in leaves the browser where it was.
+            left_page = True
+        elif beat.get("reopens"):
+            left_page = False
         beats.append(beat)
     return beats, items
 
@@ -474,6 +506,11 @@ async def check_storyboard(
                 items.append(_item(beat["number"], beat["label"], "fix", "unknown_secret",
                                    f"AgentTake has no secret {name}: its operator sets REEL_SECRET_{name}; "
                                    f"it has {', '.join(sorted(known)) or 'none'}"))
+    for beat, name, hit in sensitive.storyboard_items(beats):
+        items.append(_item(beat["number"], beat["label"], "fix" if hit["blocks"] else "warn", "sensitive_in_storyboard",
+                           f"{name} holds {hit['label']} ({hit['value']}). "
+                           + (sensitive.REPLACE_NUMBER if hit["kind"] == "personal_number" else
+                              "A film must not show anything that belongs to a real person or account.")))
     urls: dict[str, list[tuple[dict, str]]] = {}
     for beat in beats:
         for name in ("url", "source"):
@@ -642,14 +679,16 @@ def card_page(text: str, background: str | None = None, source: str | None = Non
     paragraphs = "".join(f"<p>{html.escape(part)}</p>" for part in text.split("\n") if part.strip())
     label = SOURCE_LABEL.get(language, SOURCE_LABEL["en"])
     credit = (f'<div class="credit">{label}: {html.escape(domain(source))}</div>' if source else "")
+    signature = sig.current()
     document = _PAGE_BASE + """<style>
-body{display:flex;align-items:center;justify-content:center}
+body{display:flex;align-items:center;justify-content:center;font-family:__DISPLAY__,Inter,"Segoe UI",system-ui,sans-serif}
 .card{max-width:72vw;text-align:center;font-weight:700;font-size:clamp(40px,4.6vw,92px);line-height:1.15;
 letter-spacing:-.01em}
 .card p{margin:.15em 0}
 .credit{position:fixed;right:5vw;top:5vh;font-size:22px;opacity:.75;font-weight:500}
 </style></head><body style="__STYLE__"><div class="card">__TEXT__</div>__CREDIT__</body></html>"""
-    return _data_url(document.replace("__STYLE__", style).replace("__TEXT__", paragraphs).replace("__CREDIT__", credit))
+    return _data_url(document.replace("__STYLE__", style).replace("__TEXT__", paragraphs)
+                     .replace("__CREDIT__", credit).replace("__DISPLAY__", _css_family(signature.display_font)))
 
 
 def source_display(url: str, limit: int = 64) -> str:
@@ -672,9 +711,11 @@ def source_card_page(quote: str, source: str, publication: str | None = None, da
     quote = quote.replace("\n", " ").strip()
     size = "clamp(34px,3.6vw,68px)" if len(quote) <= 110 else "clamp(26px,2.7vw,50px)"
     dated = f'<div class="date">{html.escape(date)}</div>' if date else ""
+    signature = sig.current()
     document = _PAGE_BASE + """<style>
-:root{--accent:#c8102e;--rule:rgba(127,127,127,.35)}
-body{display:flex;flex-direction:column;justify-content:center;padding:0 9vw;box-sizing:border-box}
+:root{--accent:__ACCENT__;--rule:rgba(127,127,127,.35)}
+body{display:flex;flex-direction:column;justify-content:center;padding:0 9vw;box-sizing:border-box;
+font-family:__DISPLAY__,Inter,"Segoe UI",system-ui,sans-serif}
 .head{position:fixed;left:9vw;top:9vh;border-left:6px solid var(--accent);padding-left:18px}
 .pub{font-size:clamp(20px,1.9vw,34px);font-weight:800;letter-spacing:.08em;text-transform:uppercase}
 .date{margin-top:6px;font-size:clamp(16px,1.3vw,24px);color:var(--muted)}
@@ -683,14 +724,24 @@ margin:0;position:relative}
 .quote::before{content:"\\201C";position:absolute;left:-.55em;top:-.05em;color:var(--accent)}
 .quote::after{content:"\\201D";color:var(--accent)}
 .url{position:fixed;left:9vw;right:9vw;bottom:20vh;padding-top:14px;border-top:1px solid var(--rule);
-font:500 clamp(15px,1.15vw,22px) ui-monospace,"DejaVu Sans Mono",monospace;color:var(--muted)}
+font:500 clamp(15px,1.15vw,22px) __MONO__,ui-monospace,"DejaVu Sans Mono",monospace;color:var(--muted)}
 </style></head><body><div class="head"><div class="pub">__PUB__</div>__DATE__</div>
 <p class="quote">__QUOTE__</p><div class="url">__URL__</div></body></html>"""
+    # The accent the house signs with marks the quote; the default signature
+    # keeps the documentary red the source card has always had.
+    accent = "#c8102e" if signature.is_default else signature.accent
     return _data_url(
         document.replace("__SIZE__", size).replace("__PUB__", html.escape(publication))
         .replace("__DATE__", dated).replace("__QUOTE__", html.escape(quote))
         .replace("__URL__", html.escape(source_display(source)))
+        .replace("__ACCENT__", accent).replace("__DISPLAY__", _css_family(signature.display_font))
+        .replace("__MONO__", _css_family(signature.mono_font))
     )
+
+
+def _css_family(name: str) -> str:
+    """A font family name as CSS quotes it."""
+    return '"' + name.replace('"', "").replace("\\", "") + '"'
 
 
 def source_card_beat(beat: dict) -> dict | None:
@@ -751,9 +802,9 @@ def _act(action: dict, narration: str = "") -> dict:
 
 
 def _shot(zoom: float, focus_text: str | None = None, move_seconds: float = 1.0, lift: bool = False,
-          fit: bool = False) -> dict:
+          fit: bool = False, panels: bool = False, keep_zoom: bool = False) -> dict:
     return {"op": "shot", "zoom": zoom, "focus_text": focus_text, "move_seconds": move_seconds, "lift": lift,
-            "fit": fit}
+            "fit": fit, "panels": panels, "keep_zoom": keep_zoom}
 
 
 def _open(url: str, wait_for_text: str | None) -> list[dict]:
@@ -763,6 +814,15 @@ def _open(url: str, wait_for_text: str | None) -> list[dict]:
     else:
         goto["settle_ms"] = 2000
     return [_act(goto), {"op": "consent"}]
+
+
+def _found(line: str, text: str) -> dict:
+    """The beat's narrated step, on a page where it found these words: with
+    the house's trace mark, a line in its accent draws itself under them."""
+    if "trace" not in sig.current().marks:
+        return _say(line, text)
+    return _act({"type": "annotate", "target_text": text, "text": "found", "style": "trace", "ms": 2500,
+                 "wait_for_text": text}, line)
 
 
 def _say(line: str, wait_for_text: str | None = None) -> dict:
@@ -782,11 +842,13 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
     """The ops that shoot one beat.
 
     ``retake``: the beat is shot again at the end of the session, so a beat
-    that normally stays on the page before opens that page itself.
+    that normally stays on the page before opens that page itself, as it does
+    when an image or a card page came between (``reopens``).
     """
     shot, line = beat["shot"], beat.get("line", "")
     wait_text = beat.get("wait_for_text")
-    reopen = retake and beat.get("inherits_url") and beat.get("page_url")
+    camera = beat.get("camera")
+    reopen = (retake or beat.get("reopens")) and beat.get("inherits_url") and beat.get("page_url")
     if shot == "source":
         return [
             *_open(beat["url"], wait_text),
@@ -794,8 +856,8 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             # Wide, then a slow push-in on the headline while the line plays.
             # Gentle: a full-width headline at 1.25x lost its last words off
             # both edges at 1280x720 (TNW, 2026-10-28).
-            _shot(1.12, wait_text, move_seconds=3.0),
-            _say(line, wait_text),
+            _shot(camera or 1.12, wait_text, move_seconds=3.0),
+            _found(line, wait_text),
         ]
     if shot == "highlight":
         text = beat["text"]
@@ -810,7 +872,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             # Close, but never closer than the whole quote: a standfirst that
             # wraps is as wide as its column, and at 1.8x it lost its last
             # words off the right edge (TechTarget, 2026-10-28).
-            _shot(1.8, text, move_seconds=1.2, lift=True, fit=True),
+            _shot(camera or 1.8, text, move_seconds=1.2, lift=True, fit=True),
             _act({"type": "annotate", "target_text": text, "text": mark, "style": "marker",
                   "ms": 4000, "wait_for_text": text}, line),
         ]
@@ -872,8 +934,8 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
         return [
             *ops,
             _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
-            _shot(1.3, wait_text, move_seconds=2.5),
-            _say(line, wait_text),
+            _shot(camera or 1.3, wait_text, move_seconds=2.5, panels=True, keep_zoom=camera is not None),
+            _found(line, wait_text),
         ]
     if shot == "live_answer":
         # Sent offscreen, then the page is read until the answer stops
@@ -891,8 +953,8 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             {"op": "answer", "timeout": float(beat.get("timeout", 120)), "expect": wait_text,
              "question": beat["input_text"]},
             _act({"type": "scroll_to_text", "text": "@answer", "offscreen": True}),
-            _shot(1.5, "@answer", move_seconds=1.2, lift=True),
-            _say(line, "@answer"),
+            _shot(camera or 1.5, "@answer", move_seconds=1.2, lift=True),
+            _found(line, "@answer"),
         ]
     if shot == "cta":
         # The words to act on are often below the fold: without the scroll
@@ -901,10 +963,21 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
         return [
             *_open(beat["url"], wait_text),
             *scroll,
-            _shot(1.12, wait_text, move_seconds=3.0),
+            _shot(camera or 1.12, wait_text, move_seconds=3.0),
             _say(line, wait_text),
         ]
     raise ValueError(f"unknown shot {shot!r}")
+
+
+def rehearsal_ops(beat: dict, send_live: bool = False) -> list[dict]:
+    """A beat's recipe for a rehearsal: it opens its own page, and a live
+    answer stops before the prompt is sent unless asked to send it, because a
+    sent prompt lands in the product's log and moves its numbers."""
+    ops = recipe(beat, retake=True)
+    if beat["shot"] != "live_answer" or send_live:
+        return ops
+    stop = next(number for number, op in enumerate(ops) if op["op"] == "answer_start")
+    return [op for op in ops[:stop] if op.get("action", {}).get("ref") != "@message"]
 
 
 # The render's own card (the card action, where this AgentTake has it) takes
@@ -1049,6 +1122,7 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
             result = await session.set_shot(
                 "wide" if zoom <= 1.0 else "medium", zoom, None, op.get("focus_text"),
                 op.get("move_seconds"), lift=op.get("lift", False), fit=op.get("fit", False),
+                panels=op.get("panels", False), keep_zoom=op.get("keep_zoom", False),
             )
             # A shot with no focus pushes in on the centre on purpose.
             if result.get("camera_note") and op.get("focus_text"):

@@ -33,8 +33,9 @@ filmed and cut it with AgentTake.
   content is on screen. Free Edge voices by default, ElevenLabs optional, and
   `list_voices` lets the agent cast its own narrator.
 - ✂️ **No dead air** — the minutes an agent spends thinking between steps are
-  cut; long waits can play as a labelled time-lapse that ends when the screen
-  goes still.
+  cut, and a shot ends where the next action starts changing the page (a line
+  that runs longer holds the last frame); long waits can play as a labelled
+  time-lapse that ends when the screen goes still.
 - 👀 **The director sees** — `preview_shot` shows the exact frame before a beat
   is recorded; `storyboard` shows the finished film as a contact sheet, part by
   part, and `contact_sheet` the whole video as one picture, a frame every 2 s.
@@ -235,8 +236,8 @@ None of these can score `excellent`.
 |---|---|
 | **Session** | `start_session`, `get_status`, `finish`, `finish_status`, `list_sessions`, `get_session`, `delete_session`, `prune` |
 | **Directing** | `observe`, `act`, `act_batch`, `assert_visible`, `begin_shot`, `preview_shot`, `verify_shot`, `review_session` |
-| **Storyboard** | `director_guide`, `plan_storyboard`, `shoot_storyboard`, `shoot_beat`, `shoot_status`, `apply_retakes`, `fresh_take` |
-| **After finish** | `storyboard`, `contact_sheet`, `edit_step`, `update_step_narration`, `rerender`, `set_watch_page` |
+| **Storyboard** | `director_guide`, `plan_storyboard`, `rehearse_beats`, `rehearse_status`, `shoot_storyboard`, `shoot_beat`, `shoot_status`, `apply_retakes`, `fresh_take` |
+| **After finish** | `storyboard`, `contact_sheet`, `edit_step`, `update_step_narration`, `edit_cards`, `reshoot_beat`, `rerender`, `set_watch_page` |
 | **Voices** | `list_voices` |
 | **Roadmap** | `submit_backlog`, `list_backlog`, `update_backlog` |
 
@@ -334,10 +335,21 @@ refuses to publish until every shot is verified.
 - **Cards** — `title`/`subtitle` add an intro card, `cta_url`/`cta_text` a
   closing card with a QR code of the link (`closing_qr`); `title_background`
   `auto` builds them on blurred stills from the video. A `card` step adds one
-  mid-film. `accent` sets the
-  colour; `music="subtle"` adds a quiet generated bed.
+  mid-film. The instance's [signature](#signature) sets the colours and the
+  type; `accent` overrides the colour for one film; `music="subtle"` adds a
+  quiet generated bed.
 - **Storyboard** — every render records where each part landed and a still of
   it; the watch page shows the storyboard, and clicking a step plays from there.
+- **A review that measures** — after `finish`, `review_session` reads the film
+  frame by frame and each shot's frame against its page: an empty screen, a
+  picture changing under a line, a long still, text cut at the edge, a focus out
+  of frame or too small, a number the screen does not show. A finding gives its
+  beat, `at_seconds`, what it `measured` and a `fix`. `contact_sheet` carries the
+  picture in its reply, for an agent with no way to open a URL.
+- **Corrections last** — a line changed with `update_step_narration` and a card
+  changed with `edit_cards` are written into the storyboard too, so `fresh_take`
+  starts from them. A long `rerender` answers with a job id: follow it with
+  `finish_status`; it finishes, subtitles included, even if the call is cut off.
 - **Re-voicing** — `update_step_narration` edits one line and `rerender`
   rebuilds the film from the original recording; unchanged lines reuse their
   audio.
@@ -361,11 +373,47 @@ id; `REEL_TTS_PROVIDER=elevenlabs` makes it the default. `start_session`
 speaks one word first and refuses a voice that cannot speak, before anything
 is recorded.
 
+### Signature
+
+A web agency is hired for a look nobody else has; a film an agent directs is
+no different. The **signature** (Swedish: *signalement*) is the house style
+every film an instance makes carries: its colours, its type, the line it signs
+with, the voice it speaks in and the rules its director writes by. The director
+never decides styling. `director_guide` ends with the signature, so the agent
+writes in the house voice; the cards, captions, source cards and the closing
+card are set from it.
+
+It is one JSON file, `signature.json` under `REEL_OUTPUT_DIR` (or the path in
+`REEL_SIGNATURE`), read again whenever it changes:
+
+| Key | |
+|---|---|
+| `name` | The house's name, e.g. `hermes`. |
+| `accent` | The brand colour: the rule under the title and on brand cards, quote marks on source cards, the strip under a hero card. |
+| `ink`, `paper` | The ground solid cards are set on and the text colour on it. `ink` empty uses the accent, the look before signatures. |
+| `cards` | `solid` sets the title and closing cards on `ink`; `footage`, the default, on the film's own first and last frame, blurred. A film's own image still wins. |
+| `marks` | A list of the film's own marks. `window` sets pages inset on `ink` with rounded corners, `trace` draws a line in the accent under the text a shot found, `count_up` counts a whole number on a brand card up to its value. |
+| `display_font`, `text_font`, `mono_font` | Fontconfig family names for cards, captions and addresses. The image ships Inter, IBM Plex Mono and DejaVu; a name that is not installed falls back to DejaVu. |
+| `signature_line`, `ai_label` | Small print at the foot of the closing card: *Directed by Hermes · AgentHotel* and the AI label the EU AI Act (art. 50) asks a viewer be shown. |
+| `voice` | The house voice: `start_session` uses it unless a voice is asked for. |
+| `tone` | Writing rules, one per line, quoted to the director in `director_guide`. |
+
+`get_signature` shows it; `set_signature(document, note)` replaces it, bumps
+the version and keeps the note in a changelog. Each film records the signature
+version it was shot with in its start arguments. An agent that finds friction
+with the look or the voice files `submit_backlog(category="signature")`; the
+owner changes the signature, and the next film shows it. That is the loop a
+house style evolves by: shoot, look at the contact sheet, note, bump, shoot.
+[docs/signatures/hermes.json](docs/signatures/hermes.json) is a complete
+example; [hermes-sheet.png](docs/signatures/hermes-sheet.png) shows the
+default cards above and the same cards in that signature below.
+
 ### Public pages
 
 `/` (landing page), `/docs` (API docs), `/theater` and `/api/videos`,
 `/watch/{session_id}`, `/videos/{session_id}/video.mp4`, `/backlog` and
-`/api/backlog`, `/bug_report` and `/api/bug_reports`, `/health`, plus
+`/api/backlog` (this instance's; every item has a one-click link to propose
+it upstream), `/bug_report` and `/api/bug_reports`, `/health`, plus
 `/favicon.svg`, `/og.png`, `/robots.txt`, `/sitemap.xml` and `/llms.txt`.
 Only `/mcp` needs the token; finished videos are public.
 
@@ -389,12 +437,18 @@ Only `/mcp` needs the token; finished videos are public.
 | `REEL_MAX_CLIPS` | Newest finished sessions to keep (default `50`, `0` keeps all). |
 | `REEL_KEEP_RAW_CLIPS` | Keep `screen.mp4` (needed to rerender) for only the newest N (default `0`, all). |
 | `REEL_SEGMENTED` | `0` renders the raw recording instead of cut segments. |
+| `REEL_SIGNATURE` | The signature file (default `signature.json` under `REEL_OUTPUT_DIR`). See [Signature](#signature). |
+| `REEL_UPSTREAM_REPO` | Where backlog items are proposed (default `magnusfroste/agenttake`). |
+| `REEL_GITHUB_TOKEN` | Optional. With it, `submit_backlog` files the item as an issue in `REEL_UPSTREAM_REPO` right away (needs `issues: write`). Without it the item stays on the instance with a propose link. |
 
 `examples/demo_client.py` runs a complete smoke test against
 `https://example.com`.
 
 ## Contributing
 
-Agents file friction and bugs into the public `/backlog` through MCP. Label a
-pull request `auto-merge` and it is merged once the package import and compile
-checks pass.
+Agents file friction and bugs into their instance's `/backlog` through MCP.
+Each item there has a **Propose upstream** link that opens a prefilled issue
+in this repository — read it first, it may quote your pages — so the roadmap
+every instance shares is [the issues](https://github.com/magnusfroste/agenttake/issues),
+and no central instance has to run. Label a pull request `auto-merge` and it
+is merged once the package import and compile checks pass.

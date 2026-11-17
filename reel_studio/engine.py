@@ -25,14 +25,17 @@ from playwright.async_api import (
 )
 
 from .render import (
+    recording_problem,
     CARD_DURATION,
     CARD_TEXT_MAX,
     GLIDE_RAMP_IN,
     GLIDE_RAMP_OUT,
     GLIDES_FILE,
+    PAGE_CHANGING_ACTIONS,
     QUIET_FLOOR,
     SEGMENT_FLOOR,
     card_background,
+    clean_card_text,
     mux_narration,
     plan_segments,
     probe_duration,
@@ -53,7 +56,8 @@ from .annotations import (
     validate_annotation,
 )
 from .refs import semantic_ref
-from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, describe_cover, focus_covered
+from . import signature as sig
+from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, PANELS_JS, SHOT_FACTS_JS, describe_cover, focus_covered
 from .schema import resolve_secret, secret_names, Action, mask_stylesheet
 from .tts import synthesize
 
@@ -266,7 +270,9 @@ async def ensure_fullscreen(context, page, settle_ms: int = 1200) -> bool:
 # close-up of the quote carried "https://googleads.g.doubleclick.net/…" in
 # Chrome's status bubble (2026-10-28).
 _POINTER_PARK_JS = """([x, y]) => {
-  const LINK = 'a[href], [role=link], iframe, frame, embed, object';
+  // [title]: a pointer resting on it shows the browser's tooltip, which the
+  // recording keeps (an iframe's title over certera.ink's opening shot, 2026-11-10).
+  const LINK = 'a[href], [role=link], iframe, frame, embed, object, [title]';
   const MARGIN = 16;
   const onLink = (px, py) => { const el = document.elementFromPoint(px, py); return !!(el && el.closest(LINK)); };
   const clear = (px, py) => !onLink(px, py) && !onLink(px - MARGIN, py) && !onLink(px + MARGIN, py)
@@ -305,6 +311,132 @@ GLIDE_TEXT_TOP = 0.18
 # above the band burned-in subtitles take.
 SUBTITLE_LIFT = 0.17
 
+# A modal dialog smaller than this share of the screen is framed by the camera
+# when a step leaves it open, at most this deep: a bulk-sign dialog filled a
+# fifth of a dark 1080p frame and read as an empty screen (certera.ink,
+# 2026-11-10). The camera goes back to wide when the dialog closes.
+DIALOG_MAX_SHARE = 0.55
+DIALOG_ZOOM = 1.6
+# An element is framed whole in the part of the frame above the subtitles:
+# FRAME_BAND is that band's share of the frame's height, FRAME_PAD the margin
+# kept around the element.
+FRAME_BAND = 0.15
+FRAME_PAD = 0.04
+# The box of what an iframe shows, in the iframe's own pixels: from its body
+# down while the children fill clearly less than their parent. A design studio
+# draws a 1277x599 diploma at the top of a 1317x910 preview frame; framing the
+# frame came out at 1.07x, no close-up at all (certera.ink, 2026-11-10).
+#
+# With ``backdrop`` (a share of the viewport) it measures a page instead: a
+# painted box at least that big is the page's background, not the thing, and
+# a lone wrapper as big as its parent is gone through (body > #root > a
+# full-screen centring div > the form).
+IFRAME_CONTENT_JS = """(backdrop) => {
+  const union = (els) => {
+    let u = null;
+    for (const e of els) {
+      const b = e.getBoundingClientRect();
+      if (b.width < 3 || b.height < 3) continue;
+      u = u ? {l: Math.min(u.l, b.left), t: Math.min(u.t, b.top), r: Math.max(u.r, b.right), b: Math.max(u.b, b.bottom)}
+            : {l: b.left, t: b.top, r: b.right, b: b.bottom};
+    }
+    return u;
+  };
+  const area = (u) => (u.r - u.l) * (u.b - u.t);
+  // A box with no size (a toast region, an empty row) is not on screen.
+  const sized = (e) => { const b = e.getBoundingClientRect(); return b.width >= 3 && b.height >= 3; };
+  // A painted box is the thing itself (a card, a diploma): its text is
+  // smaller than it, but the frame is the box.
+  const painted = (e) => {
+    const s = getComputedStyle(e);
+    return s.backgroundImage !== "none"
+      || (s.backgroundColor !== "rgba(0, 0, 0, 0)" && s.backgroundColor !== "transparent")
+      || (parseFloat(s.borderTopWidth) > 0 && s.borderTopStyle !== "none");
+  };
+  const screen = backdrop ? backdrop * innerWidth * innerHeight : Infinity;
+  let level = Array.from(document.body ? document.body.children : []).filter(sized);
+  let box = union(level);
+  for (let i = 0; box && i < 12; i++) {
+    if (level.length === 1 && painted(level[0]) && area(box) < screen) break;
+    const kids = level.flatMap((e) => Array.from(e.children)).filter(sized);
+    const inner = union(kids);
+    if (!inner) break;
+    const wrapper = backdrop && level.length === 1 && kids.length === 1;
+    if (area(inner) >= 0.8 * area(box) && !wrapper) break;
+    level = kids;
+    box = inner;
+  }
+  return box && {x: box.l, y: box.t, width: box.r - box.l, height: box.b - box.t};
+}"""
+# A form alone on a page — sign in, sign up — fills a sliver of a 1080p frame
+# and read as an empty screen (certera.ink take 6, 2026-11-11). Smaller than
+# FORM_MAX_SHARE of the screen, with a field in it, the camera frames it.
+FORM_MAX_SHARE = 0.35
+SMALL_FORM_JS = """() => {
+  const content = (""" + IFRAME_CONTENT_JS + """)(0.8);
+  if (!content) return null;
+  const inside = (b) => b.width > 0 && b.height > 0
+    && b.left >= content.x - 1 && b.right <= content.x + content.width + 1
+    && b.top >= content.y - 1 && b.bottom <= content.y + content.height + 1;
+  const fields = document.querySelectorAll("input:not([type=hidden]), textarea, select");
+  return Array.from(fields).some((e) => inside(e.getBoundingClientRect())) ? content : null;
+}"""
+# The box of the largest open modal dialog, or null. Modal: aria-modal, a
+# <dialog> shown with showModal(), or a dialog over a backdrop that covers the
+# screen (Radix and most kits do not set aria-modal). A popover is not modal.
+MODAL_BOX_JS = """() => {
+  const vw = innerWidth, vh = innerHeight;
+  const shown = (el) => {
+    const s = getComputedStyle(el), b = el.getBoundingClientRect();
+    return b.width > 40 && b.height > 40 && s.visibility !== "hidden" && s.display !== "none"
+      && Number(s.opacity) > 0.5 && b.bottom > 0 && b.right > 0 && b.top < vh && b.left < vw ? b : null;
+  };
+  const backdrop = (dialog) => [[4, 4], [vw - 5, 4], [4, vh - 5], [vw - 5, vh - 5]].every(([x, y]) => {
+    const el = document.elementFromPoint(x, y);
+    if (!el || dialog.contains(el)) return false;
+    const b = el.getBoundingClientRect(), s = getComputedStyle(el);
+    return (s.position === "fixed" || s.position === "absolute") && b.width >= vw * 0.95 && b.height >= vh * 0.95;
+  });
+  let best = null;
+  for (const el of document.querySelectorAll("[role=dialog], [role=alertdialog], dialog[open]")) {
+    const b = shown(el);
+    if (!b) continue;
+    const modal = el.getAttribute("aria-modal") === "true"
+      || (el.matches("dialog") && el.matches(":modal")) || backdrop(el);
+    if (modal && (!best || b.width * b.height > best.width * best.height))
+      best = {x: b.x, y: b.y, width: b.width, height: b.height};
+  }
+  return best;
+}"""
+
+# What the page's iframes hold, to see when a click's result has been drawn in
+# one: a template clicked in a design studio is drawn in an iframe a moment
+# after the click, and its line played over the studio before it (certera.ink,
+# 2026-11-10). A frame of another origin reads the same every time.
+FRAMES_SIGNATURE_JS = """() => Array.from(document.querySelectorAll("iframe")).map((f) => {
+  try {
+    const d = f.contentDocument;
+    return d ? d.readyState + ":" + (d.body ? d.body.innerHTML.length : 0) : "-";
+  } catch (e) { return "x"; }
+}).join("|")"""
+FRAMES_SETTLE_MS = 3000
+FRAMES_POLL_MS = 250
+
+# A film has one tab: a link that opens a new one would be recorded over the
+# session's page, untracked (certera.ink's "Open" link, 2026-11-10). Such links
+# and window.open load in the session's own tab instead.
+SAME_TAB_JS = """(() => {
+  document.addEventListener("click", (e) => {
+    const a = e.target && e.target.closest ? e.target.closest("a[target]") : null;
+    if (a && a.target && a.target !== "_self" && a.target !== "_top" && a.target !== "_parent") a.target = "_self";
+  }, true);
+  const open = window.open;
+  window.open = function (url, ...rest) {
+    if (url) { location.href = url; return window; }
+    return open.call(this, url, ...rest);
+  };
+})()"""
+
 # Hides the consent managers among the given selectors that are on screen, and
 # lets the page scroll again; returns the first one hidden, or null. A manager's
 # root is often an empty box around fixed children, so a child counts too. The
@@ -326,6 +458,43 @@ _HIDE_CONSENT_JS = """(selectors) => {
         el.style.setProperty('position', 'static', 'important');
     }
     return first;
+}"""
+
+# Whether a button sits in a cookie or consent banner, and not in the page
+# itself. A button's label alone is not enough: an approval card in an admin
+# has a "Reject" button too, and on 2026-11-16 a rehearsal of a FlowWink film
+# clicked it, rejecting the purchase order the film was about. A button
+# counts when an ancestor names consent in its id, class, role or label, or
+# when the fixed, sticky or dialog box it sits in talks about cookies,
+# consent or privacy, or when it is in a frame whose page does (consent
+# managers often live in an iframe of their own).
+_CONSENT_CONTEXT_JS = """(el) => {
+    const NAMED = /cookie|consent|gdpr|privacy|cmp|onetrust|didomi|usercentrics|cookiebot|truste|samtycke|kakor|datenschutz/i;
+    const TALKS = /cookie|consent|kakor|samtycke|privacy|integritet|personuppgift|datenschutz|gdpr|tracking/i;
+    const named = (node) => {
+        const parts = [node.id, typeof node.className === 'string' ? node.className : '',
+                       node.getAttribute && node.getAttribute('aria-label'),
+                       node.getAttribute && node.getAttribute('data-testid')];
+        const by = node.getAttribute && node.getAttribute('aria-labelledby');
+        if (by) for (const id of by.split(/\\s+/)) {
+            const label = document.getElementById(id);
+            if (label) parts.push(label.textContent || '');
+        }
+        return NAMED.test(parts.filter(Boolean).join(' '));
+    };
+    for (let node = el; node && node !== document.body && node !== document.documentElement;
+         node = node.parentElement) {
+        if (named(node)) return true;
+        const style = getComputedStyle(node);
+        const boxed = style.position === 'fixed' || style.position === 'sticky' || node.tagName === 'DIALOG'
+            || ['dialog', 'alertdialog', 'region'].includes(node.getAttribute('role') || '');
+        if (boxed) {
+            const text = (node.innerText || '').slice(0, 4000);
+            if (TALKS.test(text)) return true;
+        }
+    }
+    if (window !== window.top) return TALKS.test((document.body && document.body.innerText || '').slice(0, 4000));
+    return false;
 }"""
 
 # What form_fields needs to know about an input to tell what it is for.
@@ -566,6 +735,11 @@ class BrowserSession:
     page: Page
     recorder: subprocess.Popen[bytes]
     t0: float
+    # The recording's size when it last grew, and when (monotonic): a stalled
+    # recorder is told to the director at the step, not at the review.
+    recording_size: int = 0
+    recording_grew_at: float = 0.0
+    recording_lost_at: float | None = None
     refs: dict[str, str] = field(default_factory=dict)
     narrations: list[tuple[float, Path, str]] = field(default_factory=list)
     timeline: list[tuple[float, Path | None, float]] = field(default_factory=list)
@@ -574,6 +748,9 @@ class BrowserSession:
     # Each timeline step's minimum length in the video: QUIET_FLOOR for a step
     # silent on purpose, SEGMENT_FLOOR otherwise.
     timeline_floors: list[float] = field(default_factory=list)
+    # When each page-changing action began, visible or offscreen: the shot
+    # before it ends there (render.plan_segments cuts).
+    timeline_cuts: list[float] = field(default_factory=list)
     # A step done offscreen before anything was shown: the video then opens on
     # the first visible step rather than on the page it was set up from.
     offscreen_first: bool = False
@@ -590,6 +767,14 @@ class BrowserSession:
     pending_shot: tuple[float, float | None, float | None] | None = None
     # How long the pending shot's move takes (begin_shot move_seconds).
     pending_ease: float = EASE_SECONDS
+    # What the next shot frames, measured when it is set up (review.shot_findings).
+    pending_facts: dict | None = None
+    # The camera is framing an open dialog on its own (_frame_dialog).
+    dialog_framed: bool = False
+    # The camera is framing a small form alone on its page (_frame_form).
+    form_framed: bool = False
+    # Tabs the page opened anyway; the next step loads them in its own tab.
+    popups: list = field(default_factory=list)
     # Each timeline step's speed: above 1, its footage plays as a time-lapse.
     timeline_speeds: list[float] = field(default_factory=list)
     # Each timeline step's narration length when it is a glide, else None.
@@ -682,6 +867,7 @@ class BrowserSession:
         await context.add_init_script(
             "document.addEventListener('invalid', (e) => e.preventDefault(), true);"
         )
+        await context.add_init_script(SAME_TAB_JS)
         if color_scheme:
             await context.add_init_script(color_scheme_script(color_scheme))
         if mask_css:
@@ -753,6 +939,16 @@ class BrowserSession:
         )
         session.profile_dir = profile_dir
         session.camera = Camera(width, height, scale)
+        # A lambda: Playwright cannot wrap a builtin such as list.append.
+        context.on("page", lambda popup: session.popups.append(popup))
+        # Where the pointer is from the start, so the first shot parks it too:
+        # left where the display put it, it rested on the opening shot's
+        # diploma, under the iframe's tooltip, in three takes (2026-11-10).
+        try:
+            await page.mouse.move(width / 2, height / 2)
+            session.pointer = (width / 2, height / 2)
+        except Exception:
+            pass
         return session
 
     async def _grab_display(self, output: Path, crop: dict | None = None, scale_to: str | None = None) -> bool:
@@ -815,6 +1011,16 @@ class BrowserSession:
         from (storyboard.watch_answer). Empty mid-navigation."""
         try:
             return await self.page.evaluate("() => document.body ? document.body.innerText : ''")
+        except PlaywrightError:
+            return ""
+
+    async def main_text(self) -> str:
+        """The page's main content, without its navigation, where it has one."""
+        try:
+            return await self.page.evaluate(
+                "() => { const el = document.querySelector('main, article, [role=main], #content');"
+                " return el ? el.innerText : ''; }"
+            )
         except PlaywrightError:
             return ""
 
@@ -1095,6 +1301,8 @@ class BrowserSession:
         move_seconds: float | None = None,
         lift: bool = False,
         fit: bool = False,
+        panels: bool = False,
+        keep_zoom: bool = False,
     ) -> dict:
         """Aim the camera for the next step: framing, or an explicit zoom, on a focus.
 
@@ -1104,39 +1312,66 @@ class BrowserSession:
         of the band burned-in subtitles take: a highlighted quote under the
         subtitle of the line that reads it cannot be read. ``fit`` lowers the
         zoom, when it must, until the whole focus is in frame: a quote the
-        line reads cannot lose its end off the edge.
+        line reads cannot lose its end off the edge. ``panels`` frames a page
+        of cards so the frame's edge runs between them (Camera.frame_panels);
+        ``keep_zoom`` is a zoom the beat asked for, which it then does not lower.
         """
         level = zoom if zoom is not None else FRAMING_ZOOM.get(framing, 1.0)
         level = max(1.0, level)
         asked = level
         box = None
         box_is_text = False
+        panel_frame: dict = {}
         note = ""
+        target = None
         if level > 1.0:
-            if focus_ref and focus_ref in self.refs and not self.refs_stale:
-                target = self.page.locator(self.refs[focus_ref]).first
+            if focus_ref:
+                # A ref from the latest observe, or else a CSS selector: a
+                # director framed a diploma drawn in an iframe with
+                # focus_ref "iframe", which is no ref, and the camera pushed in
+                # on the middle of the screen, cutting the diploma's top and
+                # right edge (certera.ink, 2026-11-10).
+                known = focus_ref in self.refs and not self.refs_stale
+                target = self.page.locator(self.refs[focus_ref] if known else focus_ref).first
                 try:
-                    box = await target.bounding_box()
-                except PlaywrightError:
+                    box = await target.bounding_box(timeout=2000)
+                except (PlaywrightError, PlaywrightTimeoutError):
                     box = None
-            elif focus_text:
+            if box is None and focus_text:
                 target = await self._visible_text_target(focus_text, exact=False)
                 if target is not None:
                     box = await self._text_box(target, focus_text)
                     box_is_text = True
             if box is None:
                 note = (
-                    "No focus_ref or focus_text box on screen: the camera pushes in "
-                    "on the current centre and follows the next clicked element."
+                    (f"focus_ref {focus_ref!r} is neither a ref from the latest observe nor a CSS selector "
+                     "of an element on screen. " if focus_ref else "")
+                    + "No focus box on screen: the camera pushes in on the current centre and follows "
+                    "the next clicked element. Call observe for a fresh ref, or give focus_text."
                 )
-        if box and fit and self.camera is not None:
+        # An element is framed whole, above the subtitles: close on a diploma or
+        # a panel cut it at 2x. A line of text is framed from its start instead
+        # (aim's lead). What an iframe frames is what it shows, not its box.
+        element_frame = None
+        if box and not box_is_text and self.camera is not None:
+            box = await self._iframe_content_box(target, box) or box
+            element_frame = self._above_band(box, level)
+            level = element_frame[0]
+        elif box and fit and self.camera is not None:
             level = self.camera.fit_zoom(box, level, SUBTITLE_LIFT if lift else 0.0)
         cx = cy = None
-        if box:
+        if box and element_frame:
+            cx, cy = element_frame[1], element_frame[2]
+        elif box:
             if self.camera is not None:
                 # Words are read from their start: frame a text focus from
                 # its first word, not around its middle.
                 cx, cy = self.camera.aim(box, level, lead=box_is_text)
+                if panels:
+                    panel_frame = await self._frame_panels(box, level, keep_zoom)
+                    if panel_frame:
+                        level, cx = panel_frame["zoom"], panel_frame["cx"]
+                        cy = self.camera.aim(box, level)[1]
             else:
                 cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
             if lift:
@@ -1155,11 +1390,173 @@ class BrowserSession:
                      cy if cy is not None else current[2])
             frame = self.camera.view(state if level > 1.0 else (1.0, 0.0, 0.0))
             result["camera_frame"] = {k: round(frame[k]) for k in ("x", "y", "w", "h")}
+            self.pending_facts = await self._shot_facts(frame, box, target if box else None) if level > 1.0 else None
+            if self.pending_facts and panel_frame:
+                self.pending_facts.update({key: panel_frame[key] for key in ("panels", "row_camera", "panel_camera")})
         if box:
             result["camera_centre"] = {"x": round(cx or 0), "y": round(cy or 0)}
         if note:
             result["camera_note"] = note
         return result
+
+    async def _frame_dialog(self) -> None:
+        """Frame a small modal dialog the step left open; back to wide when it closes.
+
+        Only when the camera is wide or already on a dialog: a shot the
+        director framed is theirs.
+        """
+        if self.camera is None:
+            return
+        try:
+            box = await self.page.evaluate(MODAL_BOX_JS)
+        except PlaywrightError:
+            return
+        small = bool(box) and box["width"] * box["height"] < DIALOG_MAX_SHARE * self.width * self.height
+        if small:
+            if self.camera.final_state()[0] > 1.01 and not self.dialog_framed:
+                return
+            # Lifted the subtitle_lift way, the 512x472 bulk-sign dialog came
+            # out at 1.14x and was left wide (certera.ink take 2, 2026-11-10).
+            level, cx, cy = self._above_band(box, DIALOG_ZOOM)
+            if level < 1.15:
+                return
+            self.pending_shot = (level, cx, cy)
+            self.pending_ease = EASE_SECONDS
+            self.pending_facts = None
+            self.dialog_framed = True
+        elif self.dialog_framed and not box:
+            self.pending_shot = (1.0, None, None)
+            self.pending_ease = EASE_SECONDS
+            self.pending_facts = None
+            self.dialog_framed = False
+        elif not box:
+            await self._frame_form()
+
+    async def _frame_form(self) -> None:
+        """Frame a small form alone on its page (sign in, sign up); back to wide
+        when the page holds more than that.
+
+        Only when the camera is wide or already on the form: a shot the
+        director framed is theirs.
+        """
+        if self.camera is None:
+            return
+        try:
+            box = await self.page.evaluate(SMALL_FORM_JS)
+        except PlaywrightError:
+            return
+        small = bool(box) and box["width"] * box["height"] < FORM_MAX_SHARE * self.width * self.height
+        if small:
+            if self.camera.final_state()[0] > 1.01 and not self.form_framed:
+                return
+            level, cx, cy = self._above_band(box, DIALOG_ZOOM)
+            if level < 1.15:
+                return
+            self.pending_shot = (level, cx, cy)
+            self.pending_ease = EASE_SECONDS
+            self.pending_facts = None
+            self.form_framed = True
+        elif self.form_framed:
+            self.pending_shot = (1.0, None, None)
+            self.pending_ease = EASE_SECONDS
+            self.pending_facts = None
+            self.form_framed = False
+
+    def _above_band(self, box: dict, zoom: float) -> tuple[float, float, float]:
+        """(zoom, cx, cy) that shows a box whole, up to ``zoom``, in the part of
+        the frame above the subtitle band, with a margin around it."""
+        width, height = max(box["width"], 1.0), max(box["height"], 1.0)
+        level = min(zoom, self.width * (1 - 2 * FRAME_PAD) / width,
+                    self.height * (1 - FRAME_BAND - 2 * FRAME_PAD) / height)
+        level = max(level, 1.0)
+        view_height = self.height / level
+        top = box["y"] + height / 2 - view_height * (1 - FRAME_BAND) / 2
+        return level, box["x"] + width / 2, top + view_height / 2
+
+    async def _iframe_content_box(self, target, box: dict) -> dict | None:
+        """What an iframe shows, in page pixels; None when the focus is no iframe."""
+        try:
+            if await target.evaluate("(e) => e.tagName") != "IFRAME":
+                return None
+            frame = await (await target.element_handle()).content_frame()
+            inner = await frame.evaluate(IFRAME_CONTENT_JS) if frame else None
+        except PlaywrightError:
+            return None
+        if not inner:
+            return None
+        # Clipped to the iframe: what is scrolled out of it is not on screen.
+        x0 = max(box["x"] + inner["x"], box["x"])
+        y0 = max(box["y"] + inner["y"], box["y"])
+        x1 = min(box["x"] + inner["x"] + inner["width"], box["x"] + box["width"])
+        y1 = min(box["y"] + inner["y"] + inner["height"], box["y"] + box["height"])
+        if x1 - x0 < 20 or y1 - y0 < 20:
+            return None
+        return {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0}
+
+    async def _frames_settled(self) -> None:
+        """Wait, up to FRAMES_SETTLE_MS, until the page's iframes stop changing."""
+        try:
+            last = await self.page.evaluate(FRAMES_SIGNATURE_JS)
+            if not last:
+                return
+            steady = 0
+            deadline = time.monotonic() + FRAMES_SETTLE_MS / 1000
+            while time.monotonic() < deadline and steady < 2:
+                await self.page.wait_for_timeout(FRAMES_POLL_MS)
+                current = await self.page.evaluate(FRAMES_SIGNATURE_JS)
+                loading = any(part.startswith(("loading", "interactive")) for part in current.split("|"))
+                steady = steady + 1 if current == last and not loading else 0
+                last = current
+        except PlaywrightError:
+            return  # mid-navigation: the step has settled as far as it can
+
+    async def _adopt_popups(self) -> str | None:
+        """Load a tab the page opened anyway in the session's own tab, and close it."""
+        url = None
+        while self.popups:
+            popup = self.popups.pop(0)
+            if popup is self.page:
+                continue
+            try:
+                await popup.wait_for_load_state("commit", timeout=5000)
+            except (PlaywrightError, PlaywrightTimeoutError):
+                pass
+            if popup.url and popup.url != "about:blank":
+                url = popup.url
+            try:
+                await popup.close()
+            except PlaywrightError:
+                pass
+        if url:
+            try:
+                await self.page.bring_to_front()
+                await self.page.goto(url, wait_until="domcontentloaded")
+            except PlaywrightError:
+                return None
+            self.refs_stale = True
+        return url
+
+    async def _frame_panels(self, box: dict, zoom: float, keep_zoom: bool) -> dict:
+        """Where to put the frame on a page of panels; {} when it has none."""
+        try:
+            found = await self.page.evaluate(PANELS_JS)
+        except PlaywrightError:
+            return {}
+        return self.camera.frame_panels(found, box, zoom, keep_zoom) if self.camera is not None and found else {}
+
+    async def _shot_facts(self, frame: dict, box: dict | None, target: Locator | None) -> dict | None:
+        """What this shot will have in its frame, for the review."""
+        try:
+            facts = await self.page.evaluate(SHOT_FACTS_JS, frame)
+            if box is not None:
+                facts["focus"] = {key: round(box[key], 1) for key in ("x", "y", "width", "height")}
+            if target is not None:
+                facts["font_px"] = await target.evaluate(
+                    "(el) => parseFloat(getComputedStyle(el).fontSize) * (el.currentCSSZoom || 1)"
+                )
+            return facts
+        except PlaywrightError:
+            return None
 
     async def _text_box(self, target: Locator, text: str) -> dict | None:
         """The box of the words themselves, not of the element holding them.
@@ -1355,6 +1752,11 @@ class BrowserSession:
         raw.unlink(missing_ok=True)
         return out, {k: round(frame[k]) for k in ("x", "y", "w", "h")} | {"zoom": round(frame["zoom"], 2)}
 
+    async def cover_of(self, text: str) -> dict | None:
+        """Whether a dialog, a banner or an ad lies over this text (rehearsal)."""
+        target = await self._visible_text_target(text)
+        return {**await target.evaluate(FOCUS_COVER_JS), "text": text} if target is not None else None
+
     async def dismiss_consent(
         self, refuse: Sequence[str], managers: Sequence[str] = (), notice: Sequence[str] = ()
     ) -> str | None:
@@ -1382,9 +1784,10 @@ class BrowserSession:
         return await self._click_labelled(notice)
 
     async def _click_labelled(self, labels: Sequence[str]) -> str | None:
-        """Click the first visible button whose whole label is one of these,
-        in the page or in its frames (consent managers often live in an
-        iframe). Returns the label clicked, or None."""
+        """Click the first visible button whose whole label is one of these
+        and that sits in a consent banner (_CONSENT_CONTEXT_JS), in the page
+        or in its frames (consent managers often live in an iframe). Returns
+        the label clicked, or None."""
         if not labels:
             return None
         pattern = re.compile(
@@ -1392,15 +1795,25 @@ class BrowserSession:
         )
         for frame in self.page.frames:
             try:
-                button = frame.get_by_role("button", name=pattern).first
-                if await button.count() and await button.is_visible():
+                buttons = await frame.get_by_role("button", name=pattern).all()
+            except PlaywrightError:
+                continue
+            for button in buttons:
+                try:
+                    if not await button.is_visible():
+                        continue
+                    # Only a button in a consent banner: never "Reject" on an
+                    # approval card, "OK" in a form or "Dismiss" on a notice
+                    # the film is about.
+                    if not await button.evaluate(_CONSENT_CONTEXT_JS):
+                        continue
                     label = (await button.inner_text()).strip()
                     await self._note_pointer(button)
                     await button.click(timeout=3000)
                     await self.page.wait_for_timeout(600)
                     return label or "button"
-            except PlaywrightError:
-                continue
+                except PlaywrightError:
+                    continue
         return None
 
     async def form_fields(self) -> dict[str, str]:
@@ -1444,6 +1857,37 @@ class BrowserSession:
             **({"screenshot_path": str(screenshot)} if screenshot else {}),
         }, screenshot
 
+    def recording_check(self) -> dict | None:
+        """Whether the screen recording still takes the session; once it has
+        stopped, every later step has no footage, so say where it stopped.
+        A session with no recorder (a rehearsal, a test's stand-in) has
+        nothing to lose."""
+        if getattr(self, "recorder", None) is None:
+            return None
+        now = time.monotonic()
+        try:
+            size = (self.directory / "screen.mp4").stat().st_size
+        except OSError:
+            size = 0
+        if size > self.recording_size:
+            self.recording_size, self.recording_grew_at = size, now
+        elif not self.recording_grew_at:
+            self.recording_grew_at = now
+        problem = recording_problem(self.recorder.poll() is None, size, self.recording_size, self.recording_grew_at, now)
+        if problem is None:
+            return None
+        if self.recording_lost_at is None:
+            self.recording_lost_at = self.recording_grew_at - self.t0
+        return {
+            "reason": problem,
+            "footage_ends_at_seconds": round(self.recording_lost_at, 1),
+            "message": (
+                f"The screen recording stopped at about {self.recording_lost_at:.0f} s ({problem}): this step "
+                "and every later one have no footage, and no rerender brings them back. Stop shooting this "
+                "session and report it; the beats from there on need a new session."
+            ),
+        }
+
     async def act(self, action: Action, narration: str = "") -> tuple[dict, Path | None]:
         if not action.offscreen:
             await self._clear_pointer()
@@ -1485,6 +1929,9 @@ class BrowserSession:
                 duration = probe_duration(clip)
             except Exception as exc:
                 return await self.error_result("narration_failed", str(exc))
+        # The line is synthesized first, so the screen starts changing here,
+        # not when act was called.
+        action_started_at = time.monotonic() - self.t0
         try:
             action_type = action.type
             if action_type == "caption":
@@ -1516,7 +1963,7 @@ class BrowserSession:
             elif action_type == "card":
                 # Nothing happens in the browser: the render cuts a card in
                 # here instead of this step's footage.
-                text = "\n".join(line.strip() for line in (action.text or "").strip().splitlines())
+                text = clean_card_text(action.text)
                 background = card_background(action.background)
                 if not text:
                     return await self.error_result("invalid_action", "card requires text")
@@ -1616,6 +2063,7 @@ class BrowserSession:
                         "id": live_annotation_id,
                         "kind": normalized["kind"],
                         "label": normalized["label"],
+                        **({"accent": sig.current().accent} if not sig.current().is_default else {}),
                         "duration_ms": visual_duration_ms,
                         "dim": action.dim,
                         "box": box,
@@ -1796,6 +2244,12 @@ class BrowserSession:
                     await self.page.mouse.wheel(0, action.dy)
             elif action_type == "wait":
                 await self.page.wait_for_timeout(action.ms)
+                # A wait on screen is a hold the director asked for: the
+                # render kept 1.4 s of a 3 s wait on the studio after sign-in,
+                # and the design waiting there flashed by (certera.ink take 6,
+                # 2026-11-11).
+                if not action.offscreen:
+                    annotation_duration = max(annotation_duration, min(action.ms / 1000, 20.0))
             action_finished_at = time.monotonic() - self.t0
             if self.page.url != before_url:
                 self.refs_stale = True
@@ -1804,6 +2258,7 @@ class BrowserSession:
                 # an eased zoom-out showed its first second at the old zoom.
                 if self.camera is not None:
                     self.camera.move(action_finished_at, 1.0, ease=0.0)
+                self.dialog_framed = self.form_framed = False
                 # A sticky caption belonged to the old page. In a single-page
                 # app the old page's DOM — and the caption — survives the
                 # navigation, so it is removed rather than forgotten.
@@ -1857,6 +2312,8 @@ class BrowserSession:
                         "(up to 60000, or 600000 on an offscreen step) for slow answers.",
                     )
             await self.page.wait_for_timeout(action.settle_ms)
+            await self._adopt_popups()
+            await self._frames_settled()
             if action_type == "scroll" and scrolled is None:
                 try:
                     moved, mover = await self.page.evaluate(_SCROLL_MOVED_JS)
@@ -1884,6 +2341,8 @@ class BrowserSession:
         # when act was called: the narration is synthesized in between, and
         # take 4 opened on four seconds of a still page and lost the end of
         # the glide (2026-10-24).
+        if action_type in PAGE_CHANGING_ACTIONS:
+            self.timeline_cuts.append(action_started_at)
         glide = action_type == "scroll" and bool(action.ms)
         if glide and glide_started_at is not None:
             offset = glide_started_at
@@ -1893,6 +2352,8 @@ class BrowserSession:
             # TTS is prepared before the browser action; align narration with
             # the settled visual state rather than with synthesis start.
             offset = action_completed_at
+        if self.pending_shot is None and card is None and not action.offscreen:
+            await self._frame_dialog()
         if self.pending_shot is not None and self.camera is not None and card is None:
             # The shot's move starts where this step's footage starts in the
             # video: at its narration, after the action has settled. Timed
@@ -1901,6 +2362,8 @@ class BrowserSession:
             # push-ins reached the video as a jump to the zoomed frame, not a
             # move (found comparing cut boundaries, 2026-10-09).
             if self.camera.move(offset, *self.pending_shot, ease=self.pending_ease):
+                if self.pending_facts:
+                    self.camera.keys[-1]["facts"] = self.pending_facts
                 await self._redraw_sticky_caption()
             self.pending_shot = None
         hold_duration = annotation_hold_seconds(duration, annotation_duration)
@@ -1977,6 +2440,9 @@ class BrowserSession:
         }
         if open_overlays is not None:
             result["open_overlays"] = open_overlays
+        lost = self.recording_check()
+        if lost:
+            result["recording_lost"] = lost
         if focus_cover is not None:
             result["focus_cover"] = focus_cover
             if focus_covered(focus_cover):
@@ -1988,13 +2454,14 @@ class BrowserSession:
             result["settled_by"] = settled_by
         if action_completed_at is not None:
             result["settled_at_seconds"] = round(action_completed_at, 3)
+        result["started_at_seconds"] = round(action_started_at, 3)
         if action_type == "scroll_to_text":
             result.update({"box": action_box, "in_viewport": action_in_viewport})
         if scrolled is not None:
             result.update(scroll_report(action.dy, *scrolled, glide=glide))
         if live_annotation_id:
             result["annotation_id"] = live_annotation_id
-        if live_annotation_id or glide:
+        if live_annotation_id or glide or annotation_duration:
             result["annotation_duration"] = round(annotation_duration, 3)
         if card is not None:
             result["card"] = {"text": card[0], "background": card[1]}
@@ -2036,7 +2503,7 @@ class BrowserSession:
         segments, _ = plan_segments(
             self.timeline, max(elapsed, 0.001), self.timeline_floors,
             not self.offscreen_first, self.timeline_speeds, None, self.timeline_glides,
-            cards=self.timeline_cards,
+            cards=self.timeline_cards, cuts=self.timeline_cuts,
         )
         cards = CARD_DURATION * (
             bool(self.render_config.title.strip())
@@ -2066,7 +2533,7 @@ class BrowserSession:
                 video, self.timeline, final, self.output_size,
                 self.render_config, self.camera, self.timeline_pages,
                 self.timeline_floors, not self.offscreen_first, self.timeline_speeds,
-                self.timeline_glides,
+                self.timeline_glides, cuts=self.timeline_cuts,
             )
             write_storyboard(self.directory, final, result.timeline)
         else:
