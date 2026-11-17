@@ -957,8 +957,12 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             _found(line, "@answer"),
         ]
     if shot == "cta":
+        # The words to act on are often below the fold: without the scroll
+        # the shot framed the hero instead (Sluss take 3, 2026-11-02).
+        scroll = [_act({"type": "scroll_to_text", "text": wait_text, "offscreen": True})] if wait_text else []
         return [
             *_open(beat["url"], wait_text),
+            *scroll,
             _shot(camera or 1.12, wait_text, move_seconds=3.0),
             _say(line, wait_text),
         ]
