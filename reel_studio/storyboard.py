@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, ValidationError
 from . import sensitive
 from . import signature as sig
 from .camera import PUSH_ZOOM
-from .graphics import check_callout, check_caption, said_at
+from .graphics import check_callout, check_caption, cue_share, said_at
 from .review import describe_cover, focus_covered, normalize_line
 from .schema import OFFSCREEN_WAIT_MAX_MS, secret_names
 
@@ -49,8 +49,8 @@ MoveKind = Literal["push", "cut", "stay"]
 MOVE_KINDS: tuple[str, ...] = get_args(MoveKind)
 # The longest a push-in takes, and a pan across a page the camera stays on:
 # under a line both have landed by camera.LAND_SHARE of it.
-PUSH_SECONDS = 1.5
-PAN_SECONDS = 1.2
+PUSH_SECONDS = 0.7
+PAN_SECONDS = 0.8
 SHOT_FIELDS: dict[str, str] = {
     "source": "url, wait_for_text (the headline): opens the article, closes a consent banner offscreen without accepting it, "
               "settles, then a slow push-in on the headline",
@@ -186,6 +186,12 @@ class StoryBeat(BaseModel):
                     "flashes a key figure: five words at most, words the page shows or the line says, never "
                     "a claim of its own. It comes in on the word of the line that names it.",
     )
+    emphasis: str | None = Field(
+        default=None,
+        description="system: words of the line, word for word: as they are said the camera pushes in a "
+                    "little (8 %, a quarter of a second) toward wait_for_text and lets go when the line ends. "
+                    "Once or twice a film, on the word that carries the point; on every beat it is noise.",
+    )
     input_text: str | None = None
     until_text: str | None = Field(default=None, description="page_tour: the heading the glide stops at.")
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
@@ -210,6 +216,9 @@ def beats_json_schema() -> dict[str, Any]:
         "callout": {"type": "string",
                     "description": "system: a label pointing at wait_for_text, five words at most, words the "
                                    "page shows or the line says; in on the word of the line that names it"},
+        "emphasis": {"type": "string",
+                     "description": "system: words of the line; as they are said the camera pushes in 8 % "
+                                    "toward wait_for_text. Once or twice a film, on the word that carries the point"},
         "timeout": {"type": "number", "minimum": 1, "maximum": OFFSCREEN_WAIT_MAX_MS / 1000},
     }
     for name in ("url", "wait_for_text", "text", "background", "caption", "publication", "date", "username",
@@ -381,6 +390,14 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
                                    f"a callout points at what a system shot frames: a {shot} shot shows none"))
             elif wrong:
                 items.append(_item(number, label, "fix", "long_callout", wrong))
+        if beat.get("emphasis"):
+            if shot not in GRAPHIC_SHOTS:
+                items.append(_item(number, label, "warn", "emphasis_not_used",
+                                   f"emphasis pushes in toward what a system shot frames: a {shot} shot has none"))
+            elif cue_share(beat["emphasis"], beat.get("line") or "") is None:
+                items.append(_item(number, label, "fix", "emphasis_not_in_line",
+                                   f"emphasis {beat['emphasis']!r} is not in the line: give words the line says, "
+                                   "so the push lands as they are spoken"))
         if beat.get("caption") and shot in GRAPHIC_SHOTS:
             wrong = check_caption(beat["caption"])
             if wrong:
@@ -915,10 +932,10 @@ def _move(kind: str | None, zoom: float, drift_seconds: float, same_page: bool =
 
 def _graphics(beat: dict, target_text: str | None) -> list[dict]:
     """The beat's callout and lower third, for its narrated step."""
-    if not (beat.get("callout") or beat.get("caption")):
+    if not (beat.get("callout") or beat.get("caption") or beat.get("emphasis")):
         return []
     return [{"op": "graphics", "callout": beat.get("callout"), "caption": beat.get("caption"),
-             "target_text": target_text, "line": beat.get("line", "")}]
+             "emphasis": beat.get("emphasis"), "target_text": target_text, "line": beat.get("line", "")}]
 
 
 def _open(url: str, wait_for_text: str | None) -> list[dict]:
@@ -1282,7 +1299,7 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
                 notes.append(f"callout_not_shown: {callout!r} is neither on the page nor in the line, word "
                              "for word; use words the page shows or the line says")
                 callout = None
-            session.set_graphics(callout, op.get("caption"), op.get("target_text"))
+            session.set_graphics(callout, op.get("caption"), op.get("target_text"), op.get("emphasis"))
             continue
         action = dict(op["action"])
         ref = action.get("ref") or ""
@@ -1300,6 +1317,8 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
             page_moved = float(payload.get("moved_px") or 0) > PAGE_MOVED_PX
         if (payload.get("graphics") or {}).get("dropped"):
             notes.append(f"callout_not_shown: {payload['graphics']['dropped']}")
+        if (payload.get("graphics") or {}).get("emphasis_dropped"):
+            notes.append(f"emphasis_not_shown: {payload['graphics']['emphasis_dropped']}")
         if op.get("narration") and focus_covered(payload.get("focus_cover")):
             # The step went through, but its line plays over a dialog, a
             # banner or an ad: a beat nobody can read is not shot.

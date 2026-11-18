@@ -125,6 +125,7 @@ def test_render_paths(media_dir, tmp_path):
         carded,
         config=render.RenderConfig(
             title="Demo",
+            title_at="card",
             subtitle="Sub",
             accent="#123456",
             cta_url="https://example.com",
@@ -175,7 +176,7 @@ def test_smooth_assembly_overlaps_and_keeps_the_narration(tmp_path):
     voice = tmp_path / "voice.m4a"
     _run_ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(voice))
     out = tmp_path / "out.mp4"
-    config = render.RenderConfig(title="T", cta_url="https://example.com")
+    config = render.RenderConfig(title="T", title_at="card", cta_url="https://example.com")
     render._assemble_smooth([a, b], ["p", "p"], [None, voice], out, (320, 176), config, tmp_path)
     expected = (render.CARD_DURATION + 2 + 2 + render.CARD_DURATION
                 - render.CARD_FADE - render.TIME_DISSOLVE - render.CARD_FADE)
@@ -208,7 +209,7 @@ def test_only_public_https_images_are_fetched():
 @pytest.mark.parametrize("transitions", ["smooth", "cuts"])
 def test_the_render_records_where_each_part_landed(tmp_path, transitions):
     source = _clip(tmp_path / "screen.mp4", "teal", 6.0)
-    config = render.RenderConfig(title="T", cta_url="https://example.com", transitions=transitions,
+    config = render.RenderConfig(title="T", title_at="card", cta_url="https://example.com", transitions=transitions,
                                  title_background="solid")
     out = tmp_path / "video.mp4"
     result = render.segmented_render(source, [(1.0, None, 1.5), (3.0, None, 1.0)], out, (320, 176), config)

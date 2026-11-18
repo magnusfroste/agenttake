@@ -37,7 +37,9 @@ You need nothing but these tools. Every reply says what comes next under
 3. **Open one session.** `start_session` with `start_url`, `subtitles=true`,
    `color_scheme`, `show_pointer=false`, `mask=["input[type=password]",
    "[data-secret]"]`, `cta_url`, and `width` and `height` if not 1920x1080.
-   A `title` adds a title card. The look is the signature's: pass no `accent`.
+   A `title` is laid over the first shot, top left, for its first three
+   seconds, so the film opens on the product (`title_at="card"` puts it on a
+   card before the film instead). The look is the signature's: pass no `accent`.
 4. **Shoot.** `shoot_storyboard(session_id, plan_id)`, and again while
    `to_come` is not empty. `status: "shooting"` means `shoot_status` until
    `done`.
@@ -147,6 +149,7 @@ does:
 | Field | What the film shows |
 |---|---|
 | `callout` | A label with a pointer at `wait_for_text`, five words (40 characters) at most. It comes in on the word of the line that names it (word for word, or the first word of four letters or a number they share), never before the camera stands still, and stays to the end of the beat, at least 1.5 s. It sits over the words when there is room, under them otherwise, clear of the subtitles. |
+| `emphasis` | Words of the line, word for word. As they are said, the camera pushes in a little (8 %, a quarter of a second) toward `wait_for_text`, and lets go when the line is over. A second kind of move beside the shot's own framing: the shot frames the page, the emphasis lands on the word that carries the point. Once or twice a film; on every beat it is noise. Not in the line, and the plan says `emphasis_not_in_line`. |
 | `caption` | A lower third at the left, above the subtitles: where and when (`"02:14 · Inbox"`), 36 characters at most. It runs for the whole beat, and on through the next beat when that has the same caption. It moves to the top when it would lie over what the camera frames. |
 
 A callout says what the page shows or the line says, word for word, never a

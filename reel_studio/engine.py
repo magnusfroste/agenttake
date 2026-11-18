@@ -47,7 +47,7 @@ from .render import (
     start_recording,
     stop_recording,
 )
-from .camera import EASE_SECONDS, FRAMING_ZOOM, Camera, capture_scale, landing_ease
+from .camera import EMPHASIS_SECONDS, EASE_SECONDS, FRAMING_ZOOM, Camera, capture_scale, landing_ease
 from .annotations import (
     annotation_hold_seconds,
     annotation_id,
@@ -57,7 +57,9 @@ from .annotations import (
 )
 from .refs import semantic_ref
 from . import signature as sig
-from .graphics import CALLOUT_MIN_SECONDS, callout_seconds, frame_box, record_graphic
+from .pointer import GLIDE_SECONDS as POINTER_GLIDE_SECONDS, pointer_script
+from .graphics import (CALLOUT_AFTER_MOVE, CALLOUT_LEAD, CALLOUT_MIN_SECONDS, callout_seconds, cue_share,
+                       frame_box, record_graphic)
 from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, PANELS_JS, SHOT_FACTS_JS, describe_cover, focus_covered
 from .schema import resolve_secret, secret_names, Action, mask_stylesheet
 from .tts import synthesize
@@ -795,6 +797,8 @@ class BrowserSession:
     pointer: tuple[float, float] | None = None
     # The pointer rests on something on purpose: a hover step's menu.
     pointer_held: bool = False
+    # The film shows the pointer (pointer.py): a click waits for it to glide there.
+    show_pointer: bool = False
 
     def leave_out(self, offsets: Iterable[float]) -> None:
         """Leave steps already recorded out of the video, as if done offscreen.
@@ -874,6 +878,9 @@ class BrowserSession:
             "document.addEventListener('invalid', (e) => e.preventDefault(), true);"
         )
         await context.add_init_script(SAME_TAB_JS)
+        # The pointer the film shows is drawn in the page (pointer.py): the
+        # screen's own never moves under Playwright's clicks.
+        await context.add_init_script(pointer_script(show_pointer))
         if color_scheme:
             await context.add_init_script(color_scheme_script(color_scheme))
         if mask_css:
@@ -915,7 +922,7 @@ class BrowserSession:
         # of an agent's video. Recording starts after it.
         await asyncio.sleep(FULLSCREEN_NOTICE_SECONDS)
         recorder = start_recording(
-            display, *geometry["record_size"], directory / "screen.mp4", draw_mouse=show_pointer
+            display, *geometry["record_size"], directory / "screen.mp4", draw_mouse=False
         )
         # Give ffmpeg one frame before t0 is recorded.
         await asyncio.sleep(0.4)
@@ -944,6 +951,7 @@ class BrowserSession:
             playwright, browser, context, page, recorder, time.monotonic(),
         )
         session.profile_dir = profile_dir
+        session.show_pointer = show_pointer
         session.camera = Camera(width, height, scale)
         # A lambda: Playwright cannot wrap a builtin such as list.append.
         context.on("page", lambda popup: session.popups.append(popup))
@@ -1715,14 +1723,17 @@ class BrowserSession:
             self.sticky_caption = None
 
     def set_graphics(self, callout: str | None = None, caption: str | None = None,
-                     target_text: str | None = None) -> None:
+                     target_text: str | None = None, emphasis: str | None = None) -> None:
         """Graphics for the next narrated step, burned in at render
         (graphics.py): a callout pointing at target_text, in on the word of
-        the line that names it, and a caption, a lower third for the step."""
-        callout, caption = (callout or "").strip(), (caption or "").strip()
+        the line that names it, and a caption, a lower third for the step.
+        ``emphasis`` is words of the line: on them the camera pushes in a
+        little toward target_text (Camera.emphasize)."""
+        callout, caption, emphasis = (callout or "").strip(), (caption or "").strip(), (emphasis or "").strip()
         self.pending_graphics = (
-            {"callout": callout, "caption": caption, "target_text": (target_text or "").strip()}
-            if callout or caption else None
+            {"callout": callout, "caption": caption, "target_text": (target_text or "").strip(),
+             "emphasis": emphasis}
+            if callout or caption or emphasis else None
         )
 
     async def _graphic_entry(self, line: str, line_seconds: float, move_seconds: float) -> dict:
@@ -1741,6 +1752,23 @@ class BrowserSession:
             except PlaywrightError:
                 box = None
         entry: dict = {}
+        if wanted.get("emphasis") and self.camera is not None:
+            share = cue_share(wanted["emphasis"], line)
+            if share is None or line_seconds <= 0:
+                entry["emphasis_dropped"] = f"the line does not say {wanted['emphasis']!r}"
+            else:
+                at = max(share * line_seconds - CALLOUT_LEAD, move_seconds + CALLOUT_AFTER_MOVE)
+                if at < line_seconds - EMPHASIS_SECONDS:
+                    focus = None
+                    if wanted.get("target_text"):
+                        try:
+                            target = await self._visible_text_target(wanted["target_text"])
+                            focus = await self._text_box(target, wanted["target_text"]) if target is not None else None
+                        except PlaywrightError:
+                            focus = None
+                    entry["emphasis"] = {"at": round(at, 2), "hold": round(line_seconds - at, 2), "focus": focus}
+                else:
+                    entry["emphasis_dropped"] = f"{wanted['emphasis']!r} comes too late in the line for a push"
         if wanted.get("caption"):
             entry["caption"] = {"text": wanted["caption"], **({"box": box} if box else {})}
         if wanted.get("callout"):
@@ -2204,12 +2232,21 @@ class BrowserSession:
                 if action_type not in {"mask", "unmask"} and not (action.quiet or action.offscreen):
                     await self._follow(target)
                 if action_type in {"click", "click_and_wait"}:
-                    await self._inject_spotlight(target)
+                    # A click is marked by the pointer's own pulse; the yellow
+                    # halo it used to get read as an effect for its own sake
+                    # (research 2026-11-18). Asked for by name, it still comes.
+                    if action.spotlight and "spotlight" in action.model_fields_set:
+                        await self._inject_spotlight(target)
                     clicked_box = await target.bounding_box()
                     if clicked_box:
                         pointer = (clicked_box["x"] + clicked_box["width"] / 2,
                                    clicked_box["y"] + clicked_box["height"] / 2)
                         self.pointer, self.pointer_held = pointer, False
+                        if self.show_pointer and not (action.quiet or action.offscreen):
+                            # The arrow glides to the button and lands before
+                            # the press: the viewer sees where the click goes.
+                            await self.page.mouse.move(*pointer)
+                            await asyncio.sleep(POINTER_GLIDE_SECONDS)
                     await target.click()
                     await self.page.wait_for_timeout(500)
                     await self._clear_spotlights()
@@ -2458,6 +2495,9 @@ class BrowserSession:
             if graphic.get("callout"):
                 # Read before the step ends, under however short a line.
                 annotation_duration = max(annotation_duration, graphic["callout"]["at"] + CALLOUT_MIN_SECONDS)
+            if graphic.get("emphasis") and self.camera is not None:
+                push = graphic["emphasis"]
+                self.camera.emphasize(offset + push["at"], push["hold"], push.get("focus"))
         hold_duration = annotation_hold_seconds(duration, annotation_duration)
         if action.offscreen:
             # Done, but not part of the video: it adds nothing to the timeline
@@ -2536,7 +2576,8 @@ class BrowserSession:
         if open_overlays is not None:
             result["open_overlays"] = open_overlays
         if graphic:
-            result["graphics"] = graphic
+            result["graphics"] = {key: ({k: v for k, v in value.items() if k != "focus"} if key == "emphasis" else value)
+                                  for key, value in graphic.items()}
         lost = self.recording_check()
         if lost:
             result["recording_lost"] = lost
@@ -2607,7 +2648,7 @@ class BrowserSession:
             cards=self.timeline_cards, cuts=self.timeline_cuts,
         )
         cards = CARD_DURATION * (
-            bool(self.render_config.title.strip())
+            bool(self.render_config.title.strip() and self.render_config.title_at == "card")
             + bool(self.render_config.cta_url.strip())
         )
         return sum(segment.output_duration for segment in segments) + cards

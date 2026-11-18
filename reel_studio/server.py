@@ -37,7 +37,7 @@ from . import signature
 # prefilled link, or filed outright when REEL_GITHUB_TOKEN is set.
 UPSTREAM_REPO = os.environ.get("REEL_UPSTREAM_REPO", "magnusfroste/agenttake").strip().strip("/")
 UPSTREAM_URL = f"https://github.com/{UPSTREAM_REPO}"
-from .graphics import STYLES as GRAPHIC_STYLES, graphic_cues, load_graphics
+from .graphics import STYLES as GRAPHIC_STYLES, graphic_cues, load_graphics, title_cue
 from .render import (
     FONT_PATH,
     PAGE_CHANGING_ACTIONS,
@@ -60,6 +60,7 @@ from .render import (
     change_card,
     clean_card_text,
     read_cards,
+    load_cards,
 )
 from . import pickup
 from .camera import MAX_OUTPUT_SCALE, MAX_ZOOM, Camera
@@ -566,6 +567,19 @@ def offsets_by_part(session: dict) -> dict[int, float]:
     return {number: float(step["offset_seconds"]) for number, step in enumerate(visible)}
 
 
+TITLE_AT_HELP = (
+    "Where the title and subtitle go. over (default): over the film's first footage, top left, for its first "
+    "three seconds, so the film opens on the product and the hook line is heard at once. card: a 3-second "
+    "title card before the film."
+)
+
+
+def _title_at(session: dict) -> str:
+    """Where a session's film has its title: "over" unless it asked for a card.
+    A film from before title_at existed had a card, and keeps it."""
+    return "over" if (session.get("start_args") or {}).get("title_at") == "over" else "card"
+
+
 def apply_subtitles(session_id: str) -> bool:
     """Burn the narration into a finished video when its session asks for it,
     and the film's graphics (callouts, lower thirds) whether it does or not.
@@ -581,6 +595,14 @@ def apply_subtitles(session_id: str) -> bool:
     parts = read_storyboard(video.parent)
     cues = subtitle_cues(parts, narrations_by_part(session)) if session.get("subtitles") else []
     graphics = graphic_cues(parts, offsets_by_part(session), load_graphics(video.parent))
+    if _title_at(session) == "over":
+        card_offsets = {round(offset, 3) for offset in load_cards(video.parent)}
+        offsets = offsets_by_part(session)
+        footage = [part for part in parts
+                   if not (part.get("step") in offsets and round(float(offsets[part["step"]]), 3) in card_offsets)]
+        title = title_cue(footage, session.get("title") or "", session.get("subtitle") or "")
+        if title:
+            graphics = [title, *graphics]
     burn_subtitles(video, cues, session.get("subtitle_style") or "soft", graphics,
                    session.get("graphics_style") or None)
     return bool(cues)
@@ -1405,6 +1427,7 @@ def _render_config(
     transitions: str = "smooth",
     title_background: str = "auto",
     closing_qr: bool = True,
+    title_at: str = "over",
 ) -> RenderConfig:
     normalized_accent = accent.strip()
     if not re.fullmatch(r"#?[0-9a-fA-F]{6}", normalized_accent):
@@ -1425,6 +1448,7 @@ def _render_config(
         transitions="cuts" if transitions.strip().lower() == "cuts" else "smooth",
         title_background=_title_background(title_background),
         closing_qr=bool(closing_qr),
+        title_at="card" if (title_at or "").strip().lower() == "card" else "over",
     )
 
 
@@ -2201,6 +2225,10 @@ async def start_session(
         bool,
         Field(description="A QR code of cta_url on the closing card (default true): on LinkedIn a link in a video cannot be clicked, but it can be scanned."),
     ] = True,
+    title_at: Annotated[
+        str,
+        Field(description=TITLE_AT_HELP, json_schema_extra={"enum": ["over", "card"]}),
+    ] = "over",
     subtitles: Annotated[
         bool,
         Field(description="Burn the narration into the picture as subtitles (default false). For LinkedIn and other feeds that autoplay muted: the story still reads without sound. Can also be switched on later with rerender(subtitles=true)."),
@@ -2228,9 +2256,10 @@ async def start_session(
     ] = None,
     show_pointer: Annotated[
         bool,
-        Field(description="Record the mouse pointer (default true): it shows where a click lands in a "
-                          "click-through demo. false for a storyboard film, where a pointer parked on "
-                          "the page is only a stray arrow in every frame."),
+        Field(description="Show a pointer (default true), drawn by AgentTake: it glides to each button "
+                          "and lands before the click, a faint pulse marks the press, and it fades out "
+                          "after 2.5 s without moving, so it is no stray arrow in a storyboard film. "
+                          "false: no arrow, only the pulse where a click lands."),
     ] = True,
     beats: Annotated[
         list[Beat] | None,
@@ -2249,8 +2278,9 @@ async def start_session(
     records at that scale, for a sharp 4:5 video of a site's phone layout); voice
     en-US-JennyNeural on the free Edge provider — list_voices shows the others
     (provider "elevenlabs" needs ELEVENLABS_API_KEY and takes a voice id); no
-    music ("subtle" adds a quiet bed); title/subtitle add a 3-second intro
-    card, cta_url/cta_text an outro; transitions smooth (default) or cuts.
+    music ("subtle" adds a quiet bed); title/subtitle are laid over the film's
+    first footage (title_at "card" puts them on a 3-second card before it
+    instead), cta_url/cta_text an outro; transitions smooth (default) or cuts.
 
     mask blurs matching elements on every page from the first frame; the
     mask action does the same for one element mid-recording.
@@ -2309,7 +2339,7 @@ async def start_session(
             "hint": hint,
         }
     render_config = _render_config(
-        title, subtitle, accent, cta_url, cta_text, music, transitions, title_background, closing_qr
+        title, subtitle, accent, cta_url, cta_text, music, transitions, title_background, closing_qr, title_at
     )
     session = await BrowserSession.create(
         start_url, width, height, voice, selected_provider, selected_output_size,
@@ -2350,7 +2380,7 @@ async def start_session(
         "provider": selected_provider, "output_size": output_size, "title": title, "subtitle": subtitle,
         "accent": accent, "cta_url": cta_url, "cta_text": cta_text, "music": music,
         "transitions": transitions, "title_background": title_background, "closing_qr": closing_qr,
-        "subtitles": subtitles, "subtitle_style": subtitle_style, "graphics_style": graphics_style, "mask": mask,
+        "title_at": render_config.title_at, "subtitles": subtitles, "subtitle_style": subtitle_style, "graphics_style": graphics_style, "mask": mask,
         "color_scheme": color_scheme, "show_pointer": show_pointer,
         # Which house style this film was shot in, so a later film can be
         # read against it after the signature has moved on.
@@ -2778,7 +2808,7 @@ def _keep_in_storyboard(session_id: str, step_index: int, **fields: Any) -> bool
 def _beat_identity(beat: dict) -> tuple:
     return tuple(beat.get(key) for key in (
         "shot", "line", "url", "text", "wait_for_text", "input_text", "background", "caption", "zoom", "camera",
-        "move", "callout", "username", "password_secret", "timeout",
+        "move", "callout", "emphasis", "username", "password_secret", "timeout",
     ))
 
 
@@ -4332,6 +4362,11 @@ async def rerender(
         GraphicsStyle | None,
         Field(description=GRAPHICS_STYLE_HELP + " Omit to keep the look the film has."),
     ] = None,
+    title_at: Annotated[
+        str | None,
+        Field(description=TITLE_AT_HELP + " Omit to keep where the film has it.",
+              json_schema_extra={"enum": ["over", "card"]}),
+    ] = None,
 ) -> dict:
     """Rebuild narration audio and mux it onto an existing finished video.
 
@@ -4351,6 +4386,10 @@ async def rerender(
     if error:
         return error
     assert session is not None
+    if title_at in ("over", "card"):
+        args = session.get("start_args") or {}
+        store.update_session_start_args(session_id, {**args, "title_at": title_at})
+        session["start_args"] = {**args, "title_at": title_at}
     job = FinishJob(session_id, Path(session["video_path"]).parent, 0, tool="rerender")
     job.task = asyncio.create_task(
         _run_rerender(job, session, voice, provider, subtitles, subtitle_style, graphics_style))
@@ -4408,6 +4447,7 @@ async def _rerender(job: "FinishJob", session: dict, voice: str | None, provider
         session.get("transitions") or "smooth",
         session.get("title_background") or "auto",
         bool(session.get("closing_qr", 1)),
+        _title_at(session),
     )
     video_duration = await asyncio.to_thread(probe_duration, source_video)
     render_pages: list[str] = []
@@ -4801,6 +4841,16 @@ async def review_session(session_id: str) -> dict:
                     moves = camera.hold_moves([(float(step["offset_seconds"]), float(step.get("narration_duration") or 0.0))])
                     if moves:
                         holds[int(step["idx"])] = [move["seconds_in"] for move in moves]
+            # An emphasis push is a change the film meant, like a hold move.
+            for entry in camera.emphasis:
+                for step in steps:
+                    start = step.get("offset_seconds")
+                    if start is None or step.get("offscreen"):
+                        continue
+                    into = float(entry["t"]) - float(start)
+                    if 0 <= into <= float(step.get("narration_duration") or 0.0):
+                        holds.setdefault(int(step["idx"]), []).append(round(into, 3))
+                        break
         findings.extend(await asyncio.to_thread(checks.film_findings, scanned, parts, steps, checks.SCAN_FPS, holds))
 
     findings.extend(checks.lost_step_findings(parts, steps))

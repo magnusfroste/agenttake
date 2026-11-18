@@ -92,7 +92,7 @@ def test_a_system_beat_hands_its_graphics_to_the_narrated_step():
     kinds = [op["op"] for op in ops]
     assert kinds.index("shot") < kinds.index("graphics") == len(ops) - 2
     assert ops[-2] == {"op": "graphics", "callout": "3 leads qualified", "caption": "02:14 · Leads",
-                       "target_text": "Leads", "line": LINE}
+                       "emphasis": None, "target_text": "Leads", "line": LINE}
     # A beat with neither is shot as it always was.
     assert "graphics" not in [op["op"] for op in boards.recipe(boards.parse_storyboard([system()])[0][0])]
 
@@ -115,7 +115,7 @@ class Live:
     async def page_text(self):
         return self.text
 
-    def set_graphics(self, callout=None, caption=None, target_text=None):
+    def set_graphics(self, callout=None, caption=None, target_text=None, emphasis=None):
         if callout or caption:
             self.graphics.append((callout, caption, target_text))
         else:
@@ -210,7 +210,7 @@ def test_set_graphics_keeps_nothing_when_there_is_nothing_to_show():
     BrowserSession.set_graphics(session, None, "  ", "Leads")
     assert session.pending_graphics is None
     BrowserSession.set_graphics(session, " 3 leads ", None, "Leads")
-    assert session.pending_graphics == {"callout": "3 leads", "caption": "", "target_text": "Leads"}
+    assert session.pending_graphics == {"callout": "3 leads", "caption": "", "target_text": "Leads", "emphasis": ""}
 
 
 # The record ----------------------------------------------------------------

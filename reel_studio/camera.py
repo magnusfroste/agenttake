@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import math
 import os
 from pathlib import Path
 
@@ -22,16 +23,30 @@ FRAMING_ZOOM = {"wide": 1.0, "medium": 1.5, "close": 2.0}
 # Deeper than 2.5x reads as a cut-in, not a camera move, and even at 4/3
 # capture the text starts to soften.
 MAX_ZOOM = 2.5
-# Product-video tools settle around a second per move; shorter feels like a
-# jolt, longer drags under narration.
-EASE_SECONDS = 1.0
+# How long a move takes to settle. Moves follow a critically damped spring:
+# no jolt at the start, most of the way in the first half, a soft landing.
+# Screen-recording tools settle a push-in in about half a second (Cap's
+# default spring: 90 % at 0.32 s, still at 0.5 s); Take's old 1.0 s ease-in-
+# out under every move made films read slow (research 2026-11-18).
+EASE_SECONDS = 0.6
+# A move this long or longer is a drift, not a push: an even ease-in-out, so
+# a slow move over a whole line does not arrive early and then creep.
+DRIFT_SECONDS = 1.2
+# The spring's rate over a move of length 1: at the move's end it has covered
+# 99 % of the way (1 - (1 + a) e^-a), and 90 % at 59 % of it.
+SPRING_RATE = 6.6
+# The second kind of move: an emphasis. Where the line names the thing, the
+# frame pushes in a little (pros use 5-15 %; past that it reads as a new
+# shot) and fast, then lets go when the line is over.
+EMPHASIS_PUSH = 1.08
+EMPHASIS_SECONDS = 0.25
 # A move under a line has landed by this share of the line, so what the line
 # names stands still while it is said. FlowWink take 2 pushed in for 2.5 s
 # under lines of 1.4-2.2 s, ten shots in a row: the camera was moving for 87%
 # of that stretch and arrived after each line was over (2026-11-17).
 LAND_SHARE = 0.4
 # Shorter than this a move is a jolt: the shot cuts to its framing instead.
-MIN_MOVE_SECONDS = 0.8
+MIN_MOVE_SECONDS = 0.4
 # Closer than this is a push-in on a detail; up to it, a slow drift over a
 # frame that already shows what the line is about.
 PUSH_ZOOM = 1.25
@@ -126,9 +141,36 @@ def landing_ease(ease: float, line_seconds: float, short: str = "cut") -> float:
     return 0.0 if short == "cut" else min(ease, MIN_MOVE_SECONDS)
 
 
+# Where a key is still easing into place, as far back as any move reaches.
+LOOKBACK_SECONDS = 3.0
+
+
+def spring_share(u: float) -> float:
+    """How far along a move of length 1 is at u (0-1): a critically damped
+    spring, scaled so it ends exactly there."""
+    u = min(max(u, 0.0), 1.0)
+    a = SPRING_RATE
+    end = 1 - (1 + a) * math.exp(-a)
+    return (1 - (1 + a * u) * math.exp(-a * u)) / end
+
+
+def drift_share(u: float) -> float:
+    u = min(max(u, 0.0), 1.0)
+    return u * u * (3 - 2 * u)
+
+
+def ease_share(u: float, seconds: float) -> float:
+    """The share of a move done at u, by the curve a move this long takes."""
+    return drift_share(u) if seconds >= DRIFT_SECONDS else spring_share(u)
+
+
 def _ease_term(t: str, start: float, seconds: float = EASE_SECONDS) -> str:
     u = f"clip(({t}-{start:.3f})/{max(seconds, 0.001):.3f},0,1)"
-    return f"({u}*{u}*(3-2*{u}))"
+    if seconds >= DRIFT_SECONDS:
+        return f"({u}*{u}*(3-2*{u}))"
+    a = SPRING_RATE
+    end = 1 - (1 + a) * math.exp(-a)
+    return f"((1-(1+{a:g}*{u})*exp(-{a:g}*{u}))/{end:.6f})"
 
 
 def panel_is_cut(panel: dict, left: float, right: float) -> bool:
@@ -145,6 +187,9 @@ class Camera:
     # Each key: {"t": seconds on the recording clock, "zoom", "cx", "cy"} with
     # the centre in CSS pixels.
     keys: list[dict] = field(default_factory=list)
+    # Emphasis pushes, added at render (with_hold_moves): {"t", "hold": how
+    # long it stays in, "cx", "cy": the centre it leans to, or none}.
+    emphasis: list[dict] = field(default_factory=list)
 
     @property
     def physical_size(self) -> tuple[int, int]:
@@ -357,11 +402,50 @@ class Camera:
                 zoom = level
         return moves
 
+    def emphasize(self, t: float, hold: float, focus: dict | None = None) -> None:
+        """Push in a little at t, on the words the line names, until ``hold``
+        seconds later. Kept apart from the shot's keys and added at render,
+        like the hold moves: the shot's own framing stays what it was set to."""
+        entry = {"t": round(t, 3), "hold": round(max(hold, EMPHASIS_SECONDS), 3)}
+        if focus and focus.get("width"):
+            entry["cx"] = round(focus["x"] + focus["width"] / 2, 1)
+            entry["cy"] = round(focus["y"] + focus["height"] / 2, 1)
+        self.emphasis.append(entry)
+
+    def emphasis_moves(self) -> list[dict]:
+        """The keys the emphasis pushes add: in at t, out again when the hold
+        is over unless the shot has moved on by then.
+
+        The push is anchored on the words: they stay where they are in the
+        frame and grow there. Leaning the frame a quarter of the way toward
+        them instead pulled a strip of the page's edge into a close-up that
+        had been framed from the row's start (proof take, 2026-11-19)."""
+        added: list[dict] = []
+        for entry in self.emphasis:
+            t, until = float(entry["t"]), float(entry["t"]) + float(entry["hold"])
+            zoom, cx, cy = self.state_at(t)
+            level = min(zoom * EMPHASIS_PUSH, MAX_ZOOM)
+            if level <= zoom + 1e-3:
+                continue
+            if entry.get("cx") is not None:
+                # The point under the words keeps its place on screen.
+                fx, fy = float(entry["cx"]), float(entry["cy"])
+                cx = fx + (cx - fx) * zoom / level
+                cy = fy + (cy - fy) * zoom / level
+            added.append({"t": round(t, 3), "zoom": round(level, 4), "cx": round(cx, 1), "cy": round(cy, 1),
+                          "ease": EMPHASIS_SECONDS})
+            if not any(t < float(key["t"]) <= until + EASE_SECONDS for key in self.keys):
+                back = self.state_at(until)
+                added.append({"t": round(until, 3), "zoom": back[0], "cx": back[1], "cy": back[2],
+                              "ease": EASE_SECONDS})
+        return added
+
     def with_hold_moves(self, holds: list[tuple[float, float]]) -> "Camera":
-        """This camera with the hold moves added: for the render only, so a
-        rerender starts from the shots as they were set up."""
+        """This camera with the hold moves and emphasis pushes added: for the
+        render only, so a rerender starts from the shots as they were set up."""
         moves = self.hold_moves(holds)
         keys = [{key: move[key] for key in ("t", "zoom", "cx", "cy")} | {"ease": HOLD_EASE} for move in moves]
+        keys += self.emphasis_moves()
         return Camera(self.width, self.height, self.scale, sorted([*self.keys, *keys], key=lambda key: float(key["t"])))
 
     def needs_follow(self, box: dict | None) -> tuple[float, float] | None:
@@ -398,9 +482,9 @@ class Camera:
         # A sped-up segment plays its source `speed` times faster, so one
         # second of output covers `speed` seconds of the recording's clock.
         t = f"({offset:.3f}+it*{speed:.4f})" if speed != 1.0 else f"({offset:.3f}+it)"
-        base = self.state_at(offset - EASE_SECONDS)
+        base = self.state_at(offset - LOOKBACK_SECONDS)
         active = [key for key in self.keys
-                  if offset - EASE_SECONDS < key["t"] < source_end]
+                  if offset - LOOKBACK_SECONDS < key["t"] < source_end]
         previous = base
         values = [[f"{base[0]:.4f}"], [f"{base[1]:.1f}"], [f"{base[2]:.1f}"]]
         for key in active:
@@ -440,6 +524,7 @@ class Camera:
         try:
             data = json.loads(path.read_text())
             return cls(int(data["width"]), int(data["height"]),
-                       float(data.get("scale", 1.0)), list(data.get("keys", [])))
+                       float(data.get("scale", 1.0)), list(data.get("keys", [])),
+                       list(data.get("emphasis", [])))
         except (ValueError, KeyError, TypeError):
             return None

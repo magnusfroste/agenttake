@@ -49,6 +49,8 @@ def take_in(directory: Path, pickup: Path, start: float, camera: Any) -> None:
         # The pickup opens wide, whatever the film's last shot was.
         own.keys.append({"t": round(start, 3), "zoom": 1.0, "cx": own.width / 2, "cy": own.height / 2, "ease": 0.0})
         own.keys.extend({**key, "t": round(float(key["t"]) + start, 3)} for key in camera.keys)
+        own.emphasis.extend({**entry, "t": round(float(entry["t"]) + start, 3)}
+                            for entry in getattr(camera, "emphasis", []))
         own.save(directory)
     glides = pickup / GLIDES_FILE
     if glides.is_file():
