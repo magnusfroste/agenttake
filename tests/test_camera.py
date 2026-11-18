@@ -144,6 +144,42 @@ def test_a_line_of_text_is_framed_from_its_first_word():
     assert led["x"] == pytest.approx(400 - 960 * 0.08)
 
 
+def test_a_line_is_led_from_the_row_it_sits_in():
+    camera = Camera(1920, 1080)
+    # "requires approval" in the middle of a row that starts at x 300.
+    words = {"x": 700, "y": 400, "width": 100, "height": 16,
+             "starts": [{"x": 700, "width": 100}, {"x": 300, "width": 700}, {"x": 256, "width": 1664}]}
+    view = camera.view((2.0, *camera.aim(words, 2.0, lead=True)))
+    assert view["x"] == pytest.approx(256)  # the content column, as the words fit beside it
+    assert view["x"] + view["w"] > 800  # the words are in frame
+
+
+def test_a_column_start_beats_a_pad_that_reaches_into_the_sidebar():
+    camera = Camera(1920, 1080)
+    # An invoice number 33 px into a column that starts at the sidebar's edge.
+    words = {"x": 289, "y": 600, "width": 160, "height": 16,
+             "starts": [{"x": 289, "width": 160}, {"x": 256, "width": 1664}]}
+    view = camera.view((2.1, *camera.aim(words, 2.1, lead=True)))
+    assert view["x"] == pytest.approx(256)  # not 289 - 8 % of the frame, in the sidebar
+
+
+def test_the_page_layout_is_no_row_to_lead_from():
+    camera = Camera(1920, 1080)
+    words = {"x": 400, "y": 640, "width": 180, "height": 20, "starts": [{"x": 0, "width": 1920}]}
+    led = camera.view((2.0, *camera.aim(words, 2.0, lead=True)))
+    assert led["x"] == pytest.approx(400 - 960 * 0.08)  # the sidebar stays out
+
+
+def test_a_row_that_puts_the_words_past_the_middle_gives_way_to_their_cell():
+    camera = Camera(1920, 1080)
+    words = {"x": 800, "y": 400, "width": 100, "height": 16,
+             "starts": [{"x": 100, "width": 1500}, {"x": 780, "width": 300}]}
+    view = camera.view((2.0, *camera.aim(words, 2.0, lead=True)))
+    assert view["x"] == pytest.approx(780)  # the cell, not the row
+    middle = (850 - view["x"]) / view["w"]
+    assert middle <= 0.6
+
+
 def test_plan_segments_cuts_the_thinking_time():
     steps = [(10.0, None, 2.0), (40.0, None, 0.0), (41.0, None, 5.0)]
     segments, warnings = render.plan_segments(steps, 100.0)
