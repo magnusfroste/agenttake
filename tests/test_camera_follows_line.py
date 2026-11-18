@@ -43,8 +43,11 @@ def test_a_move_has_landed_by_its_share_of_the_line():
 
 
 def test_a_line_too_short_for_a_move_gets_a_cut_or_the_shortest_move():
-    assert landing_ease(1.5, 1.6) == 0.0
-    assert landing_ease(1.5, 1.6, "move") == MIN_MOVE_SECONDS
+    # A move takes at most LAND_SHARE of its line: under 0.9 s that is no move.
+    assert landing_ease(1.5, 0.9) == 0.0
+    assert landing_ease(1.5, 0.9, "move") == MIN_MOVE_SECONDS
+    # A 1.6 s line ("It drafts the replies,") now has room for a quick move.
+    assert landing_ease(1.5, 1.6) == pytest.approx(0.64)
     # With no line to follow, the move is what was asked for.
     assert landing_ease(1.5, 0.0) == 1.5
 
@@ -53,9 +56,10 @@ def test_the_engine_ties_the_pending_move_to_the_line_it_plays_under():
     def seconds(land, line, ease=1.5):
         return BrowserSession._move_seconds(SimpleNamespace(pending_ease=ease, pending_land=land), line)
 
-    assert seconds("cut", 1.62) == 0.0          # "It drafts the replies,"
+    assert seconds("cut", 0.9) == 0.0           # "Done."
+    assert seconds("cut", 1.62) == pytest.approx(0.648)  # "It drafts the replies,"
     assert seconds("cut", 3.11) == pytest.approx(1.244)
-    assert seconds("move", 1.62) == MIN_MOVE_SECONDS
+    assert seconds("move", 0.9) == MIN_MOVE_SECONDS
     # A shot directed by hand keeps the length it asked for.
     assert seconds(None, 1.62, ease=2.5) == 2.5
 

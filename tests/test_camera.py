@@ -129,7 +129,7 @@ def test_segment_keeps_its_padding_and_renders_the_camera(tmp_path):
         camera.output_size(None), camera,
     )
     # The tpad frames used to be cut off by an output-side -t.
-    assert render.probe_duration(segment) == pytest.approx(2.5, abs=0.08)
+    assert render.probe_duration(segment) == pytest.approx(1.5 + EASE_SECONDS, abs=0.08)
     assert render.probe_video_size(segment) == (240, 132)
 
 
@@ -230,7 +230,7 @@ def test_the_length_estimate_is_the_render_plan_not_the_clock():
 
     fake = SimpleNamespace(
         timeline=[(10.0, None, 2.0), (400.0, None, 3.0)],
-        render_config=RenderConfig(title="T", cta_url="https://example.com"),
+        render_config=RenderConfig(title="T", title_at="card", cta_url="https://example.com"),
         timeline_floors=[1.0, 1.0], timeline_speeds=[1.0, 1.0], timeline_glides=[None, None],
         timeline_cards=[False, False], timeline_cuts=[],
         offscreen_first=False,

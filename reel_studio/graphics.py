@@ -254,6 +254,8 @@ class Layout:
         self.tail = (round(self.callout_size * 0.8), round(self.callout_size * 0.55))
         self.margin = round(width * 0.04)
         self.floor = round(height * (1 - SUBTITLE_BAND))
+        self.title_size = round(base * 1.35)
+        self.title_pad = max(6, round(self.title_size * 0.3))
 
     def text_width(self, text: str, size: int) -> float:
         """About how wide a bold line is: there is no font to measure with
@@ -336,6 +338,8 @@ def ass_styles(width: int, height: int, face: str, look: dict) -> list[str]:
     return [
         style("Caption", layout.caption_size, layout.caption_pad, look["caption"], 7),
         style("Callout", layout.callout_size, layout.callout_pad, look["callout"], 2),
+        style("Title", layout.title_size, layout.title_pad, look["caption"], 7),
+        style("TitleSub", layout.caption_size, layout.title_pad, look["caption"], 7),
         fmt.format(name="Shape", face=face, size=20, text=_ass_colour(look["bar"]), box=_ass_colour(look["bar"]),
                    border=1, outline=0, align=7),
     ]
@@ -355,12 +359,56 @@ def _shape(points: Sequence[tuple[float, float]]) -> str:
     return f"m {first[0]} {first[1]} l " + " ".join(f"{x} {y}" for x, y in rest)
 
 
+# The film's title over its first footage, instead of a card before it: the
+# first seconds are the hook, and a 3 s title card spent them on a name
+# (research 2026-11-18: the value within ~4 s, real UI by ~6 s).
+TITLE_SECONDS = 3.0
+TITLE_MIN_SECONDS = 1.5
+
+
+def title_cue(parts: Sequence[dict], title: str, subtitle: str = "") -> dict | None:
+    """The title as a cue over the film's first footage (a step, not a card):
+    from its start for TITLE_SECONDS, or as long as that part lasts."""
+    title = (title or "").strip()
+    if not title:
+        return None
+    for part in sorted(parts, key=lambda part: float(part.get("start") or 0.0)):
+        if part.get("kind", "step") not in ("step", "lead") or part.get("card"):
+            continue
+        start, duration = float(part.get("start") or 0.0), float(part.get("duration") or 0.0)
+        if duration < TITLE_MIN_SECONDS:
+            continue
+        return {"kind": "title", "start": round(start, 2), "end": round(start + min(TITLE_SECONDS, duration), 2),
+                "text": title, "subtitle": (subtitle or "").strip()}
+    return None
+
+
 def ass_events(cues: Sequence[dict], width: int, height: int, look: dict | None = None) -> list[str]:
     """The cues as ASS dialogue lines, over the subtitles' layer."""
     layout = Layout(width, height)
     look = look or look_of(None, None)
     bar_colour, tail_colour = _ass_fill(look["bar"]), _ass_fill(look["tail"])
     lines: list[str] = []
+    for cue in cues:
+        if cue["kind"] != "title":
+            continue
+        # Top left, a bar beside it, in and out in a quarter of a second.
+        when = f"{_time(cue['start'])},{_time(cue['end'])}"
+        left, top, pad = layout.margin, round(height * 0.06), layout.title_pad
+        title_height = layout.title_size * 1.16 + 2 * pad
+        sub = cue.get("subtitle") or ""
+        sub_height = layout.caption_size * 1.16 + 2 * pad if sub else 0
+        bottom = top + title_height + sub_height
+        lines.append(
+            f"Dialogue: 4,{when},Shape,,0,0,0,,{{\\an7\\pos(0,0)\\fad(250,300)\\1c{bar_colour}\\p1}}"
+            + _shape([(left, top), (left + layout.bar, top), (left + layout.bar, bottom), (left, bottom)]) + "{\\p0}")
+        lines.append(
+            f"Dialogue: 4,{when},Title,,0,0,0,,{{\\an7\\pos({round(left + layout.bar + pad)},{round(top + pad)})"
+            f"\\fad(250,300)}}{_escape(cue['text'])}")
+        if sub:
+            lines.append(
+                f"Dialogue: 4,{when},TitleSub,,0,0,0,,{{\\an7\\pos({round(left + layout.bar + pad)},"
+                f"{round(top + title_height + pad)})\\fad(250,300)}}{_escape(sub)}")
     placed: list[tuple[dict, bool]] = []
     for cue in cues:
         if cue["kind"] != "caption":

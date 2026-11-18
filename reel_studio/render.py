@@ -67,6 +67,10 @@ class RenderConfig:
     # A QR code of cta_url on the closing card: on LinkedIn the link in a
     # video cannot be clicked, but a phone can scan it off a laptop screen.
     closing_qr: bool = True
+    # Where the title goes. "over" (default): over the film's first footage,
+    # top left, for its first seconds (graphics.title_cue), so the film opens
+    # on the product. "card": a title card before the film, as it always was.
+    title_at: str = "over"
 
 
 def start_recording(
@@ -219,7 +223,12 @@ def _render_video_only(
 
 
 def _has_branding(config: RenderConfig) -> bool:
-    return bool(config.title.strip() or config.cta_url.strip())
+    return bool(_has_title_card(config) or config.cta_url.strip())
+
+
+def _has_title_card(config: RenderConfig) -> bool:
+    """Whether the film opens on a title card (RenderConfig.title_at)."""
+    return bool(config.title.strip()) and config.title_at == "card"
 
 
 def _escape_drawtext(text: str) -> str:
@@ -595,9 +604,9 @@ def _compose_video(
     intro_duration = 0.0
     intro_background, outro_background = (
         card_backgrounds(config, body_path, body_path, temporary)
-        if (config.title.strip() or config.cta_url.strip()) else (None, None)
+        if (_has_title_card(config) or config.cta_url.strip()) else (None, None)
     )
-    if config.title.strip():
+    if _has_title_card(config):
         intro = temporary / "intro.mp4"
         _title_card(intro, width, height, config, intro_background)
         parts.append(intro)
@@ -1315,7 +1324,7 @@ def segmented_render(
     # Hard cuts: parts follow each other, after the title card if there is one.
     timeline: list[dict] = []
     at = 0.0
-    if config.title.strip():
+    if _has_title_card(config):
         timeline.append({"kind": "intro", "step": None, "start": 0.0, "duration": CARD_DURATION})
         at = CARD_DURATION
     for segment in segments:
@@ -1434,9 +1443,9 @@ def _assemble_smooth(
     ) if cards else segment_paths[-1]
     intro_background, outro_background = (
         card_backgrounds(config, segment_paths[0], last_footage, temporary)
-        if (config.title.strip() or config.cta_url.strip()) else (None, None)
+        if (_has_title_card(config) or config.cta_url.strip()) else (None, None)
     )
-    if config.title.strip():
+    if _has_title_card(config):
         intro = temporary / "intro.mp4"
         _title_card(intro, width, height, config, intro_background)
         parts.append((intro, None))
@@ -1460,7 +1469,7 @@ def _assemble_smooth(
         joins.append(0.0 if cards and cards[-1] else CARD_FADE)
 
     kinds: list[tuple[str, int | None]] = []
-    if config.title.strip():
+    if _has_title_card(config):
         kinds.append(("intro", None))
     for position in range(len(segment_paths)):
         step = step_indices[position] if step_indices and position < len(step_indices) else None
@@ -1476,7 +1485,7 @@ def _assemble_smooth(
     # laid over it, in this same pass, so the footage is not encoded an extra
     # time. Cards stay full frame.
     house = sig.current()
-    first_segment = 1 if config.title.strip() else 0
+    first_segment = 1 if _has_title_card(config) else 0
     framed = [first_segment + index for index in range(len(segment_paths))
               if not (cards and cards[index])] if "window" in house.marks else []
     if framed:
