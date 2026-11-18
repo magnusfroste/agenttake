@@ -1376,7 +1376,8 @@ class BrowserSession:
         elif box:
             if self.camera is not None:
                 # Words are read from their start: frame a text focus from
-                # its first word, not around its middle.
+                # the start of the row or card it sits in, not around its
+                # middle (Camera.lead_edge).
                 cx, cy = self.camera.aim(box, level, lead=box_is_text)
                 if panels:
                     panel_frame = await self._frame_panels(box, level, keep_zoom)
@@ -1595,7 +1596,22 @@ class BrowserSession:
                         range.setStart(node, at);
                         range.setEnd(node, Math.min(node.data.length, at + want.length));
                         const rect = rectOf(range);
-                        if (rect) return rect;
+                        if (!rect) continue;
+                        // The boxes the words sit in, out to the page's
+                        // layout: the camera leads a line from where its
+                        // row or card starts, not from the word. A start
+                        // something else lies over (a sidebar over the
+                        // page's column) is not where the row is seen to open.
+                        rect.starts = [];
+                        const mid = rect.y + rect.height / 2;
+                        for (let a = node.parentElement; a && a !== document.body; a = a.parentElement) {
+                            const b = a.getBoundingClientRect();
+                            if (!(b.width && b.height && b.x <= rect.x + 0.5 && b.y <= rect.y + 0.5
+                                    && b.bottom >= rect.y + rect.height - 0.5)) continue;
+                            const hit = document.elementFromPoint(Math.max(b.x, 0) + 1, mid);
+                            if (hit && a.contains(hit)) rect.starts.push({x: b.x, width: b.width});
+                        }
+                        return rect;
                     }
                     const range = document.createRange();
                     range.selectNodeContents(el);

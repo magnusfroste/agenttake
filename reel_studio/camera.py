@@ -40,6 +40,20 @@ PUSH_ZOOM = 1.25
 FOLLOW_MARGIN = 0.05
 # Space kept between a wide target's first edge and the frame's edge.
 AIM_PAD = 0.08
+# A line of text is led from the start of the row, card or line it sits in
+# (its own padding is the margin: a pad on top showed a strip of the sidebar
+# beside the page's column), as long as the words themselves stay
+# inside the frame with their middle no further in than LEAD_MAX_SHARE of it.
+# Led from the words, FlowWink take 3 cut "Welcome, admin" to "ome, admin" and
+# "Prospects" to "ospects" at the frame's left edge, and the thing the line
+# named sat against that edge in every close-up (2026-11-18).
+LEAD_MAX_SHARE = 0.6
+# A start closer to the words than this share of the frame is the words' own
+# box: the frame would open on their first letter.
+LEAD_ROOM = 0.02
+# A block this share of the page's width or wider is the page's layout, not a
+# row: leading from it would bring the sidebar back in.
+LEAD_LAYOUT_SHARE = 0.9
 CAMERA_FILE = "camera.json"
 # Space kept beside a row of panels, as a share of the page's width.
 PANEL_GUTTER = 0.012
@@ -225,8 +239,31 @@ class Camera:
         cy = (y0 + y1) / 2
         if lead:
             view_w = self.width / zoom
-            return x0 - view_w * AIM_PAD + view_w / 2, cy
+            return self.lead_edge(box, zoom) + view_w / 2, cy
         return (x0 + x1) / 2, cy
+
+    def lead_edge(self, box: dict, zoom: float) -> float:
+        """The frame's left edge for a line of text led from its start.
+
+        ``box["starts"]`` are the boxes the words sit in, from the page's
+        measure (the span, the cell, the row, the card). The leftmost one the
+        words still fit beside wins: the frame then opens where the row
+        opens, not on a word in its middle, and not AIM_PAD before the words
+        when that is inside the sidebar beside the page's column. Without
+        them, or when none fits, the frame opens AIM_PAD before the words.
+        """
+        view_w = self.width / max(zoom, 1.0)
+        x0, _, x1, _ = self._anchor(box, zoom)
+        edge = x0 - view_w * AIM_PAD
+        middle = (x0 + x1) / 2
+        for start in sorted(box.get("starts") or (), key=lambda s: s["x"]):
+            left = start["x"]
+            # The words' own span opens on the words: no room before them.
+            if start.get("width", 0) >= self.width * LEAD_LAYOUT_SHARE or x0 - left < view_w * LEAD_ROOM:
+                continue
+            if x1 + view_w * AIM_PAD - left <= view_w and middle - left <= view_w * LEAD_MAX_SHARE:
+                return left
+        return edge
 
     def fit_zoom(self, box: dict, zoom: float, lift: float = 0.0) -> float:
         """The deepest zoom, up to ``zoom``, at which a box is seen whole.
