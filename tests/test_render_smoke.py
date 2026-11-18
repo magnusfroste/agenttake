@@ -382,3 +382,35 @@ def test_a_document_glide_is_a_pan_down_the_full_page_image(tmp_path):
     first, last = colour(0.0), colour(2.3)
     assert first[0] > 150 and first[2] < 100  # starts on the red top
     assert last[2] > 150 and last[0] < 100  # ends on the blue bottom
+
+
+def _sparse_clip(path, seconds, fps):
+    """A recording a busy host grabbed: few frames, each at the time it was taken."""
+    _run_ffmpeg("-f", "lavfi", "-i", f"testsrc=s=320x176:r={fps}:d={seconds}",
+                "-fps_mode", "passthrough", "-pix_fmt", "yuv420p", str(path))
+    return path
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_a_camera_segment_of_sparse_footage_lasts_its_time(tmp_path):
+    # FlowWink take 4 (2026-11-18): the host grabbed 9-17 frames a second.
+    # zoompan gives one frame per frame it gets, so counted at 25 fps a
+    # second of that footage played in under half a second.
+    from reel_studio.camera import Camera
+
+    source = _sparse_clip(tmp_path / "s.mp4", 12.0, 9)
+    camera = Camera(240, 132, 4 / 3)
+    camera.move(4.0, 2.0, 60, 40)
+    out = render._render_video_segment(source, 3.0, 6.0, 6.0, tmp_path / "seg.mp4",
+                                       camera.output_size(None), camera)
+    assert render.probe_duration(out) == pytest.approx(6.0, abs=0.05)
+    held = render._render_video_segment(source, 3.0, 6.0, 8.0, tmp_path / "held.mp4",
+                                        camera.output_size(None), camera)
+    assert render.probe_duration(held) == pytest.approx(8.0, abs=0.05)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_a_segment_of_steady_footage_keeps_its_length(tmp_path):
+    source = _clip(tmp_path / "s.mp4", "teal", 6.0)
+    out = render._render_video_segment(source, 1.0, 3.0, 3.0, tmp_path / "seg.mp4")
+    assert render.probe_duration(out) == pytest.approx(3.0, abs=0.05)

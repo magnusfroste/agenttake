@@ -81,7 +81,16 @@ def start_recording(
             # ignored, so show_pointer=false still drew the pointer (Sluss,
             # 2026-10-31).
             "-draw_mouse", "1" if draw_mouse else "0",
+            # Every frame keeps the moment it was grabbed. Stamped at 25 fps
+            # instead, a host that grabbed only 9-17 a second (load 10 on
+            # eight cores) left 20 s of footage for a minute of recording,
+            # and every step after the first seconds landed past its end:
+            # four reshoots showed the sign-in page under their lines
+            # (FlowWink take 4, 2026-11-18). The segment render evens it out
+            # to 25 fps.
+            "-use_wallclock_as_timestamps", "1",
             "-framerate", "25", "-i", f"{display}.0",
+            "-fps_mode", "passthrough",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
             "-threads", "0", "-pix_fmt", "yuv420p", str(output),
         ],
@@ -96,6 +105,11 @@ def start_recording(
 # writing its index, and the whole recording was unreadable (Sluss take 4, and
 # three test films in a row on 2026-11-09 at load 8 on eight cores).
 RECORDER_STOP_SECONDS = 180
+
+# A segment's footage can end a frame or so short of its slot once the
+# recording's frames come at their own pace: it holds its last frame this much
+# longer, and the frame count cuts it to length.
+SEGMENT_PAD_SECONDS = 0.5
 
 # A recording that has not grown for this long has stopped taking frames: the
 # encoder writes several kilobytes a second even of a still page.
@@ -1584,9 +1598,13 @@ def _render_video_segment(
         skip = "+".join(f"between(t,{start:.3f},{end:.3f})" for start, end in drop)
         filters = [f"select='not({skip})'", "setpts=N/(25*TB)"]
         played = source_duration - sum(end - start for start, end in drop)
+    # The recording keeps the times its frames were grabbed, fewer than 25 a
+    # second on a busy host; zoompan and setpts=N count frames. Evened out to
+    # 25 fps from the segment's first instant, a second of footage is 25
+    # frames again, and the frame count below ends it on time.
+    filters.insert(0, "fps=25:start_time=0")
     extension = output_duration - played
-    if extension > 0.01:
-        filters.append(f"tpad=stop_mode=clone:stop_duration={extension:.3f}")
+    filters.append(f"tpad=stop_mode=clone:stop_duration={max(extension, 0.0) + SEGMENT_PAD_SECONDS:.3f}")
     camera_filter = None
     if camera is not None:
         size = output_size or camera.physical_size
@@ -1606,9 +1624,9 @@ def _render_video_segment(
             f"drawtext=fontfile={FONT_PATH}:text='{speed:g}×':fontcolor=white:fontsize=h/22:"
             f"box=1:boxcolor=black@0.55:boxborderw=14:x=w-tw-48:y=40:enable='lt(t,{played:.3f})'"
         )
-    if filters:
-        command.extend(["-vf", ",".join(filters)])
+    command.extend(["-vf", ",".join(filters)])
     command.extend([
+        "-frames:v", str(max(1, round(max(played, output_duration) * 25))),
         "-an", "-c:v", "libx264", "-preset", "veryfast",
         "-pix_fmt", "yuv420p", str(output_path),
     ])

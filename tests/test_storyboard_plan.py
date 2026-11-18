@@ -1049,3 +1049,16 @@ def test_draw_mouse_is_an_input_option(monkeypatch, tmp_path):
     render.start_recording(":99", 640, 360, tmp_path / "screen.mp4", draw_mouse=False)
     args = seen[0]
     assert args.index("-draw_mouse") < args.index("-i") and args[args.index("-draw_mouse") + 1] == "0"
+
+
+def test_the_recorder_stamps_frames_when_they_are_grabbed(monkeypatch, tmp_path):
+    """Stamped at 25 fps, a busy host's 9-17 grabbed frames a second made a
+    minute of recording 20 s long (FlowWink take 4, 2026-11-18)."""
+    from reel_studio import render
+
+    seen = []
+    monkeypatch.setattr(render.subprocess, "Popen", lambda args, **kwargs: seen.append(args))
+    render.start_recording(":99", 640, 360, tmp_path / "screen.mp4")
+    args = seen[0]
+    assert args.index("-use_wallclock_as_timestamps") < args.index("-i")
+    assert args[args.index("-fps_mode") + 1] == "passthrough" and args.index("-fps_mode") > args.index("-i")
