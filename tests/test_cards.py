@@ -315,3 +315,10 @@ def test_a_closing_card_after_a_card_sits_on_the_last_footage(tmp_path):
     outro = next(part for part in result.timeline if part["kind"] == "outro")
     red, green, blue = _rgb(result.path, outro["start"] + outro["duration"] / 2, "iw*0.2:ih*0.2:0:0")
     assert blue > red, "the closing card sits on the blue footage, not on the red card"
+
+
+def test_the_closing_card_prints_the_address_a_viewer_types():
+    assert render.shown_address(" https://www.siliconsoap.com ") == "www.siliconsoap.com"
+    assert render.shown_address("https://sandbox.flowwink.com/") == "sandbox.flowwink.com"
+    assert render.shown_address("http://example.org/watch/abc") == "example.org/watch/abc"
+    assert render.shown_address("") == ""
