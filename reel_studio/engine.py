@@ -1754,8 +1754,11 @@ class BrowserSession:
         entry: dict = {}
         if wanted.get("emphasis") and self.camera is not None:
             share = cue_share(wanted["emphasis"], line)
-            if share is None or line_seconds <= 0:
+            if share is None:
                 entry["emphasis_dropped"] = f"the line does not say {wanted['emphasis']!r}"
+            elif line_seconds <= 0:
+                # A rehearsal has no voice: nothing to time the push on, and nothing wrong.
+                pass
             else:
                 at = max(share * line_seconds - CALLOUT_LEAD, move_seconds + CALLOUT_AFTER_MOVE)
                 if at < line_seconds - EMPHASIS_SECONDS:
