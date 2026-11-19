@@ -574,6 +574,18 @@ TITLE_AT_HELP = (
 )
 
 
+SIGNED_HELP = (
+    "Whether the closing card carries the house's signature line (its signature_line, such as "
+    "\"Directed by Hermes · AgentHotel\"). Default true. false for a film the house's director did not "
+    "direct: the line is left out. The AI label stays on every film."
+)
+
+
+def _signed(session: dict) -> bool:
+    """Whether a session's closing card carries the signature line: yes unless it said no."""
+    return (session.get("start_args") or {}).get("signed") is not False
+
+
 def _title_at(session: dict) -> str:
     """Where a session's film has its title: "over" unless it asked for a card.
     A film from before title_at existed had a card, and keeps it."""
@@ -1428,6 +1440,7 @@ def _render_config(
     title_background: str = "auto",
     closing_qr: bool = True,
     title_at: str = "over",
+    signed: bool = True,
 ) -> RenderConfig:
     normalized_accent = accent.strip()
     if not re.fullmatch(r"#?[0-9a-fA-F]{6}", normalized_accent):
@@ -1449,6 +1462,7 @@ def _render_config(
         title_background=_title_background(title_background),
         closing_qr=bool(closing_qr),
         title_at="card" if (title_at or "").strip().lower() == "card" else "over",
+        signed=bool(signed),
     )
 
 
@@ -2229,6 +2243,7 @@ async def start_session(
         str,
         Field(description=TITLE_AT_HELP, json_schema_extra={"enum": ["over", "card"]}),
     ] = "over",
+    signed: Annotated[bool, Field(description=SIGNED_HELP)] = True,
     subtitles: Annotated[
         bool,
         Field(description="Burn the narration into the picture as subtitles (default false). For LinkedIn and other feeds that autoplay muted: the story still reads without sound. Can also be switched on later with rerender(subtitles=true)."),
@@ -2339,7 +2354,8 @@ async def start_session(
             "hint": hint,
         }
     render_config = _render_config(
-        title, subtitle, accent, cta_url, cta_text, music, transitions, title_background, closing_qr, title_at
+        title, subtitle, accent, cta_url, cta_text, music, transitions, title_background, closing_qr, title_at,
+        signed,
     )
     session = await BrowserSession.create(
         start_url, width, height, voice, selected_provider, selected_output_size,
@@ -2380,7 +2396,7 @@ async def start_session(
         "provider": selected_provider, "output_size": output_size, "title": title, "subtitle": subtitle,
         "accent": accent, "cta_url": cta_url, "cta_text": cta_text, "music": music,
         "transitions": transitions, "title_background": title_background, "closing_qr": closing_qr,
-        "title_at": render_config.title_at, "subtitles": subtitles, "subtitle_style": subtitle_style, "graphics_style": graphics_style, "mask": mask,
+        "title_at": render_config.title_at, "signed": render_config.signed, "subtitles": subtitles, "subtitle_style": subtitle_style, "graphics_style": graphics_style, "mask": mask,
         "color_scheme": color_scheme, "show_pointer": show_pointer,
         # Which house style this film was shot in, so a later film can be
         # read against it after the signature has moved on.
@@ -4367,6 +4383,10 @@ async def rerender(
         Field(description=TITLE_AT_HELP + " Omit to keep where the film has it.",
               json_schema_extra={"enum": ["over", "card"]}),
     ] = None,
+    signed: Annotated[
+        bool | None,
+        Field(description=SIGNED_HELP + " Omit to keep what the film has."),
+    ] = None,
 ) -> dict:
     """Rebuild narration audio and mux it onto an existing finished video.
 
@@ -4390,6 +4410,10 @@ async def rerender(
         args = session.get("start_args") or {}
         store.update_session_start_args(session_id, {**args, "title_at": title_at})
         session["start_args"] = {**args, "title_at": title_at}
+    if signed is not None:
+        args = session.get("start_args") or {}
+        store.update_session_start_args(session_id, {**args, "signed": bool(signed)})
+        session["start_args"] = {**args, "signed": bool(signed)}
     job = FinishJob(session_id, Path(session["video_path"]).parent, 0, tool="rerender")
     job.task = asyncio.create_task(
         _run_rerender(job, session, voice, provider, subtitles, subtitle_style, graphics_style))
@@ -4448,6 +4472,7 @@ async def _rerender(job: "FinishJob", session: dict, voice: str | None, provider
         session.get("title_background") or "auto",
         bool(session.get("closing_qr", 1)),
         _title_at(session),
+        _signed(session),
     )
     video_duration = await asyncio.to_thread(probe_duration, source_video)
     render_pages: list[str] = []
