@@ -570,6 +570,14 @@ def _title_card(intro: Path, width: int, height: int, config: RenderConfig, back
     )
 
 
+def shown_address(url: str) -> str:
+    """The address as the closing card prints it: what a viewer types, without
+    the scheme or a bare trailing slash ("www.siliconsoap.com"). The QR code
+    keeps the whole URL."""
+    shown = re.sub(r"^https?://", "", url.strip(), flags=re.IGNORECASE)
+    return shown[:-1] if shown.endswith("/") and shown.count("/") == 1 else shown
+
+
 def _closing_card(outro: Path, width: int, height: int, config: RenderConfig, background: Path | None, temporary: Path) -> None:
     signature = sig.current()
     _card(
@@ -578,9 +586,9 @@ def _closing_card(outro: Path, width: int, height: int, config: RenderConfig, ba
             (config.cta_text.strip() or "Learn more", max(28, width // 32)),
             # A house sets the address in its mono face; the default keeps
             # the one face it always had.
-            (config.cta_url.strip(), max(22, width // 44))
+            (shown_address(config.cta_url), max(22, width // 44))
             if signature.is_default
-            else (config.cta_url.strip(), max(22, width // 44), sig.font_file(signature.mono_font, "regular")),
+            else (shown_address(config.cta_url), max(22, width // 44), sig.font_file(signature.mono_font, "regular")),
         ],
         background,
         text_colour=signature.paper,
