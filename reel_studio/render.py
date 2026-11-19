@@ -71,6 +71,10 @@ class RenderConfig:
     # top left, for its first seconds (graphics.title_cue), so the film opens
     # on the product. "card": a title card before the film, as it always was.
     title_at: str = "over"
+    # Whether the closing card carries the house's signature_line ("Directed
+    # by ..."). False for a film the house did not direct. The AI label
+    # stays either way: the EU AI Act (art. 50) asks that a viewer be told.
+    signed: bool = True
 
 
 def start_recording(
@@ -582,7 +586,7 @@ def _closing_card(outro: Path, width: int, height: int, config: RenderConfig, ba
         text_colour=signature.paper,
         # The house signs its film: its line and the AI label, small, at
         # the foot of the closing card, on every film the instance makes.
-        small_print=[line for line in (signature.ai_label, signature.signature_line) if line],
+        small_print=[line for line in (signature.ai_label, signature.signature_line if config.signed else "") if line],
     )
     if config.closing_qr:
         qr = make_qr(config.cta_url.strip(), temporary / "closing-qr.png")

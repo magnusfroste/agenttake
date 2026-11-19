@@ -294,3 +294,21 @@ def test_the_window_renders(house, tmp_path):
         ["ffmpeg", "-loglevel", "error", "-i", str(frame), "-vf", f"crop=1:1:{x}:{y},format=rgba", "-f", "rawvideo", "-"],
         capture_output=True, check=True).stdout for x, y in ((0, 0), (160, 90))]
     assert corner[3] == 255 and middle[3] == 0 and corner[0] == 0x0B
+
+
+def test_a_film_the_house_did_not_direct_leaves_the_signature_line_but_keeps_the_ai_label(house, monkeypatch, tmp_path):
+    from reel_studio import server
+
+    sig.save(HERMES, "set")
+    printed = []
+    monkeypatch.setattr(render, "_card", lambda *args, **kwargs: printed.append(kwargs["small_print"]))
+    monkeypatch.setattr(render, "make_qr", lambda *args: None)
+    for signed in (True, False):
+        config = server._render_config("T", "", "", "https://example.org", "Go", "none", signed=signed)
+        render._closing_card(tmp_path / "outro.mp4", 1280, 720, config, None, tmp_path)
+    assert any("Directed by Hermes" in line for line in printed[0])
+    assert not any("Directed by Hermes" in line for line in printed[1])
+    assert any("AI agent" in line for line in printed[1])
+    # A film keeps its choice on every render after.
+    assert server._signed({"start_args": {"signed": False}}) is False
+    assert server._signed({"start_args": {}}) is True and server._signed({}) is True
