@@ -205,6 +205,18 @@ def test_the_engine_drops_a_callout_with_nothing_to_point_at():
     assert made["caption"] == {"text": "02:14 · Leads"}
 
 
+def test_a_rehearsal_without_a_voice_does_not_say_the_line_misses_the_emphasis():
+    class Framed(Words):
+        camera = SimpleNamespace(view=lambda: {"x": 0.0, "y": 0.0, "w": 1280.0, "h": 720.0, "zoom": 1.0})
+    def made(line, seconds):
+        session = Framed(None, {"emphasis": "routine work"})
+        return asyncio.run(BrowserSession._graphic_entry(session, line, seconds, 0.0))
+    said = "Self-hosted open models for the routine work."
+    assert "emphasis_dropped" not in made(said, 0.0)
+    assert "routine work" in made("Something else entirely.", 0.0)["emphasis_dropped"]
+    assert made(said, 4.0)["emphasis"]["at"] > 0
+
+
 def test_set_graphics_keeps_nothing_when_there_is_nothing_to_show():
     session = SimpleNamespace(pending_graphics={"callout": "old"})
     BrowserSession.set_graphics(session, None, "  ", "Leads")
