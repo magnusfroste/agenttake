@@ -344,3 +344,57 @@ def test_rerender_can_stand_the_title_on_a_solid_ground(mods, tmp_path):
     # Anything else falls back to auto, as start_session does.
     asyncio.run(server.rerender(sid, title_background="javascript:alert(1)"))
     assert store.get_session(sid)["title_background"] == "auto"
+
+
+def test_finish_drops_the_start_page_before_an_opening_card_as_rerender_does():
+    # finish kept the second of footage before the first step unless that
+    # step was offscreen; rerender also drops it before a card. So a film
+    # opening on a card showed the start page between the title and the card
+    # on its first render, whatever its title_background, and only a rerender
+    # fixed it (skolappar takes 1 and 2, 2026-11-20).
+    from reel_studio.engine import BrowserSession, keeps_lead_in
+
+    def live(cards, offscreen_first=False):
+        return SimpleNamespace(
+            timeline=[(1.0, None, 2.0), (4.0, None, 2.0)][:len(cards)], timeline_cards=cards,
+            offscreen_first=offscreen_first,
+            render_config=render.RenderConfig(title="Årets julklapp", title_at="card", title_background="solid"),
+            timeline_floors=[1.0] * len(cards), timeline_speeds=[1.0] * len(cards),
+            timeline_glides=[None] * len(cards), timeline_cuts=[],
+        )
+
+    for cards, offscreen_first in (([True, False], False), ([False, False], False), ([False], True), ([], False)):
+        steps = [{"action_type": "card" if card else "click"} for card in cards]
+        if offscreen_first:
+            steps.insert(0, {"action_type": "goto", "offscreen": True})
+        assert keeps_lead_in(live(cards, offscreen_first)) == render.wants_lead_in(steps), (cards, offscreen_first)
+    # The length a director is shown is the cut finish makes: no lead before
+    # the card, as if the start page had been set up offscreen.
+    assert BrowserSession.estimated_length(live([True, False]), 9.0) == pytest.approx(
+        BrowserSession.estimated_length(live([True, False], offscreen_first=True), 9.0))
+
+
+@media
+def test_an_auto_title_before_an_opening_card_stands_on_the_films_footage(tmp_path):
+    # Its "auto" ground was the first frame of the first part: the start page,
+    # or with the lead-in gone the card itself, so the card's text stood
+    # under the title. It is the first footage the film shows (2026-11-20).
+    video = tmp_path / "screen.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "color=c=0x00ff00:size=320x176:rate=25:d=3",
+                    "-f", "lavfi", "-i", "color=c=0x0000ff:size=320x176:rate=25:d=6",
+                    "-filter_complex", "[0:v][1:v]concat=n=2:v=1[v]", "-map", "[v]", "-pix_fmt", "yuv420p",
+                    str(video)], check=True)
+    render.record_card(tmp_path, 1.0, "Önskelistan i år", "#ff0000")
+    voice = tmp_path / "line.m4a"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                    str(voice)], check=True)
+    result = render.segmented_render(
+        video, [(1.0, voice, 2.0), (4.0, None, 0.0)], tmp_path / "video.mp4", None,
+        render.RenderConfig(title="Årets julklapp", title_at="card", transitions="smooth"), lead_in=False,
+    )
+    kinds = [part["kind"] for part in result.timeline]
+    assert kinds[:2] == ["intro", "step"], kinds
+    intro = result.timeline[0]
+    red, green, blue = _rgb(result.path, intro["duration"] / 2, "iw*0.2:ih*0.2:0:0")
+    assert blue > red and blue > green, (red, green, blue)
