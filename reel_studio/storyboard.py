@@ -29,7 +29,7 @@ from . import signature as sig
 from .camera import PUSH_ZOOM
 from .graphics import check_callout, check_caption, cue_share, said_at
 from .review import describe_cover, focus_covered, normalize_line
-from .schema import OFFSCREEN_WAIT_MAX_MS, secret_names
+from .schema import OFFSCREEN_WAIT_MAX_MS, TapPoint, secret_names, tap_points_json_schema
 
 
 ShotType = Literal[
@@ -72,7 +72,11 @@ SHOT_FIELDS: dict[str, str] = {
               "optional (a lower third for the beat: where and when, \"02:14 · Inbox\"): a page, or one "
               "section of a page, framed on wait_for_text; the push-in has landed early in the line, a short "
               "line cuts straight to the framing, and a beat on the page the beat before shows stays there "
-              "and pans",
+              "and pans; wait_for_text may be left out on a page with no text to find (a canvas game): "
+              "the shot then shows the whole screen; start optional (presses done offscreen after the page "
+              "opens, to get past a start screen: a button's text, or {x, y} as fractions of the screen for a "
+              "drawn one); taps optional (presses on camera while the line plays: a list of {x, y, ms}, "
+              "fractions of the screen, ms holds a press — a key played, a pedal held; a soft dot marks each)",
     "live_answer": "input_text, wait_for_text optional (words the answer must have), timeout optional (seconds, "
                    "default 120), url optional (default: the page before): sends offscreen, waits until the "
                    "answer stops growing, shows it; camera optional (1-2.5, default 1.5)",
@@ -194,6 +198,16 @@ class StoryBeat(BaseModel):
     )
     input_text: str | None = None
     until_text: str | None = Field(default=None, description="page_tour: the heading the glide stops at.")
+    start: list[str | TapPoint] | None = Field(
+        default=None,
+        description="system: presses done offscreen after the page opens, to get past a start screen: a "
+                    "button's text, or {x, y} as fractions of the screen for a button a canvas draws.",
+    )
+    taps: list[TapPoint] | None = Field(
+        default=None,
+        description="system: presses on camera while the line plays, spread over it: {x, y, ms} as fractions "
+                    "of the screen, ms holding a press (a pedal). For a page with nothing to name: a canvas game.",
+    )
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
 
 
@@ -220,6 +234,13 @@ def beats_json_schema() -> dict[str, Any]:
                      "description": "system: words of the line; as they are said the camera pushes in 8 % "
                                     "toward wait_for_text. Once or twice a film, on the word that carries the point"},
         "timeout": {"type": "number", "minimum": 1, "maximum": OFFSCREEN_WAIT_MAX_MS / 1000},
+        "start": {"type": "array",
+                  "description": "system: presses done offscreen after the page opens (a start screen): a "
+                                 "button's text, or {x, y} as fractions of the screen",
+                  "items": {"anyOf": [{"type": "string"}, tap_points_json_schema()["items"]]}},
+        "taps": {**tap_points_json_schema(),
+                 "description": "system: presses on camera spread over the line: {x, y, ms}, fractions of the "
+                                "screen; ms holds a press"},
     }
     for name in ("url", "wait_for_text", "text", "background", "caption", "publication", "date", "username",
                  "password_secret", "input_text", "until_text"):
@@ -235,7 +256,7 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "image": ("url",),
     "page_tour": ("url",),
     "login": ("url", "password_secret"),
-    "system": ("url", "wait_for_text"),
+    "system": ("url",),
     "live_answer": ("input_text",),
     "cta": ("url",),
 }
@@ -398,6 +419,20 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
                 items.append(_item(number, label, "fix", "emphasis_not_in_line",
                                    f"emphasis {beat['emphasis']!r} is not in the line: give words the line says, "
                                    "so the push lands as they are spoken"))
+        if shot == "system" and not beat.get("wait_for_text"):
+            for name in ("callout", "emphasis"):
+                if beat.get(name):
+                    items.append(_item(number, label, "fix", "nothing_to_point_at",
+                                       f"{name} points at wait_for_text, and this beat has none: give the "
+                                       "words it should point at, or leave it out"))
+        for name in ("start", "taps"):
+            if beat.get(name) and shot != "system":
+                items.append(_item(number, label, "warn", f"{name}_not_used",
+                                   f"{name} presses on a system shot's page: a {shot} shot has none"))
+        if beat.get("taps") and beat.get("camera") and beat["camera"] > 1.0 and not beat.get("wait_for_text"):
+            items.append(_item(number, label, "warn", "taps_off_frame",
+                               "with no wait_for_text the camera pushes in on the middle, and a press near "
+                               "an edge falls outside the frame: leave camera out, or frame what is pressed"))
         if beat.get("caption") and shot in GRAPHIC_SHOTS:
             wrong = check_caption(beat["caption"])
             if wrong:
@@ -965,6 +1000,33 @@ def _say(line: str, wait_for_text: str | None = None) -> dict:
     return _act(action, line)
 
 
+def _point(press: Any) -> dict:
+    point = press.model_dump() if isinstance(press, BaseModel) else dict(press)
+    return {k: point[k] for k in ("x", "y", "ms") if point.get(k) is not None}
+
+
+def _start(presses: list | None) -> list[dict]:
+    """A system beat's way past a start screen, offscreen: a button by its
+    text, or a point for a button a canvas draws."""
+    ops = []
+    for press in presses or []:
+        if isinstance(press, str):
+            ops.append(_act({"type": "click", "text": press, "offscreen": True, "settle_ms": 1000}))
+        else:
+            ops.append(_act({"type": "tap", "points": [_point(press)], "offscreen": True, "settle_ms": 1000}))
+    return ops
+
+
+def _play(line: str, taps: list, language: str = "en") -> dict:
+    """The beat's narrated step on a page played on camera: the presses
+    spread over the line, the last one done before it ends."""
+    points = [_point(tap) for tap in taps]
+    held_ms = sum(point.get("ms") or 0 for point in points)
+    line_ms = line_seconds(line, language) * 1000
+    gap = (line_ms * 0.8 - held_ms) / max(1, len(points))
+    return _act({"type": "tap", "points": points, "ms": int(min(2000, max(250, gap)))}, line)
+
+
 def glide_ms(line: str, language: str = "en") -> int:
     return int(min(GLIDE_MAX_MS, max(GLIDE_MIN_MS, line_seconds(line, language) * 1000 + 1000)))
 
@@ -1068,17 +1130,29 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
         ops = _open(beat["url"], wait_text)
         if beat.get("zoom"):
             ops.append(_act({"type": "set_zoom", "text": f"{beat['zoom']:g}", "offscreen": True}))
+        ops += _start(beat.get("start"))
         if stays:
             # Opened all the same if the browser is somewhere else: the beat
             # before failed, or the shoot was taken up again.
             ops = [{"op": "stay", "url": beat["url"], "open": ops}]
+        if beat.get("taps"):
+            said = _play(line, beat["taps"], beat.get("language", "en"))
+        elif wait_text:
+            said = _found(line, wait_text)
+        else:
+            said = _say(line)
+        if not wait_text:
+            # Nothing to frame on: the whole screen, as a canvas game fills it.
+            zoom = camera or 1.0
+            return [*ops, _shot(zoom, None, keep_zoom=camera is not None, stays=stays,
+                                **_move(move, zoom, 2.5, same_page=stays)), said]
         return [
             *ops,
             _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
             _shot(camera or 1.3, wait_text, panels=True, keep_zoom=camera is not None, stays=stays,
                   **_move(move, camera or 1.3, 2.5, same_page=stays)),
             *_graphics(beat, wait_text),
-            _found(line, wait_text),
+            said,
         ]
     if shot == "live_answer":
         # Sent offscreen, then the page is read until the answer stops
