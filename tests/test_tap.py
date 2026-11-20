@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from reel_studio import storyboard as boards
-from reel_studio.engine import TOUCH_MARK_JS, BrowserSession
+from reel_studio.engine import TOUCH_MARK_JS, WINDOW_SIZE_JS, BrowserSession
 from reel_studio.schema import Action, action_json_schema
 
 GAME = "https://pianot.example/"
@@ -91,11 +91,15 @@ def test_the_touch_dot_shows_where_a_press_lands():
                                      " return [d.style.left, d.style.top, d.style.opacity,"
                                      " getComputedStyle(d).pointerEvents]; })()")
             await tab.mouse.click(250, 400)
+            size = await tab.evaluate(WINDOW_SIZE_JS)
             pressed = await tab.evaluate("window.pressed")
             await browser.close()
-            return dot, pressed
+            return dot, pressed, size
 
-    dot, pressed = asyncio.run(run())
+    dot, pressed, size = asyncio.run(run())
+    # Where a press lands is a share of the window itself: the browser runs
+    # with no_viewport, so viewport_size says nothing.
+    assert size == [1000, 500]
     assert dot == ["250px", "400px", "1", "none"]
     # The dot never takes the press itself.
     assert pressed == [[250, 400]]
