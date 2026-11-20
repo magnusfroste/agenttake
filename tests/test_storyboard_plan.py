@@ -176,7 +176,8 @@ def test_a_film_that_opens_on_a_card_has_no_lead_in():
 
 def test_shape_problems_are_listed_together():
     plan = [
-        {"shot": "system", "url": "https://app.example", "line": "No wait text."},
+        # A system shot may leave wait_for_text out (a canvas game), not its page.
+        {"shot": "system", "wait_for_text": "Inbox", "line": "No wait text."},
         {"shot": "teleport", "line": "Not a shot."},
         {"shot": "card", "text": "Hi"},
         {"shot": "live_answer", "input_text": "Is shadow AI blocked?", "wait_for_text": "shadow AI",

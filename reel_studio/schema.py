@@ -9,10 +9,21 @@ VISIBLE_WAIT_MAX_MS = 60000
 OFFSCREEN_WAIT_MAX_MS = 600000
 
 
+TAP_HOLD_MAX_MS = 5000
+
+
+class TapPoint(BaseModel):
+    """One press on the screen: x and y as fractions of its width and
+    height (0.5, 0.5 is the middle), held for ms (a tap when left out)."""
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+    ms: int = Field(default=0, ge=0, le=TAP_HOLD_MAX_MS)
+
+
 class Action(BaseModel):
     type: Literal[
         "goto", "click", "click_and_wait", "type", "select_option", "press_key", "set_zoom", "annotate", "scroll", "scroll_to_text",
-        "hover", "highlight", "wait", "caption", "mask", "unmask", "card",
+        "hover", "highlight", "wait", "caption", "mask", "unmask", "card", "tap",
     ]
     url: str | None = None
     ref: str | None = None
@@ -50,6 +61,17 @@ class Action(BaseModel):
     # card only: "brand" (the accent colour), "blur" (the last frame before
     # the card, blurred) or a hex colour.
     background: str | None = None
+    # tap only: where to press, as fractions of the screen, and how long.
+    # A canvas game has no element to name: Pianot's keys and Lilla Staden's
+    # BÖRJA! are drawn, not built, so a click by ref or text found nothing
+    # (skolappar.com, 2026-11-20).
+    points: list[TapPoint] | None = None
+
+    @model_validator(mode="after")
+    def _taps_have_points(self) -> "Action":
+        if self.type == "tap" and not self.points:
+            raise ValueError("tap needs points: [{\"x\": 0.5, \"y\": 0.8}], fractions of the screen")
+        return self
 
     @model_validator(mode="after")
     def _visible_waits_are_short(self) -> "Action":
@@ -87,6 +109,10 @@ ACTION_FIELDS: dict[str, str] = {
     "annotate": "ref, text, style (marker | callout | underline); or target_text and no ref (marks those words on the page: a quote in an article)",
     "mask": "ref (blurs that element on screen until unmask or a page load)",
     "unmask": "ref",
+    "tap": "points (a list of {x, y, ms}: x and y are fractions of the screen, 0.5 and 0.5 its middle; ms "
+           "holds the press that long, up to 5000 — a gas pedal; left out, a tap), ms optional (the pause between "
+           "presses, default 600) — presses where nothing has a ref or a text: a canvas game's keys or buttons; "
+           "a soft dot marks each press on screen, as a finger would",
     "card": "text (one or two lines; a newline breaks the line), background (\"brand\": the accent colour, the default; \"blur\": the frame before the card, blurred; or a hex colour such as \"#0b1320\") — a full-screen text card cut into the video here, mid-film, with this step's narration spoken over it; it lasts its line plus a short tail, at least 2.5 s, and dissolves in and out with transitions smooth",
 }
 
@@ -127,6 +153,21 @@ def resolve_secret(text: str) -> tuple[str | None, str | None]:
     return name, os.environ.get(f"REEL_SECRET_{name}") or None
 
 
+def tap_points_json_schema() -> dict[str, Any]:
+    return {
+        "type": "array", "minItems": 1,
+        "description": "tap only: where to press, as fractions of the screen; ms holds the press",
+        "items": {
+            "type": "object", "required": ["x", "y"],
+            "properties": {
+                "x": {"type": "number", "minimum": 0, "maximum": 1},
+                "y": {"type": "number", "minimum": 0, "maximum": 1},
+                "ms": {"type": "integer", "minimum": 0, "maximum": TAP_HOLD_MAX_MS},
+            },
+        },
+    }
+
+
 def action_json_schema() -> dict[str, Any]:
     """The action object as inline JSON Schema, with no $ref.
 
@@ -161,6 +202,7 @@ def action_json_schema() -> dict[str, Any]:
             "speed": {"type": "number", "minimum": 1, "maximum": 16},
             "narration_timing": {"type": "string", "enum": ["before_action", "after_action", "after_settle"]},
             "background": {"type": "string", "description": "card only: brand (default), blur, or a hex colour like #0b1320"},
+            "points": tap_points_json_schema(),
         },
     }
 

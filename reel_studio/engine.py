@@ -425,6 +425,26 @@ FRAMES_SIGNATURE_JS = """() => Array.from(document.querySelectorAll("iframe")).m
 FRAMES_SETTLE_MS = 3000
 FRAMES_POLL_MS = 250
 
+# A tap's press, and the pause between two presses of one step.
+TAP_PRESS_MS = 140
+TAP_GAP_MS = 600
+TOUCH_MARK_JS = """({x, y, down}) => {
+  let dot = document.getElementById("__take_touch");
+  if (!dot) {
+    dot = document.createElement("div");
+    dot.id = "__take_touch";
+    Object.assign(dot.style, {position: "fixed", width: "54px", height: "54px", margin: "-27px 0 0 -27px",
+      borderRadius: "50%", background: "rgba(255,255,255,0.55)", border: "2px solid rgba(20,20,20,0.28)",
+      boxShadow: "0 2px 12px rgba(0,0,0,0.25)", pointerEvents: "none", zIndex: "2147483647",
+      opacity: "0", transform: "scale(0.8)", transition: "opacity 0.22s ease, transform 0.22s ease"});
+    document.documentElement.appendChild(dot);
+  }
+  dot.style.left = x + "px";
+  dot.style.top = y + "px";
+  dot.style.opacity = down ? "1" : "0";
+  dot.style.transform = down ? "scale(1)" : "scale(1.35)";
+}"""
+
 # A film has one tab: a link that opens a new one would be recorded over the
 # session's page, untracked (certera.ink's "Open" link, 2026-11-10). Such links
 # and window.open load in the session's own tab instead.
@@ -1686,6 +1706,15 @@ class BrowserSession:
             pass
         self.pointer = (x, y)
 
+    async def _touch_mark(self, x: float, y: float, down: bool) -> None:
+        """A soft dot where a tap presses, as a phone's screen recording shows
+        a finger: there is no arrow on a tablet, and a press on a canvas
+        game showed nothing of its own."""
+        try:
+            await self.page.evaluate(TOUCH_MARK_JS, {"x": x, "y": y, "down": down})
+        except PlaywrightError:
+            pass
+
     async def _clear_pointer(self) -> None:
         """Before a visible step: move the pointer off whatever is under it now.
 
@@ -2068,6 +2097,29 @@ class BrowserSession:
                 )
                 # Any caption replaces a sticky one.
                 self.sticky_caption = (live_annotation_id, label) if action.sticky else None
+            elif action_type == "tap":
+                # Presses on the screen itself, for a page with nothing to
+                # name: a canvas game draws its keys (skolappar.com,
+                # 2026-11-20). Its line plays from the first press, as a
+                # glide's does from its first frame.
+                viewport = self.page.viewport_size or {"width": 1920, "height": 1080}
+                shown = not (action.quiet or action.offscreen)
+                for index, point in enumerate(action.points or []):
+                    if index:
+                        await self.page.wait_for_timeout(action.ms or TAP_GAP_MS)
+                    x, y = point.x * viewport["width"], point.y * viewport["height"]
+                    await self.page.mouse.move(x, y)
+                    if glide_started_at is None:
+                        glide_started_at = time.monotonic() - self.t0
+                    if shown:
+                        await self._touch_mark(x, y, True)
+                    await self.page.mouse.down()
+                    await self.page.wait_for_timeout(point.ms or TAP_PRESS_MS)
+                    await self.page.mouse.up()
+                    if shown:
+                        await self._touch_mark(x, y, False)
+                    pointer = (x, y)
+                self.pointer, self.pointer_held = pointer, False
             elif action_type == "card":
                 # Nothing happens in the browser: the render cuts a card in
                 # here instead of this step's footage.
@@ -2464,7 +2516,7 @@ class BrowserSession:
         if action_type in PAGE_CHANGING_ACTIONS:
             self.timeline_cuts.append(action_started_at)
         glide = action_type == "scroll" and bool(action.ms)
-        if glide and glide_started_at is not None:
+        if (glide or action_type == "tap") and glide_started_at is not None:
             offset = glide_started_at
         elif not glide and action.narration_timing == "after_action" and action_finished_at is not None:
             offset = action_finished_at

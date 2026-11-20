@@ -46,6 +46,10 @@ filmed and cut it with AgentTake.
   `source_card`, `card`, `image`, `page_tour`, `login`, `system`, `live_answer`, `cta`) and
   AgentTake shoots each with a tested recipe; `plan_storyboard` checks sources,
   URLs, secrets and length before anything records.
+- 🎮 **Plays canvas apps** — a `tap` presses a point of the screen (held, for a
+  pedal) where nothing has a name to click; a `system` beat gets past a start
+  screen offscreen (`start`) and plays the page on camera (`taps`), with a soft
+  dot where a finger would press.
 - 🔁 **Edit without a reshoot** — hide a step, hold a result, speed up a wait,
   or rewrite a line, then `rerender`: no re-recording the browser.
 - 📐 **Any format** — 16:9 for X and YouTube, or 4:5 from a site's phone
