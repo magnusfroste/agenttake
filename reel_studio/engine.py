@@ -740,6 +740,19 @@ def _free_display() -> int:
     raise RuntimeError("No free X display found")
 
 
+def keeps_lead_in(session: "BrowserSession") -> bool:
+    """Whether finish keeps the second of footage before the first step, as
+    render.wants_lead_in decides it for rerender: not when the film opens on a
+    step done offscreen, nor on a card. finish asked only about offscreen, so
+    a film opening on a card showed the start page, never meant to be seen,
+    between the title and the card on its first render; rerender dropped it
+    (skolappar takes 1 and 2, 2026-11-20)."""
+    if session.offscreen_first:
+        return False
+    cards = session.timeline_cards
+    return not (session.timeline and cards and cards[0])
+
+
 @dataclass
 class BrowserSession:
     session_id: str
@@ -2703,7 +2716,7 @@ class BrowserSession:
             return elapsed
         segments, _ = plan_segments(
             self.timeline, max(elapsed, 0.001), self.timeline_floors,
-            not self.offscreen_first, self.timeline_speeds, None, self.timeline_glides,
+            keeps_lead_in(self), self.timeline_speeds, None, self.timeline_glides,
             cards=self.timeline_cards, cuts=self.timeline_cuts,
         )
         cards = CARD_DURATION * (
@@ -2733,7 +2746,7 @@ class BrowserSession:
             result = segmented_render(
                 video, self.timeline, final, self.output_size,
                 self.render_config, self.camera, self.timeline_pages,
-                self.timeline_floors, not self.offscreen_first, self.timeline_speeds,
+                self.timeline_floors, keeps_lead_in(self), self.timeline_speeds,
                 self.timeline_glides, cuts=self.timeline_cuts,
             )
             write_storyboard(self.directory, final, result.timeline)

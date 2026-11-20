@@ -1453,8 +1453,14 @@ def _assemble_smooth(
     last_footage = next(
         (path for path, card in zip(reversed(segment_paths), reversed(cards)) if not card), segment_paths[-1]
     ) if cards else segment_paths[-1]
+    # And a film that opens on a card takes the title's from its first
+    # footage: a still of the card put that card's text under the title, and
+    # the start page before it is not part of the film (skolappar, 2026-11-20).
+    first_footage = next(
+        (path for path, card in zip(segment_paths, cards) if not card), segment_paths[0]
+    ) if cards else segment_paths[0]
     intro_background, outro_background = (
-        card_backgrounds(config, segment_paths[0], last_footage, temporary)
+        card_backgrounds(config, first_footage, last_footage, temporary)
         if (_has_title_card(config) or config.cta_url.strip()) else (None, None)
     )
     if _has_title_card(config):

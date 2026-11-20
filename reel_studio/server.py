@@ -4390,8 +4390,7 @@ async def rerender(
     title_background: Annotated[
         str | None,
         Field(description="What the title and closing cards stand on: auto (the film's first and last frame), "
-                          "solid (the house's colour), or an https image. solid suits a film that opens on a "
-                          "card, whose first recorded frame is a page the film never shows. Omit to keep it."),
+                          "solid (the house's colour), or an https image. Omit to keep it."),
     ] = None,
 ) -> dict:
     """Rebuild narration audio and mux it onto an existing finished video.
@@ -4421,9 +4420,9 @@ async def rerender(
         store.update_session_start_args(session_id, {**args, "signed": bool(signed)})
         session["start_args"] = {**args, "signed": bool(signed)}
     if title_background is not None:
-        # The skolappar film opened on a card: the title stood on the start
-        # page, recorded but never shown, and it flashed before the card
-        # (2026-11-20). A finished film can now take a solid ground.
+        # A finished film can change what its cards stand on, as start_session
+        # sets it (#132). The skolappar flash before an opening card was the
+        # lead-in finish kept, not the ground (engine.keeps_lead_in).
         store.update_session_branding(session_id, {"title_background": _title_background(title_background)})
         session["title_background"] = _title_background(title_background)
     job = FinishJob(session_id, Path(session["video_path"]).parent, 0, tool="rerender")
