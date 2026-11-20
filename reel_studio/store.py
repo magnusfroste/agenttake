@@ -522,7 +522,8 @@ def update_session_subtitles(session_id: str, on: bool) -> None:
 def update_session_branding(session_id: str, fields: dict[str, str]) -> None:
     """A finished film's title and closing card (edit_cards)."""
     init_schema()
-    allowed = {key: value for key, value in fields.items() if key in {"title", "subtitle", "cta_text", "cta_url"}}
+    allowed = {key: value for key, value in fields.items() if key in {"title", "subtitle", "cta_text", "cta_url",
+                                                                     "title_background"}}
     if not allowed:
         return
     assignments = ", ".join(f"{key} = ?" for key in allowed)

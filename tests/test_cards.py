@@ -322,3 +322,25 @@ def test_the_closing_card_prints_the_address_a_viewer_types():
     assert render.shown_address("https://sandbox.flowwink.com/") == "sandbox.flowwink.com"
     assert render.shown_address("http://example.org/watch/abc") == "example.org/watch/abc"
     assert render.shown_address("") == ""
+
+
+def test_rerender_can_stand_the_title_on_a_solid_ground(mods, tmp_path):
+    # The skolappar film opened on a card: its title stood on the start page,
+    # recorded but never shown, which flashed before the card (2026-11-20).
+    server, store = mods
+    sid = "s-solid"
+    session_dir = tmp_path / sid
+    session_dir.mkdir()
+    _video(session_dir / "screen.mp4")
+    shutil.copy(session_dir / "screen.mp4", session_dir / "video.mp4")
+    store.create_session(sid, "https://example.com", "en-US-JennyNeural", 320, 176, str(session_dir),
+                         "edge", None, None, "Årets julklapp", "", "#1f2a44", "", "Learn more", "none", "cuts")
+    for offset, kind in ((1.0, "card"), (4.0, "click")):
+        store.append_step(sid, kind, None, "https://example.com", "t", "", 0.0, offset, None, True, None)
+    render.record_card(session_dir, 1.0, "Önskelistan", "#8e1b2b")
+    store.finish_session(sid, str(session_dir / "video.mp4"), None, 9.0)
+    assert asyncio.run(server.rerender(sid, title_background="solid"))["ok"]
+    assert store.get_session(sid)["title_background"] == "solid"
+    # Anything else falls back to auto, as start_session does.
+    asyncio.run(server.rerender(sid, title_background="javascript:alert(1)"))
+    assert store.get_session(sid)["title_background"] == "auto"
