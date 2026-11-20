@@ -425,6 +425,7 @@ FRAMES_SIGNATURE_JS = """() => Array.from(document.querySelectorAll("iframe")).m
 FRAMES_SETTLE_MS = 3000
 FRAMES_POLL_MS = 250
 
+WINDOW_SIZE_JS = "[window.innerWidth, window.innerHeight]"
 # A tap's press, and the pause between two presses of one step.
 TAP_PRESS_MS = 140
 TAP_GAP_MS = 600
@@ -2102,12 +2103,15 @@ class BrowserSession:
                 # name: a canvas game draws its keys (skolappar.com,
                 # 2026-11-20). Its line plays from the first press, as a
                 # glide's does from its first frame.
-                viewport = self.page.viewport_size or {"width": 1920, "height": 1080}
+                # The window's own size: the browser runs with no_viewport, so
+                # viewport_size is None, and a fallback of 1920x1080 put every
+                # press a third too far out on a 1440x810 page (2026-11-20).
+                width, height = await self.page.evaluate(WINDOW_SIZE_JS)
                 shown = not (action.quiet or action.offscreen)
                 for index, point in enumerate(action.points or []):
                     if index:
                         await self.page.wait_for_timeout(action.ms or TAP_GAP_MS)
-                    x, y = point.x * viewport["width"], point.y * viewport["height"]
+                    x, y = point.x * width, point.y * height
                     await self.page.mouse.move(x, y)
                     if glide_started_at is None:
                         glide_started_at = time.monotonic() - self.t0
