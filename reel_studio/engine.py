@@ -445,11 +445,17 @@ DRAG_JS = """({x, y, tx, ty, ms, shown}) => new Promise((resolve) => {
     } catch (e) {}
     target.dispatchEvent(new MouseEvent("mousemove", common));
   };
+  // A move for every 16 ms of the way, by the clock: a step that came late
+  // (a busy page while recording) fires the moves it missed, so a game that
+  // counts moves gets the same number however loaded the page is.
+  const slots = Math.max(1, Math.ceil(ms / 16));
+  let fired = 0;
+  const at = (t) => { const e = t * t * (3 - 2 * t); return [x + (tx - x) * e, y + (ty - y) * e]; };
   const step = () => {
     const t = Math.min(1, (performance.now() - start) / ms);
-    const eased = t * t * (3 - 2 * t);
-    const px = x + (tx - x) * eased, py = y + (ty - y) * eased;
-    if (t < 1) fire(px, py);
+    const due = Math.min(slots - 1, Math.floor(t * slots));
+    while (fired < due) { fired += 1; const p = at(fired / slots); fire(p[0], p[1]); }
+    const [px, py] = at(t);
     if (shown) {
       const dot = document.getElementById("__take_touch");
       if (dot) { dot.style.left = px + "px"; dot.style.top = py + "px"; }
@@ -1762,13 +1768,16 @@ class BrowserSession:
         """Moves a held press to to_x, to_y over ms, eased, the dot along
         with it; returns where it ends.
 
-        The way there is played inside the page (DRAG_JS), a move every
-        16 ms by its own clock, and the last move is a real one. Sent one
+        The way there is played inside the page (DRAG_JS), a move for every
+        16 ms by its own clock, late steps catching up, and the last move is
+        a real one. Sent one
         by one from here, each move waited for the page: while recording a
         step took ~130 ms, so a 1 s drag lasted 8 s and the render cut the
         bun before it reached the oven; and a game that counts moves (a
         rolling pin flattens the dough a little per move) needs them all
-        (skolappar.com, 2026-11-24)."""
+        (skolappar.com, 2026-11-24). Under load a step still came every
+        ~60-90 ms and the pin got 15-20 moves, not the 18 the dough needed
+        inside it, so the late steps now fire the moves they missed."""
         try:
             await self.page.evaluate(
                 DRAG_JS, {"x": x, "y": y, "tx": to_x, "ty": to_y, "ms": max(ms, 1), "shown": shown}

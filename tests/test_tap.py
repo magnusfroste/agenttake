@@ -170,3 +170,37 @@ def test_a_drag_moves_the_piece_and_the_dot():
     # Every 16 ms of the way: a game that counts moves (a rolling pin) gets them.
     assert len(moves) >= 20 and moves[-1][1:] == [200, 100]
     assert dot == ["200px", "100px"]
+
+
+def test_a_busy_page_still_gets_every_move():
+    """While recording the page was busy: a step came every ~60-90 ms and the
+    rolling pin got too few moves to flatten the dough (Kotten take 3,
+    2026-11-24). Late steps fire the moves they missed."""
+    async def run():
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            try:
+                browser = await p.chromium.launch()
+            except Exception as exc:
+                pytest.skip(f"chromium unavailable: {exc}")
+            tab = await browser.new_page(viewport={"width": 1000, "height": 500})
+            await tab.set_content("<canvas id=c width=1000 height=500></canvas><script>"
+                                  "window.n=0;document.getElementById('c').addEventListener('mousemove',e=>{if(e.buttons)n++});"
+                                  "setInterval(()=>{const e=performance.now()+70;while(performance.now()<e){}},0)</script>")
+            session = types.SimpleNamespace(page=tab)
+            session._touch_mark = types.MethodType(BrowserSession._touch_mark, session)
+            session._drag_to = types.MethodType(BrowserSession._drag_to, session)
+            await tab.mouse.move(300, 450)
+            await tab.mouse.down()
+            started = time.monotonic()
+            await session._drag_to(300, 450, 200, 100, 800, False)
+            took = time.monotonic() - started
+            await tab.mouse.up()
+            count = await tab.evaluate("window.n")
+            await browser.close()
+            return count, took
+
+    count, took = asyncio.run(run())
+    # 800 ms is 50 slots of 16 ms: 49 played in the page plus the real last move.
+    assert count >= 49, count
+    assert took < 1.6, took
