@@ -104,3 +104,62 @@ def test_the_touch_dot_shows_where_a_press_lands():
     # The dot never takes the press itself.
     assert pressed == [[250, 400]]
     assert "pointerEvents" in TOUCH_MARK_JS
+
+
+def test_a_press_with_an_end_is_a_drag():
+    # Rännan's sticks are pulled from a tray onto the grid; a tap cannot
+    # move one (skolappar.com, 2026-11-24).
+    drag = Action(type="tap", points=[{"x": 0.3, "y": 0.9, "to_x": 0.2, "to_y": 0.2}])
+    assert drag.points[0].is_drag and not Action(type="tap", points=[{"x": 0.3, "y": 0.9}]).points[0].is_drag
+    with pytest.raises(ValidationError):
+        Action(type="tap", points=[{"x": 0.3, "y": 0.9, "to_x": 0.2}])
+    with pytest.raises(ValidationError):
+        Action(type="tap", points=[{"x": 0.3, "y": 0.9, "to_x": 0.2, "to_y": 1.3}])
+    item = action_json_schema()["properties"]["points"]["items"]["properties"]
+    assert {"to_x", "to_y"} <= set(item)
+
+
+def test_a_system_beat_drags_on_camera():
+    beat = {"shot": "system", "url": GAME, "line": "Som Rännan, där vattnet ska hitta vägen till blomman.",
+            "taps": [{"x": 0.32, "y": 0.88, "to_x": 0.2, "to_y": 0.2}, {"x": 0.32, "y": 0.88, "to_x": 0.3, "to_y": 0.35}]}
+    play = boards.recipe(check([beat])["beats"][0])[-1]
+    assert play["action"]["type"] == "tap" and play["narration"] == beat["line"]
+    assert play["action"]["points"][0] == {"x": 0.32, "y": 0.88, "ms": 0, "to_x": 0.2, "to_y": 0.2}
+    # The drags' own time is counted, so the gap between them leaves room.
+    assert play["action"]["ms"] <= 2000
+
+
+def test_a_drag_moves_the_piece_and_the_dot():
+    async def run():
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            try:
+                browser = await p.chromium.launch()
+            except Exception as exc:
+                pytest.skip(f"chromium unavailable: {exc}")
+            tab = await browser.new_page(viewport={"width": 1000, "height": 500})
+            await tab.set_content("<canvas id=c width=1000 height=500></canvas><script>"
+                                  "window.log=[];const c=document.getElementById('c');"
+                                  "c.addEventListener('pointerdown',e=>log.push(['down',e.clientX,e.clientY]));"
+                                  "c.addEventListener('pointermove',e=>{if(e.buttons)log.push(['move',e.clientX,e.clientY])});"
+                                  "c.addEventListener('pointerup',e=>log.push(['up',e.clientX,e.clientY]))</script>")
+            session = types.SimpleNamespace(page=tab)
+            session._touch_mark = types.MethodType(BrowserSession._touch_mark, session)
+            session._drag_to = types.MethodType(BrowserSession._drag_to, session)
+            await tab.mouse.move(300, 450)
+            await tab.mouse.down()
+            end = await session._drag_to(300, 450, 200, 100, 200, True)
+            await tab.mouse.up()
+            dot = await tab.evaluate("(() => { const d = document.getElementById('__take_touch');"
+                                     " return [d.style.left, d.style.top]; })()")
+            log = await tab.evaluate("window.log")
+            await browser.close()
+            return end, dot, log
+
+    end, dot, log = asyncio.run(run())
+    assert end == (200, 100)
+    assert log[0] == ["down", 300, 450] and log[-1] == ["up", 200, 100]
+    # The game hears the way there, not one jump.
+    moves = [entry for entry in log if entry[0] == "move"]
+    assert len(moves) >= 5 and moves[-1][1:] == [200, 100]
+    assert dot == ["200px", "100px"]
