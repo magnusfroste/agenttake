@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.11.0
+version: 0.12.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -87,8 +87,10 @@ Don't use for:
    slow at first; give it `until_text`, the heading of the section the line
    is about, so it stops there instead of rushing on. At most one per page. Open the product on a `system` shot of its hero, then one
    `system` shot per section a line names, with the section's heading as
-   `wait_for_text`. A canvas game has no words to wait for: play it with
-   `taps` ({x, y} fractions, `to_x`/`to_y` for a drag) and give the beat an
+   `wait_for_text`. A canvas game has no words to wait for: find its points
+   with `probe(url, presses, read)`, which shows the page gridded in screen
+   fractions with each press ringed and reads the game's state, then play it
+   with `taps` ({x, y} fractions, `to_x`/`to_y` for a drag) and give the beat an
    `expect`, a JavaScript check of the game's own state that is true once
    the presses did what the line says (`SCENES.bakery.rollDone`); a beat
    whose expect stays false is reported failed instead of shown. Save them with `write_file` to
