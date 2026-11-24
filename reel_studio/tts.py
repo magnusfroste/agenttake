@@ -43,14 +43,41 @@ VOICE_SETTINGS: dict[str, tuple[float, float]] = {
 }
 
 
-def elevenlabs_voice(voice: str) -> tuple[str, dict]:
-    """(voice id, voice_settings) from "id" or "id?stability=0.35&style=0.35".
+# The model and the language ride in the voice string too. An English voice
+# reading Swedish kept its accent under eleven_multilingual_v2, which guesses
+# the language from the text (the skolappar.com Kotten film, 2026-11-24);
+# language=sv sends language_code, which every model below accepted then.
+ELEVENLABS_MODELS = (
+    "eleven_multilingual_v2",
+    "eleven_v3",
+    "eleven_turbo_v2_5",
+    "eleven_flash_v2_5",
+)
+DEFAULT_ELEVENLABS_MODEL = ELEVENLABS_MODELS[0]
 
-    The settings ride in the voice string so they are stored, reused and
-    rerendered with it: a line spoken with other settings is another clip."""
+
+def elevenlabs_request(voice: str) -> tuple[str, dict]:
+    """(voice id, the request's fields besides text) from an ElevenLabs voice.
+
+    "id?stability=0.35&style=0.35&language=sv&model=eleven_v3" names the
+    voice, its voice_settings, an ISO 639-1 language_code and the model.
+    Everything rides in the voice string so a session stores, reuses and
+    rerenders it with the voice: a line spoken otherwise is another clip."""
     voice_id, _, query = (voice or "").partition("?")
     settings: dict = {}
+    fields: dict = {"model_id": DEFAULT_ELEVENLABS_MODEL}
     for key, value in parse_qsl(query, keep_blank_values=True):
+        if key == "model":
+            if value not in ELEVENLABS_MODELS:
+                raise TTSProviderError(f"Unknown ElevenLabs model {value!r}: use {', '.join(ELEVENLABS_MODELS)}")
+            fields["model_id"] = value
+            continue
+        if key == "language":
+            code = value.strip().lower()
+            if not (len(code) == 2 and code.isascii() and code.isalpha()):
+                raise TTSProviderError("language is a two-letter ISO 639-1 code, such as sv or en")
+            fields["language_code"] = code
+            continue
         if key == "use_speaker_boost":
             if value.lower() not in {"true", "false", "1", "0"}:
                 raise TTSProviderError("use_speaker_boost is true or false")
@@ -58,7 +85,8 @@ def elevenlabs_voice(voice: str) -> tuple[str, dict]:
             continue
         if key not in VOICE_SETTINGS:
             raise TTSProviderError(
-                f"Unknown voice setting {key!r}: use {', '.join(VOICE_SETTINGS)} or use_speaker_boost"
+                f"Unknown voice setting {key!r}: use {', '.join(VOICE_SETTINGS)}, "
+                "use_speaker_boost, language or model"
             )
         low, high = VOICE_SETTINGS[key]
         try:
@@ -70,7 +98,15 @@ def elevenlabs_voice(voice: str) -> tuple[str, dict]:
         settings[key] = number
     if not voice_id.strip():
         raise TTSProviderError("An ElevenLabs voice needs its id before any settings")
-    return voice_id.strip(), settings
+    if settings:
+        fields["voice_settings"] = settings
+    return voice_id.strip(), fields
+
+
+def elevenlabs_voice(voice: str) -> tuple[str, dict]:
+    """(voice id, voice_settings) from "id" or "id?stability=0.35&style=0.35"."""
+    voice_id, fields = elevenlabs_request(voice)
+    return voice_id, fields.get("voice_settings", {})
 
 
 async def _synthesize_elevenlabs(text: str, voice: str, path: Path) -> Path:
@@ -79,11 +115,9 @@ async def _synthesize_elevenlabs(text: str, voice: str, path: Path) -> Path:
         raise TTSProviderError(
             "ELEVENLABS_API_KEY must be set when TTS provider is elevenlabs"
         )
-    voice_id, settings = elevenlabs_voice(voice)
+    voice_id, fields = elevenlabs_request(voice)
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    payload: dict = {"text": text, "model_id": "eleven_multilingual_v2"}
-    if settings:
-        payload["voice_settings"] = settings
+    payload: dict = {"text": text, **fields}
     body = json.dumps(payload).encode()
 
     def request_audio() -> bytes:

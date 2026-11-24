@@ -2154,7 +2154,10 @@ async def list_voices(
     that suits the audience and the brand — and keep it for the whole video.
     An ElevenLabs id may carry voice settings after "?":
     "<id>?stability=0.35&style=0.35" reads a dark voice warmer (stability,
-    similarity_boost and style 0-1, speed 0.7-1.2, use_speaker_boost).
+    similarity_boost and style 0-1, speed 0.7-1.2, use_speaker_boost), and
+    "language=sv" makes an English voice read Swedish as Swedish (an ISO
+    639-1 code; "model=eleven_v3", eleven_turbo_v2_5 or eleven_flash_v2_5
+    swaps the default eleven_multilingual_v2).
     """
     wanted_gender = gender.strip().lower()
     if provider.strip().lower() == "elevenlabs":
@@ -2296,7 +2299,8 @@ async def start_session(
     records at that scale, for a sharp 4:5 video of a site's phone layout); voice
     en-US-JennyNeural on the free Edge provider — list_voices shows the others
     (provider "elevenlabs" needs ELEVENLABS_API_KEY and takes a voice id, with
-    settings after "?" if wanted: "<id>?stability=0.35&style=0.35"); no
+    settings, language and model after "?" if wanted:
+    "<id>?stability=0.35&style=0.35&language=sv"); no
     music ("subtle" adds a quiet bed); title/subtitle are laid over the film's
     first footage (title_at "card" puts them on a 3-second card before it
     instead), cta_url/cta_text an outro; transitions smooth (default) or cuts.

@@ -47,3 +47,40 @@ def test_the_request_names_the_id_and_sends_the_settings(monkeypatch, tmp_path):
     assert seen["body"]["voice_settings"] == {"stability": 0.35, "style": 0.35}
     asyncio.run(tts._synthesize_elevenlabs("Hej.", "knox", tmp_path / "b.mp3"))
     assert "voice_settings" not in seen["body"]
+
+
+def test_language_and_model_ride_in_the_voice_string():
+    """An English voice kept its accent in Swedish while the model guessed the
+    language (the Kotten film, 2026-11-24): language=sv sends language_code."""
+    voice_id, fields = tts.elevenlabs_request("knox?stability=0.35&language=SV&model=eleven_v3")
+    assert voice_id == "knox"
+    assert fields == {"model_id": "eleven_v3", "language_code": "sv", "voice_settings": {"stability": 0.35}}
+    assert tts.elevenlabs_request("knox") == ("knox", {"model_id": "eleven_multilingual_v2"})
+    assert elevenlabs_voice("knox?language=sv") == ("knox", {})
+
+
+@pytest.mark.parametrize("voice", ["knox?language=swedish", "knox?language=s1", "knox?language=",
+                                   "knox?model=eleven_v9", "knox?model="])
+def test_a_wrong_language_or_model_is_refused(voice):
+    with pytest.raises(TTSProviderError):
+        tts.elevenlabs_request(voice)
+
+
+def test_the_request_sends_language_code_and_model(monkeypatch, tmp_path):
+    seen = {}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def read(self): return b"mp3"
+
+    def urlopen(request, timeout=0):
+        seen["body"] = json.loads(request.data)
+        return Response()
+
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test")
+    monkeypatch.setattr(tts.urllib.request, "urlopen", urlopen)
+    asyncio.run(tts._synthesize_elevenlabs("Hej.", "knox?language=sv&model=eleven_turbo_v2_5", tmp_path / "a.mp3"))
+    assert seen["body"] == {"text": "Hej.", "model_id": "eleven_turbo_v2_5", "language_code": "sv"}
+    asyncio.run(tts._synthesize_elevenlabs("Hej.", "knox", tmp_path / "b.mp3"))
+    assert seen["body"] == {"text": "Hej.", "model_id": "eleven_multilingual_v2"}
