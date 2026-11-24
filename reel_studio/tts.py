@@ -8,6 +8,7 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 import uuid
+from urllib.parse import parse_qsl
 
 import edge_tts
 
@@ -31,17 +32,59 @@ def validate_provider(provider: str) -> None:
         )
 
 
+# ElevenLabs voice settings an id may carry after "?", with their ranges. A
+# dark voice read warm needed lower stability and more style than its default
+# (Knox Dark at stability 0.35, style 0.35 for skolappar.com, 2026-11-24).
+VOICE_SETTINGS: dict[str, tuple[float, float]] = {
+    "stability": (0.0, 1.0),
+    "similarity_boost": (0.0, 1.0),
+    "style": (0.0, 1.0),
+    "speed": (0.7, 1.2),
+}
+
+
+def elevenlabs_voice(voice: str) -> tuple[str, dict]:
+    """(voice id, voice_settings) from "id" or "id?stability=0.35&style=0.35".
+
+    The settings ride in the voice string so they are stored, reused and
+    rerendered with it: a line spoken with other settings is another clip."""
+    voice_id, _, query = (voice or "").partition("?")
+    settings: dict = {}
+    for key, value in parse_qsl(query, keep_blank_values=True):
+        if key == "use_speaker_boost":
+            if value.lower() not in {"true", "false", "1", "0"}:
+                raise TTSProviderError("use_speaker_boost is true or false")
+            settings[key] = value.lower() in {"true", "1"}
+            continue
+        if key not in VOICE_SETTINGS:
+            raise TTSProviderError(
+                f"Unknown voice setting {key!r}: use {', '.join(VOICE_SETTINGS)} or use_speaker_boost"
+            )
+        low, high = VOICE_SETTINGS[key]
+        try:
+            number = float(value)
+        except ValueError:
+            raise TTSProviderError(f"Voice setting {key} must be a number from {low} to {high}") from None
+        if not low <= number <= high:
+            raise TTSProviderError(f"Voice setting {key} must be a number from {low} to {high}")
+        settings[key] = number
+    if not voice_id.strip():
+        raise TTSProviderError("An ElevenLabs voice needs its id before any settings")
+    return voice_id.strip(), settings
+
+
 async def _synthesize_elevenlabs(text: str, voice: str, path: Path) -> Path:
     api_key = os.environ.get("ELEVENLABS_API_KEY")
     if not api_key:
         raise TTSProviderError(
             "ELEVENLABS_API_KEY must be set when TTS provider is elevenlabs"
         )
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice}"
-    body = json.dumps({
-        "text": text,
-        "model_id": "eleven_multilingual_v2",
-    }).encode()
+    voice_id, settings = elevenlabs_voice(voice)
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    payload: dict = {"text": text, "model_id": "eleven_multilingual_v2"}
+    if settings:
+        payload["voice_settings"] = settings
+    body = json.dumps(payload).encode()
 
     def request_audio() -> bytes:
         request = urllib.request.Request(
