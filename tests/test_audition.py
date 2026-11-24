@@ -53,14 +53,16 @@ def test_each_voice_reads_the_same_text_onto_one_page(server, tmp_path):
     assert first["url"] == f"{page}/1.mp3" and first["seconds"] == 3.2
     # Swedish text, and the first voice leaves the language to the model.
     assert "language=sv" in first["note"] and "note" not in second
-    client = TestClient(server.mcp.streamable_http_app())
+    # Behind the token, as it runs: a person without one listens.
+    client = TestClient(server.BearerAuthMiddleware(server.mcp.streamable_http_app(), "secret"))
     html = client.get(f"/auditions/{result['audition_id']}").text
     assert "Which voice?" in html and text in html and 'src="' + result["audition_id"] + '/2.mp3"' in html
     assert "language=sv&amp;model=eleven_turbo_v2_5" in html
     clip = client.get(f"/auditions/{result['audition_id']}/1.mp3")
     assert clip.status_code == 200 and clip.headers["content-type"] == "audio/mpeg"
     assert client.get(f"/auditions/{result['audition_id']}/9.mp3").status_code == 404
-    assert client.get("/auditions/../../etc").status_code == 404
+    assert client.get("/auditions/../../etc").status_code in (401, 404)
+    assert client.get(f"/auditions/{result['audition_id']}/audition.json").status_code == 401
 
 
 @pytest.mark.parametrize("text, voices, kind", [
