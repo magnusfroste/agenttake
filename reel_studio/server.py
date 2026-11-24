@@ -5733,6 +5733,9 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         public_video = re.fullmatch(r"/videos/[^/]+/(video\.mp4|poster\.jpg|storyboard/[a-z0-9-]+\.jpg)", request.url.path)
         public_watch = re.fullmatch(r"/watch/[^/]+", request.url.path)
+        # A voice audition is for a person without a token to hear: its id is
+        # unguessable, and only the ten latest are kept.
+        public_audition = re.fullmatch(r"/auditions/[0-9a-f]{12}(/[1-9]\.mp3)?", request.url.path)
         if request.method in {"GET", "HEAD"} and (
             request.url.path in {
                 "/",
@@ -5753,6 +5756,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             }
             or public_video
             or public_watch
+            or public_audition
         ):
             return await call_next(request)
         authorization = request.headers.get("authorization", "")
