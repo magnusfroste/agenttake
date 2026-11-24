@@ -105,7 +105,10 @@ WORDS_PER_SECOND_BY_LANGUAGE = {"en": WORDS_PER_SECOND, "sv": 1.9}
 # Swedish film read as a mistake (Agentanbud, 2026-10-30).
 SOURCE_LABEL = {"en": "Source", "sv": "Källa"}
 QUOTE_LABEL = {"en": "Quote", "sv": "Citat"}
-_SWEDISH = re.compile(r"[åäö]|\b(?:och|är|det|att|inte|för|som|med|den|har)\b", re.IGNORECASE)
+# Common words no English line has: "En stund tillsammans. Varje dag, fram
+# till jul." has no å, ä or ö and none of the first ten (Kotten, 2026-11-24).
+_SWEDISH = re.compile(r"[åäö]|\b(?:och|är|det|att|inte|för|som|med|den|har|ett|vi|ni|av|hur|vad|vill|ska|"
+                      r"varje|fram|tillsammans|också|bara|eller)\b", re.IGNORECASE)
 # The least a shot holds however short its line: a glide needs time to move,
 # a card time to be read.
 SHOT_MIN_SECONDS = {"card": 2.5, "source_card": 3.0, "image": 3.0, "page_tour": 6.0}

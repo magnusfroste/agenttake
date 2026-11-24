@@ -71,6 +71,7 @@ from .schema import TapPoint, secret_names, ACTION_CONTRACT, ACTION_TYPES, FRAMI
 from .tts import (
     TTSProviderError,
     elevenlabs_characters_left,
+    elevenlabs_request,
     elevenlabs_configured,
     list_elevenlabs_voices,
     normalize_provider,
@@ -1585,6 +1586,11 @@ def docs_page(base_url: str = "/") -> str:
       LinkedIn, X or Slack show: the title, a description, and the moment of the
       film the 1200x630 preview image is taken from. Nothing is re-rendered.</p>
       <p><strong>Returns:</strong> <code>{{"ok": true, "watch_url": "...", "poster_url": "..."}}</code></p></div>
+    <div class="tool card"><h3><code>audition_voice(text, voices, provider?)</code></h3>
+      <p>Up to four voices read the same line, with their settings, language and
+      model, and the reply is a page to send a person: one player per voice and
+      the voice string to pass to <code>start_session</code>. Nothing is
+      recorded.</p></div>
     <div class="tool card"><h3><code>probe(url, presses?, read?, stills?)</code></h3>
       <p>Scouts a page before a film, with no session or plan: opens it, does the
       presses (a button's text, a point, a drag) and answers with a still gridded
@@ -2133,6 +2139,133 @@ def director() -> str:
 
 
 _VOICE_CACHE: list[dict] = []
+
+
+AUDITION_PREFIX = "audition-"
+AUDITION_TEXT_MAX = 300
+AUDITION_VOICES_MAX = 4
+AUDITIONS_KEPT = 10
+
+
+def _audition_dirs() -> list[Path]:
+    return sorted(output_root().glob(f"{AUDITION_PREFIX}*"), key=lambda path: path.stat().st_mtime)
+
+
+def audition_page(audition_id: str) -> str | None:
+    """A page a person listens on: one player per voice, with the voice string
+    to pass to start_session."""
+    folder = output_root() / f"{AUDITION_PREFIX}{audition_id}"
+    manifest = folder / "audition.json"
+    if not manifest.is_file():
+        return None
+    data = json.loads(manifest.read_text())
+    rows = "".join(
+        f"""<section class="card"><h2>{number}. {html.escape(clip.get("name") or clip["voice"].partition("?")[0])}</h2>
+        <audio controls preload="none" src="{audition_id}/{number}.mp3"></audio>
+        <p><code>{html.escape(clip["voice"])}</code> · {clip["seconds"]:.1f} s</p></section>"""
+        for number, clip in enumerate(data["clips"], 1) if clip.get("ok")
+    )
+    return f"""<!doctype html><html lang="{html.escape(data.get("language", "en"))}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
+<title>Voice audition · AgentTake</title><style>{PAGE_STYLES}
+.card {{ background:#161c29; border-radius:14px; padding:18px 20px; margin:16px 0; }}
+audio {{ width:100%; margin:8px 0; }} code {{ color:#9eb1ff; word-break:break-all; }}</style></head>
+<body><main><p class="eyebrow">Voice audition</p><h1 style="font-size:2.2rem">Which voice?</h1>
+<p>Each voice reads the same text:</p><blockquote><p>{html.escape(data["text"])}</p></blockquote>{rows}</main></body></html>"""
+
+
+@mcp.custom_route("/auditions/{audition_id}", methods=["GET", "HEAD"], include_in_schema=False)
+async def audition_view(request: Request) -> Response:
+    audition_id = request.path_params["audition_id"]
+    page = audition_page(audition_id) if re.fullmatch(r"[0-9a-f]{12}", audition_id) else None
+    if page is None:
+        return HTMLResponse("Not found", status_code=404)
+    return HTMLResponse(page)
+
+
+@mcp.custom_route("/auditions/{audition_id}/{name}", methods=["GET", "HEAD"], include_in_schema=False)
+async def audition_clip(request: Request) -> Response:
+    audition_id, name = request.path_params["audition_id"], request.path_params["name"]
+    if not re.fullmatch(r"[0-9a-f]{12}", audition_id) or not re.fullmatch(r"[1-9]\.mp3", name):
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    path = output_root() / f"{AUDITION_PREFIX}{audition_id}" / name
+    if not path.is_file():
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    return FileResponse(path, media_type="audio/mpeg")
+
+
+@mcp.tool()
+async def audition_voice(
+    text: Annotated[str, Field(description=f"What each voice reads: a line of the film, {AUDITION_TEXT_MAX} characters at most.")],
+    voices: Annotated[list[str], Field(description=f"1-{AUDITION_VOICES_MAX} voices to compare, as start_session takes them: "
+                                                   "an ElevenLabs id with its settings after \"?\" "
+                                                   "(\"<id>?stability=0.35&language=sv&model=eleven_turbo_v2_5\"), or an Edge name.")],
+    provider: Annotated[str, Field(description="elevenlabs or edge; left out, elevenlabs where this AgentTake has a key.",
+                                   json_schema_extra={"enum": ["", "edge", "elevenlabs"]})] = "",
+) -> dict:
+    """Let a person hear voices before a film is shot: each reads the same text.
+
+    Returns a page to send them, with one player per voice and the voice
+    string to pass to start_session, and a link to each clip. The voice is a
+    person's choice: the Kotten film's voice was picked by ear from three
+    samples, and then from four models reading Swedish. Nothing is recorded;
+    a clip some session already has is reused, not bought again.
+    """
+    text = " ".join((text or "").split())
+    if not text or len(text) > AUDITION_TEXT_MAX:
+        return {"ok": False, "error": {"type": "invalid_text", "message": f"text is 1-{AUDITION_TEXT_MAX} characters"}}
+    voices = [voice.strip() for voice in voices or [] if voice and voice.strip()]
+    if not 1 <= len(voices) <= AUDITION_VOICES_MAX:
+        return {"ok": False, "error": {"type": "invalid_voices", "message": f"give 1-{AUDITION_VOICES_MAX} voices"}}
+    try:
+        chosen = normalize_provider(provider or ("elevenlabs" if elevenlabs_configured() else "edge"))
+        validate_provider(chosen)
+        if chosen == "elevenlabs":
+            for voice in voices:
+                elevenlabs_request(voice)
+    except TTSProviderError as exc:
+        return {"ok": False, "error": {"type": "invalid_voice", "message": str(exc)}}
+    if chosen == "elevenlabs":
+        left = await elevenlabs_characters_left()
+        if left is not None and left < len(text) * len(voices):
+            return {"ok": False, "error": {"type": "tts_quota", "message": f"{left} ElevenLabs characters left this period, "
+                                           f"and the audition needs {len(text) * len(voices)}"},
+                    "hint": "A shorter text, fewer voices, or provider edge."}
+    language = boards.film_language([{"line": text}])
+    audition_id = uuid.uuid4().hex[:12]
+    folder = output_root() / f"{AUDITION_PREFIX}{audition_id}"
+    folder.mkdir(parents=True, exist_ok=True)
+    clips: list[dict] = []
+    for number, voice in enumerate(voices, 1):
+        clip: dict[str, Any] = {"voice": voice}
+        try:
+            spoken = await synthesize(text, voice, folder, chosen)
+            target = folder / f"{number}.mp3"
+            spoken.replace(target)
+            clip.update(ok=True, seconds=round(await asyncio.to_thread(probe_duration, target), 1))
+        except Exception as exc:  # one voice failing leaves the others to hear
+            clip.update(ok=False, error=str(exc)[:300])
+        if (chosen == "elevenlabs" and language != "en"
+                and "language" not in dict(urllib.parse.parse_qsl(voice.partition("?")[2]))):
+            clip["note"] = (f"The text reads as {language}, and this voice does not set its language: the model "
+                            f"guesses it, and an English voice kept its accent that way. Hear it with "
+                            f"\"&language={language}\" too.")
+        clips.append(clip)
+    (folder / "audition.json").write_text(json.dumps({"text": text, "language": language, "provider": chosen,
+                                                      "clips": clips}))
+    for old in _audition_dirs()[:-AUDITIONS_KEPT]:
+        shutil.rmtree(old, ignore_errors=True)
+    base = os.environ.get("REEL_PUBLIC_BASE_URL", "").rstrip("/")
+    for number, clip in enumerate(clips, 1):
+        if clip.get("ok") and base:
+            clip["url"] = f"{base}/auditions/{audition_id}/{number}.mp3"
+    result: dict[str, Any] = {"ok": any(clip.get("ok") for clip in clips), "audition_id": audition_id,
+                              "provider": chosen, "language": language, "clips": clips}
+    if base:
+        result["page"] = f"{base}/auditions/{audition_id}"
+    result["next"] = ("Send the page to the person the film is for and let them choose by ear; then "
+                      "start_session(voice=<the chosen voice string>, provider=...). The ten latest auditions are kept.")
+    return result
 
 
 @mcp.tool()
