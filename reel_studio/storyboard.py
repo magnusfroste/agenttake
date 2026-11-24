@@ -131,6 +131,13 @@ OPEN_TIMEOUT_MS = 30000
 ANSWER_QUIET_SECONDS = 3.0
 ANSWER_MIN_CHARS = 20
 ANSWER_POLL_SECONDS = 0.5
+# A beat's expect is read in the page for this long after its presses. The
+# bakery's dough never rolled in Kotten take 3 (2026-11-24) and nothing said
+# so until a contact sheet showed a still oven: a canvas game has no words to
+# wait for, so the game's own state is what tells.
+EXPECT_SECONDS = 4.0
+EXPECT_POLL_SECONDS = 0.25
+EXPECT_MAX_CHARS = 300
 SIGN_IN_TIMEOUT_MS = 30000
 IMAGE_READY = "image ready"
 IMAGE_FAILED = "image failed"
@@ -209,6 +216,14 @@ class StoryBeat(BaseModel):
         description="system: presses on camera while the line plays, spread over it: {x, y, ms} as fractions "
                     "of the screen, ms holding a press (a pedal); with to_x, to_y the press drags there over ms "
                     "(default 700). For a page with nothing to name: a canvas game.",
+    )
+    expect: str | None = Field(
+        default=None,
+        description="system: a JavaScript expression that is true once the beat's presses did what the line "
+                    "says, read in the page right after them (up to 4 s): SCENES.bakery.rollDone, "
+                    "document.body.innerText.includes('Blomman är glad'). Still false, the beat failed: a "
+                    "rehearsal says so, a shoot reports it failed so it is retaken. For a canvas game, where "
+                    "there are no words to wait for.",
     )
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
 
@@ -427,6 +442,14 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
                     items.append(_item(number, label, "fix", "nothing_to_point_at",
                                        f"{name} points at wait_for_text, and this beat has none: give the "
                                        "words it should point at, or leave it out"))
+        if beat.get("expect"):
+            if shot != "system":
+                items.append(_item(number, label, "warn", "expect_not_used",
+                                   f"expect is read on a system shot's page after its presses: a {shot} shot "
+                                   "has none"))
+            elif len(beat["expect"]) > EXPECT_MAX_CHARS:
+                items.append(_item(number, label, "fix", "long_expect",
+                                   f"expect is one expression of {EXPECT_MAX_CHARS} characters at most"))
         for name in ("start", "taps"):
             if beat.get(name) and shot != "system":
                 items.append(_item(number, label, "warn", f"{name}_not_used",
@@ -1144,11 +1167,12 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             said = _found(line, wait_text)
         else:
             said = _say(line)
+        check = [{"op": "expect", "js": beat["expect"], "seconds": EXPECT_SECONDS}] if beat.get("expect") else []
         if not wait_text:
             # Nothing to frame on: the whole screen, as a canvas game fills it.
             zoom = camera or 1.0
             return [*ops, _shot(zoom, None, keep_zoom=camera is not None, stays=stays,
-                                **_move(move, zoom, 2.5, same_page=stays)), said]
+                                **_move(move, zoom, 2.5, same_page=stays)), said, *check]
         return [
             *ops,
             _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
@@ -1156,6 +1180,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
                   **_move(move, camera or 1.3, 2.5, same_page=stays)),
             *_graphics(beat, wait_text),
             said,
+            *check,
         ]
     if shot == "live_answer":
         # Sent offscreen, then the page is read until the answer stops
@@ -1191,11 +1216,62 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
     raise ValueError(f"unknown shot {shot!r}")
 
 
-def rehearsal_ops(beat: dict, send_live: bool = False) -> list[dict]:
+def page_state_ops(beats: list[dict], beat: dict) -> list[dict]:
+    """Offscreen ops that bring a fresh page to where a beat that stays on it
+    takes over: the page opened as the first beat on it opens it, then the
+    presses of every beat on it before this one.
+
+    Opened afresh, the bakery's oven beat found the game on its first scene,
+    the dentist, because the bun it bakes was made in the beat before
+    (Kotten rehearsal, 2026-11-24). Empty for a beat that opens its own page.
+    """
+    if not beat.get("stays"):
+        return []
+    by_number = {other["number"]: other for other in beats}
+    chain: list[dict] = []
+    number = beat["number"] - 1
+    while number in by_number:
+        chain.insert(0, by_number[number])
+        if not by_number[number].get("stays"):
+            break
+        number -= 1
+    if not chain or chain[0].get("stays") or chain[0]["shot"] != "system":
+        return []
+    opener = chain[0]
+    ops = _open(opener["url"], opener.get("wait_for_text"))
+    if opener.get("zoom"):
+        ops.append(_act({"type": "set_zoom", "text": f"{opener['zoom']:g}", "offscreen": True}))
+    ops += _start(opener.get("start"))
+    for earlier in chain:
+        ops += _start(earlier.get("taps"))
+    return ops
+
+
+def beat_ops(beats: list[dict], beat: dict, retake: bool = False) -> list[dict]:
+    """The ops that shoot a beat. A retake of a beat that stays on the page
+    before first brings the page to the state that beat left it in: opened
+    again on its own it would start the game over."""
+    state = page_state_ops(beats, beat) if retake else []
+    if state:
+        return [*state, *recipe(beat, retake=False)]
+    return recipe(beat, retake=retake)
+
+
+def rehearsal_ops(beat: dict, send_live: bool = False, beats: list[dict] | None = None,
+                  continues: bool = False) -> list[dict]:
     """A beat's recipe for a rehearsal: it opens its own page, and a live
     answer stops before the prompt is sent unless asked to send it, because a
-    sent prompt lands in the product's log and moves its numbers."""
-    ops = recipe(beat, retake=True)
+    sent prompt lands in the product's log and moves its numbers.
+
+    A beat that stays on the page before goes on from it when that beat was
+    just rehearsed (``continues``), else it is brought there first with the
+    earlier beats' presses (``beats``, the whole plan)."""
+    if beat.get("stays") and continues:
+        ops = recipe(beat, retake=False)
+    elif beats is not None and page_state_ops(beats, beat):
+        ops = beat_ops(beats, beat, retake=True)
+    else:
+        ops = recipe(beat, retake=True)
     if beat["shot"] != "live_answer" or send_live:
         return ops
     stop = next(number for number, op in enumerate(ops) if op["op"] == "answer_start")
@@ -1305,6 +1381,37 @@ def _with_answer(op: dict, answer: str) -> dict:
     return op
 
 
+# Compiled by the browser's devtools, not eval, so a page whose CSP forbids
+# eval is read too, in its own global scope.
+EXPECT_JS = """() => {
+  let value;
+  try { value = (%s); } catch (e) { return {met: false, value: "an error: " + e}; }
+  let shown;
+  try { shown = JSON.stringify(value); } catch (e) { shown = String(value); }
+  return {met: !!value, value: shown === undefined ? String(value) : shown.slice(0, 120)};
+}"""
+
+
+async def read_expect(page: Any, expression: str, seconds: float = EXPECT_SECONDS,
+                      poll: float = EXPECT_POLL_SECONDS) -> tuple[bool, str, float]:
+    """(met, the value as shown, seconds it took): read a beat's expect in the
+    page until it is true or ``seconds`` have passed. Read in the page's own
+    global scope, so a game's top-level names (SCENES, G) are there."""
+    started = time.monotonic()
+    value = "not read"
+    while True:
+        try:
+            answer = await page.evaluate(EXPECT_JS % expression)
+            if answer.get("met"):
+                return True, answer.get("value", ""), round(time.monotonic() - started, 1)
+            value = answer.get("value", "")
+        except Exception as exc:  # a page that navigated away mid-read
+            value = f"not readable: {str(exc).splitlines()[0][:120]}"
+        if time.monotonic() - started >= seconds:
+            return False, value, round(time.monotonic() - started, 1)
+        await asyncio.sleep(poll)
+
+
 async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: RunAction) -> dict:
     """Play a recipe's ops against a live session, in order, stopping at the
     first that fails. Returns ok, and on a failure the reason."""
@@ -1327,6 +1434,14 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
             continue
         if kind == "answer_start":
             before = await session.page_text()
+            continue
+        if kind == "expect":
+            met, value, seconds = await read_expect(session.page, op["js"], op.get("seconds", EXPECT_SECONDS))
+            if not met:
+                return {"ok": False, "op": number, "notes": notes,
+                        "reason": f"expect_unmet: {op['js']!r} was {value} {seconds:g} s after the presses: the "
+                                  "page did not get where the line says. Check the presses against the still, "
+                                  "or rehearse the beat on its own"}
             continue
         if kind == "answer":
             watched = await watch_answer(session.page_text, before, op.get("question", ""), op["timeout"])
