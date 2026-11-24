@@ -49,7 +49,9 @@ filmed and cut it with AgentTake.
 - 🎮 **Plays canvas apps** — a `tap` presses a point of the screen (held, for a
   pedal) where nothing has a name to click; a `system` beat gets past a start
   screen offscreen (`start`) and plays the page on camera (`taps`), with a soft
-  dot where a finger would press.
+  dot where a finger would press; `to_x`/`to_y` drags, and `expect` checks the
+  game's own state afterwards, so a press that missed fails the beat instead of
+  ending up in the film.
 - 🔁 **Edit without a reshoot** — hide a step, hold a result, speed up a wait,
   or rewrite a line, then `rerender`: no re-recording the browser.
 - 📐 **Any format** — 16:9 for X and YouTube, or 4:5 from a site's phone
@@ -437,6 +439,7 @@ Only `/mcp` needs the token; finished videos are public.
 | `REEL_OUTPUT_SIZE` | Default final video size, e.g. `1280x720`. |
 | `REEL_CAPTURE_SCALE` | Capture density; `1` turns hi-res capture off. |
 | `REEL_IDLE_TIMEOUT_SECONDS` | Stop an abandoned session (default `900`). |
+| `REEL_REHEARSAL_CPU_SLOWDOWN` | How much slower a rehearsal's page runs, as recording slows it (default `4`, `1` turns it off). |
 | `REEL_OBSERVE_TIMEOUT_SECONDS` | Give up on a slow `observe` (default `60`). |
 | `REEL_MAX_CLIPS` | Newest finished sessions to keep (default `50`, `0` keeps all). |
 | `REEL_KEEP_RAW_CLIPS` | Keep `screen.mp4` (needed to rerender) for only the newest N (default `0`, all). |

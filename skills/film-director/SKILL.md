@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.10.0
+version: 0.11.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -87,7 +87,11 @@ Don't use for:
    slow at first; give it `until_text`, the heading of the section the line
    is about, so it stops there instead of rushing on. At most one per page. Open the product on a `system` shot of its hero, then one
    `system` shot per section a line names, with the section's heading as
-   `wait_for_text`. Save them with `write_file` to
+   `wait_for_text`. A canvas game has no words to wait for: play it with
+   `taps` ({x, y} fractions, `to_x`/`to_y` for a drag) and give the beat an
+   `expect`, a JavaScript check of the game's own state that is true once
+   the presses did what the line says (`SCENES.bakery.rollDone`); a beat
+   whose expect stays false is reported failed instead of shown. Save them with `write_file` to
    `storyboard.json` in your working directory. Retakes must reuse identical
    lines: AgentTake reuses the voice clip of an unchanged line, so a retake
    costs no TTS. *Done when* the file holds every beat.
@@ -97,7 +101,10 @@ Don't use for:
    `ready` is true and `estimated_seconds` is within 10 s of the target.
    Then try the beats that depend on a live page with
    `rehearse_beats(plan_id, beats=[...])`: nothing is recorded, and each beat
-   answers with what the page showed and a still of the frame.
+   answers with what the page showed and a still of the frame. The page runs
+   as slowly as it will while recording, and a beat that stays on the page
+   before is brought to that page's state first, so what passes here works
+   on camera.
 7. **Show the plan when someone commissioned it.** Send the operator a table
    of beat, shot, line and source, and wait for a go. A fixed line costs
    seconds; a retake costs half an hour. Skip this step only when told to run

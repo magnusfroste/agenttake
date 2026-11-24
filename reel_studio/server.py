@@ -3005,7 +3005,7 @@ async def _shoot_beat(session_id: str, plan: dict, beat: dict, retake: bool,
         job.beat = {"beat": beat["number"], "label": beat["label"], "shot": beat["shot"]}
     before = store.next_step_index(session_id)
     started = time.monotonic()
-    outcome = await boards.run_ops(live, session_id, boards.recipe(beat, retake=retake), _run_action)
+    outcome = await boards.run_ops(live, session_id, boards.beat_ops(plan["beats"], beat, retake), _run_action)
     fallback = None
     card = boards.source_card_beat(beat)
     if not outcome["ok"] and outcome["reason"].startswith("focus_covered") and card is not None:
@@ -3331,7 +3331,8 @@ def _page_excerpt(full: str, anchor: str | None, main: str = "") -> str:
     return (" ".join(main.split()) or full)[:REHEARSAL_TEXT_CHARS]
 
 
-async def _rehearse_one(job: "FinishJob", live: Any, beat: dict, send_live: bool, out: Path) -> dict:
+async def _rehearse_one(job: "FinishJob", live: Any, beat: dict, send_live: bool, out: Path,
+                        plan_beats: list[dict] | None = None, continues: bool = False) -> dict:
     number = beat["number"]
     job.stage = f"beat {number}"
     started = time.monotonic()
@@ -3343,9 +3344,15 @@ async def _rehearse_one(job: "FinishJob", live: Any, beat: dict, send_live: bool
     async def act(_: str, action: dict, narration: str) -> tuple[dict, object]:
         return await _rehearsal_act(live, action, narration)
 
-    outcome = await boards.run_ops(live, job.session_id, boards.rehearsal_ops(beat, send_live), act)
+    ops = boards.rehearsal_ops(beat, send_live, plan_beats, continues)
+    outcome = await boards.run_ops(live, job.session_id, ops, act)
     report: dict[str, Any] = {"beat": number, "label": beat["label"], "shot": beat["shot"], "ok": outcome["ok"],
                               "seconds": round(time.monotonic() - started, 1)}
+    if beat.get("stays"):
+        report["page_state"] = (f"went on from beat {number - 1}, as when shot" if continues else
+                                f"brought there first with the presses of the beats before it on {beat['url']}"
+                                if plan_beats is not None and boards.page_state_ops(plan_beats, beat) else
+                                "opened afresh: the beats before it on this page were not played")
     if not outcome["ok"]:
         report["reason"] = outcome["reason"]
     if outcome.get("notes"):
@@ -3380,8 +3387,31 @@ async def _rehearse_one(job: "FinishJob", live: Any, beat: dict, send_live: bool
     return report
 
 
+# A rehearsal's page is slowed down as a recording slows it: while recording,
+# a page's own timers ran every 60-90 ms instead of 16, and a drag that
+# passed every rehearsal fell short on camera (Kotten take 3, 2026-11-24).
+# 1 turns it off.
+def rehearsal_cpu_slowdown() -> float:
+    try:
+        return max(1.0, float(os.environ.get("REEL_REHEARSAL_CPU_SLOWDOWN", "4")))
+    except ValueError:
+        return 4.0
+
+
+async def _slow_down(live: Any, rate: float) -> bool:
+    """Slow the rehearsal page's CPU down by ``rate``; False where it cannot."""
+    if rate <= 1.0:
+        return False
+    try:
+        cdp = await live.page.context.new_cdp_session(live.page)
+        await cdp.send("Emulation.setCPUThrottlingRate", {"rate": rate})
+        return True
+    except Exception:
+        return False
+
+
 async def _run_rehearsal(job: "FinishJob", beats: list[dict], send_live: bool, size: tuple[int, int],
-                         color_scheme: str | None) -> dict:
+                         color_scheme: str | None, plan_beats: list[dict] | None = None) -> dict:
     out = output_root() / job.session_id
     live = None
     try:
@@ -3395,9 +3425,12 @@ async def _run_rehearsal(job: "FinishJob", beats: list[dict], send_live: bool, s
             start, size[0], size[1], "en-US-JennyNeural", "edge",
             mask_selectors=["input[type=password]", "[data-secret]"], color_scheme=color_scheme, show_pointer=False,
         )
+        slowdown = rehearsal_cpu_slowdown()
+        slowed = await _slow_down(live, slowdown)
         began = time.monotonic()
         reports: list[dict] = []
         not_reached: list[int] = []
+        last_ok: int | None = None
         for beat in beats:
             if time.monotonic() - began > REHEARSE_MAX_SECONDS:
                 not_reached.append(beat["number"])
@@ -3406,8 +3439,14 @@ async def _run_rehearsal(job: "FinishJob", beats: list[dict], send_live: bool, s
                 reports.append({"beat": beat["number"], "label": beat["label"], "shot": "card", "ok": True,
                                 "seconds": 0.0, "notes": ["a card is drawn by the render: nothing to rehearse"]})
                 continue
-            reports.append(await _rehearse_one(job, live, beat, send_live, out))
+            report = await _rehearse_one(job, live, beat, send_live, out, plan_beats,
+                                         continues=last_ok == beat["number"] - 1)
+            reports.append(report)
+            last_ok = beat["number"] if report["ok"] else None
         result: dict[str, Any] = {"ok": True, "status": "done", "job_id": job.session_id, "beats": reports}
+        if slowed:
+            result["cpu_slowdown"] = (f"the page ran {slowdown:g}x slower, as a recording slows it: what works "
+                                      "here works on camera")
         if not_reached:
             result["not_reached"] = not_reached
             result["hint"] = f"Out of time after {REHEARSE_MAX_SECONDS:g} s: rehearse the rest in another call."
@@ -3476,7 +3515,8 @@ async def rehearse_beats(
               if beat["number"] in beats or (beat["shot"] == "login" and beat["number"] < last)]
     job_id = f"{REHEARSAL_PREFIX}{uuid.uuid4().hex[:12]}"
     job = FinishJob(job_id, None, 0, tool="rehearse_beats")
-    job.task = asyncio.create_task(_run_rehearsal(job, chosen, send_live, (width, height), color_scheme))
+    job.task = asyncio.create_task(_run_rehearsal(job, chosen, send_live, (width, height), color_scheme,
+                                                  plan["beats"]))
     rehearsal_jobs[job_id] = job
     return await _rehearsal_reply(job)
 
