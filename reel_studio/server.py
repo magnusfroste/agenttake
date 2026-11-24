@@ -2152,6 +2152,9 @@ async def list_voices(
     AgentTake, provider="elevenlabs" lists the account's voices — pass one's
     "voice" id with start_session(provider="elevenlabs", voice=...). Pick one
     that suits the audience and the brand — and keep it for the whole video.
+    An ElevenLabs id may carry voice settings after "?":
+    "<id>?stability=0.35&style=0.35" reads a dark voice warmer (stability,
+    similarity_boost and style 0-1, speed 0.7-1.2, use_speaker_boost).
     """
     wanted_gender = gender.strip().lower()
     if provider.strip().lower() == "elevenlabs":
@@ -2292,7 +2295,8 @@ async def start_session(
     page at the same aspect — a 720x900 page with output_size "1080x1350" —
     records at that scale, for a sharp 4:5 video of a site's phone layout); voice
     en-US-JennyNeural on the free Edge provider — list_voices shows the others
-    (provider "elevenlabs" needs ELEVENLABS_API_KEY and takes a voice id); no
+    (provider "elevenlabs" needs ELEVENLABS_API_KEY and takes a voice id, with
+    settings after "?" if wanted: "<id>?stability=0.35&style=0.35"); no
     music ("subtle" adds a quiet bed); title/subtitle are laid over the film's
     first footage (title_at "card" puts them on a 3-second card before it
     instead), cta_url/cta_text an outro; transitions smooth (default) or cuts.
