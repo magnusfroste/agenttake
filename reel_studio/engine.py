@@ -429,8 +429,35 @@ WINDOW_SIZE_JS = "[window.innerWidth, window.innerHeight]"
 # A tap's press, and the pause between two presses of one step.
 TAP_PRESS_MS = 140
 TAP_GAP_MS = 600
-# How often a drag's finger dot and the page hear about the move on the way.
-DRAG_STEP_MS = 16
+# A drag's way from its press to its end, played in the page: a move every
+# 16 ms by the page's own clock, eased, as pointermove and mousemove with the
+# button held, to whatever is under the point (the dot takes no events); the
+# finger dot follows. Resolves when the time is up.
+DRAG_JS = """({x, y, tx, ty, ms, shown}) => new Promise((resolve) => {
+  const start = performance.now();
+  const fire = (px, py) => {
+    const target = document.elementFromPoint(px, py) || document.body;
+    const common = {bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: px, clientY: py, screenX: px, screenY: py, button: 0, buttons: 1};
+    try {
+      target.dispatchEvent(new PointerEvent("pointermove",
+        Object.assign({pointerId: 1, pointerType: "mouse", isPrimary: true}, common)));
+    } catch (e) {}
+    target.dispatchEvent(new MouseEvent("mousemove", common));
+  };
+  const step = () => {
+    const t = Math.min(1, (performance.now() - start) / ms);
+    const eased = t * t * (3 - 2 * t);
+    const px = x + (tx - x) * eased, py = y + (ty - y) * eased;
+    if (t < 1) fire(px, py);
+    if (shown) {
+      const dot = document.getElementById("__take_touch");
+      if (dot) { dot.style.left = px + "px"; dot.style.top = py + "px"; }
+    }
+    if (t >= 1) resolve(); else setTimeout(step, 16);
+  };
+  step();
+})"""
 TOUCH_MARK_JS = """({x, y, down}) => {
   let dot = document.getElementById("__take_touch");
   if (!dot) {
@@ -1733,18 +1760,24 @@ class BrowserSession:
 
     async def _drag_to(self, x: float, y: float, to_x: float, to_y: float, ms: int, shown: bool) -> tuple[float, float]:
         """Moves a held press to to_x, to_y over ms, eased, the dot along
-        with it; returns where it ends. A game reads the drag from the moves
-        in between, so one jump to the end would drop the piece where it
-        started."""
-        steps = max(2, round(ms / DRAG_STEP_MS))
-        for step in range(1, steps + 1):
-            t = step / steps
-            eased = t * t * (3 - 2 * t)
-            px, py = x + (to_x - x) * eased, y + (to_y - y) * eased
-            await self.page.mouse.move(px, py)
-            if shown:
-                await self._touch_mark(px, py, True)
-            await self.page.wait_for_timeout(ms / steps)
+        with it; returns where it ends.
+
+        The way there is played inside the page (DRAG_JS), a move every
+        16 ms by its own clock, and the last move is a real one. Sent one
+        by one from here, each move waited for the page: while recording a
+        step took ~130 ms, so a 1 s drag lasted 8 s and the render cut the
+        bun before it reached the oven; and a game that counts moves (a
+        rolling pin flattens the dough a little per move) needs them all
+        (skolappar.com, 2026-11-24)."""
+        try:
+            await self.page.evaluate(
+                DRAG_JS, {"x": x, "y": y, "tx": to_x, "ty": to_y, "ms": max(ms, 1), "shown": shown}
+            )
+        except PlaywrightError:
+            pass
+        await self.page.mouse.move(to_x, to_y)
+        if shown:
+            await self._touch_mark(to_x, to_y, True)
         return to_x, to_y
 
     async def _clear_pointer(self) -> None:

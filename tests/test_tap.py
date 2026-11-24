@@ -5,6 +5,7 @@ past a start screen offscreen and play the page on camera."""
 from __future__ import annotations
 
 import asyncio
+import time
 import types
 
 import pytest
@@ -148,18 +149,24 @@ def test_a_drag_moves_the_piece_and_the_dot():
             session._drag_to = types.MethodType(BrowserSession._drag_to, session)
             await tab.mouse.move(300, 450)
             await tab.mouse.down()
-            end = await session._drag_to(300, 450, 200, 100, 200, True)
+            started = time.monotonic()
+            end = await session._drag_to(300, 450, 200, 100, 600, True)
+            took = time.monotonic() - started
             await tab.mouse.up()
             dot = await tab.evaluate("(() => { const d = document.getElementById('__take_touch');"
                                      " return [d.style.left, d.style.top]; })()")
             log = await tab.evaluate("window.log")
             await browser.close()
-            return end, dot, log
+            return end, dot, log, took
 
-    end, dot, log = asyncio.run(run())
+    end, dot, log, took = asyncio.run(run())
     assert end == (200, 100)
+    # The drag keeps its time: played in the page, not a round trip a move
+    # (a 1 s drag lasted 8 s while recording, 2026-11-24).
+    assert 0.55 < took < 1.2, took
     assert log[0] == ["down", 300, 450] and log[-1] == ["up", 200, 100]
     # The game hears the way there, not one jump.
     moves = [entry for entry in log if entry[0] == "move"]
-    assert len(moves) >= 5 and moves[-1][1:] == [200, 100]
+    # Every 16 ms of the way: a game that counts moves (a rolling pin) gets them.
+    assert len(moves) >= 20 and moves[-1][1:] == [200, 100]
     assert dot == ["200px", "100px"]
