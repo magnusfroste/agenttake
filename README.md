@@ -31,7 +31,8 @@ filmed and cut it with AgentTake.
   Recorded at a higher pixel density, so a close-up stays sharp.
 - 🗣️ **Narration on the beat** — per-step speech placed on the exact moment its
   content is on screen. Free Edge voices by default, ElevenLabs optional, and
-  `list_voices` lets the agent cast its own narrator.
+  `list_voices` lets the agent cast its own narrator, and `audition_voice` gives
+  a person a page to hear the candidates read the same line before choosing.
 - ✂️ **No dead air** — the minutes an agent spends thinking between steps are
   cut, and a shot ends where the next action starts changing the page (a line
   that runs longer holds the last frame); long waits can play as a labelled
@@ -244,7 +245,7 @@ None of these can score `excellent`.
 | **Directing** | `observe`, `act`, `act_batch`, `assert_visible`, `begin_shot`, `preview_shot`, `verify_shot`, `review_session` |
 | **Storyboard** | `director_guide`, `probe`, `plan_storyboard`, `rehearse_beats`, `rehearse_status`, `shoot_storyboard`, `shoot_beat`, `shoot_status`, `apply_retakes`, `fresh_take` |
 | **After finish** | `storyboard`, `contact_sheet`, `edit_step`, `update_step_narration`, `edit_cards`, `reshoot_beat`, `rerender`, `set_watch_page` |
-| **Voices** | `list_voices` |
+| **Voices** | `list_voices`, `audition_voice` |
 | **Roadmap** | `submit_backlog`, `list_backlog`, `update_backlog` |
 
 `act` and `act_batch` publish the full action contract (every verb and its
