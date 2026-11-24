@@ -61,7 +61,7 @@ from .pointer import GLIDE_SECONDS as POINTER_GLIDE_SECONDS, pointer_script
 from .graphics import (CALLOUT_AFTER_MOVE, CALLOUT_LEAD, CALLOUT_MIN_SECONDS, callout_seconds, cue_share,
                        frame_box, record_graphic)
 from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, PANELS_JS, SHOT_FACTS_JS, describe_cover, focus_covered
-from .schema import resolve_secret, secret_names, Action, mask_stylesheet
+from .schema import DRAG_MS, resolve_secret, secret_names, Action, mask_stylesheet
 from .tts import synthesize
 
 
@@ -429,6 +429,8 @@ WINDOW_SIZE_JS = "[window.innerWidth, window.innerHeight]"
 # A tap's press, and the pause between two presses of one step.
 TAP_PRESS_MS = 140
 TAP_GAP_MS = 600
+# How often a drag's finger dot and the page hear about the move on the way.
+DRAG_STEP_MS = 16
 TOUCH_MARK_JS = """({x, y, down}) => {
   let dot = document.getElementById("__take_touch");
   if (!dot) {
@@ -1729,6 +1731,22 @@ class BrowserSession:
         except PlaywrightError:
             pass
 
+    async def _drag_to(self, x: float, y: float, to_x: float, to_y: float, ms: int, shown: bool) -> tuple[float, float]:
+        """Moves a held press to to_x, to_y over ms, eased, the dot along
+        with it; returns where it ends. A game reads the drag from the moves
+        in between, so one jump to the end would drop the piece where it
+        started."""
+        steps = max(2, round(ms / DRAG_STEP_MS))
+        for step in range(1, steps + 1):
+            t = step / steps
+            eased = t * t * (3 - 2 * t)
+            px, py = x + (to_x - x) * eased, y + (to_y - y) * eased
+            await self.page.mouse.move(px, py)
+            if shown:
+                await self._touch_mark(px, py, True)
+            await self.page.wait_for_timeout(ms / steps)
+        return to_x, to_y
+
     async def _clear_pointer(self) -> None:
         """Before a visible step: move the pointer off whatever is under it now.
 
@@ -2131,7 +2149,11 @@ class BrowserSession:
                     if shown:
                         await self._touch_mark(x, y, True)
                     await self.page.mouse.down()
-                    await self.page.wait_for_timeout(point.ms or TAP_PRESS_MS)
+                    if point.is_drag:
+                        x, y = await self._drag_to(x, y, point.to_x * width, point.to_y * height,
+                                                   point.ms or DRAG_MS, shown)
+                    else:
+                        await self.page.wait_for_timeout(point.ms or TAP_PRESS_MS)
                     await self.page.mouse.up()
                     if shown:
                         await self._touch_mark(x, y, False)

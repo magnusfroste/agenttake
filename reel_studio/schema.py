@@ -10,14 +10,33 @@ OFFSCREEN_WAIT_MAX_MS = 600000
 
 
 TAP_HOLD_MAX_MS = 5000
+# A drag's move when its point gives no ms.
+DRAG_MS = 700
 
 
 class TapPoint(BaseModel):
     """One press on the screen: x and y as fractions of its width and
-    height (0.5, 0.5 is the middle), held for ms (a tap when left out)."""
+    height (0.5, 0.5 is the middle), held for ms (a tap when left out).
+
+    With to_x and to_y the press is a drag: it goes down at x, y, moves to
+    to_x, to_y over ms (700 when left out) and lets go there. A canvas game
+    builds by dragging: Rännan's sticks are pulled from a tray onto the grid,
+    and a tap could not move one (skolappar.com, 2026-11-24)."""
     x: float = Field(ge=0.0, le=1.0)
     y: float = Field(ge=0.0, le=1.0)
     ms: int = Field(default=0, ge=0, le=TAP_HOLD_MAX_MS)
+    to_x: float | None = Field(default=None, ge=0.0, le=1.0)
+    to_y: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _a_drag_has_both_ends(self) -> "TapPoint":
+        if (self.to_x is None) != (self.to_y is None):
+            raise ValueError("a drag needs both to_x and to_y, fractions of the screen")
+        return self
+
+    @property
+    def is_drag(self) -> bool:
+        return self.to_x is not None and self.to_y is not None
 
 
 class Action(BaseModel):
@@ -110,7 +129,9 @@ ACTION_FIELDS: dict[str, str] = {
     "mask": "ref (blurs that element on screen until unmask or a page load)",
     "unmask": "ref",
     "tap": "points (a list of {x, y, ms}: x and y are fractions of the screen, 0.5 and 0.5 its middle; ms "
-           "holds the press that long, up to 5000 — a gas pedal; left out, a tap), ms optional (the pause between "
+           "holds the press that long, up to 5000 — a gas pedal; left out, a tap; with to_x and to_y the press is a "
+           "drag: down at x, y, moved to to_x, to_y over ms (default 700) and let go there — a piece pulled onto a "
+           "board), ms optional (the pause between "
            "presses, default 600) — presses where nothing has a ref or a text: a canvas game's keys or buttons; "
            "a soft dot marks each press on screen, as a finger would",
     "card": "text (one or two lines; a newline breaks the line), background (\"brand\": the accent colour, the default; \"blur\": the frame before the card, blurred; or a hex colour such as \"#0b1320\") — a full-screen text card cut into the video here, mid-film, with this step's narration spoken over it; it lasts its line plus a short tail, at least 2.5 s, and dissolves in and out with transitions smooth",
@@ -156,13 +177,16 @@ def resolve_secret(text: str) -> tuple[str | None, str | None]:
 def tap_points_json_schema() -> dict[str, Any]:
     return {
         "type": "array", "minItems": 1,
-        "description": "tap only: where to press, as fractions of the screen; ms holds the press",
+        "description": "tap only: where to press, as fractions of the screen; ms holds the press; "
+                       "to_x and to_y make it a drag to there over ms",
         "items": {
             "type": "object", "required": ["x", "y"],
             "properties": {
                 "x": {"type": "number", "minimum": 0, "maximum": 1},
                 "y": {"type": "number", "minimum": 0, "maximum": 1},
                 "ms": {"type": "integer", "minimum": 0, "maximum": TAP_HOLD_MAX_MS},
+                "to_x": {"type": "number", "minimum": 0, "maximum": 1},
+                "to_y": {"type": "number", "minimum": 0, "maximum": 1},
             },
         },
     }

@@ -29,7 +29,7 @@ from . import signature as sig
 from .camera import PUSH_ZOOM
 from .graphics import check_callout, check_caption, cue_share, said_at
 from .review import describe_cover, focus_covered, normalize_line
-from .schema import OFFSCREEN_WAIT_MAX_MS, TapPoint, secret_names, tap_points_json_schema
+from .schema import DRAG_MS, OFFSCREEN_WAIT_MAX_MS, TapPoint, secret_names, tap_points_json_schema
 
 
 ShotType = Literal[
@@ -76,7 +76,8 @@ SHOT_FIELDS: dict[str, str] = {
               "the shot then shows the whole screen; start optional (presses done offscreen after the page "
               "opens, to get past a start screen: a button's text, or {x, y} as fractions of the screen for a "
               "drawn one); taps optional (presses on camera while the line plays: a list of {x, y, ms}, "
-              "fractions of the screen, ms holds a press — a key played, a pedal held; a soft dot marks each)",
+              "fractions of the screen, ms holds a press — a key played, a pedal held; with to_x and to_y a "
+              "press drags there over ms, default 700 — a piece pulled onto a board; a soft dot marks each)",
     "live_answer": "input_text, wait_for_text optional (words the answer must have), timeout optional (seconds, "
                    "default 120), url optional (default: the page before): sends offscreen, waits until the "
                    "answer stops growing, shows it; camera optional (1-2.5, default 1.5)",
@@ -206,7 +207,8 @@ class StoryBeat(BaseModel):
     taps: list[TapPoint] | None = Field(
         default=None,
         description="system: presses on camera while the line plays, spread over it: {x, y, ms} as fractions "
-                    "of the screen, ms holding a press (a pedal). For a page with nothing to name: a canvas game.",
+                    "of the screen, ms holding a press (a pedal); with to_x, to_y the press drags there over ms "
+                    "(default 700). For a page with nothing to name: a canvas game.",
     )
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
 
@@ -1002,7 +1004,7 @@ def _say(line: str, wait_for_text: str | None = None) -> dict:
 
 def _point(press: Any) -> dict:
     point = press.model_dump() if isinstance(press, BaseModel) else dict(press)
-    return {k: point[k] for k in ("x", "y", "ms") if point.get(k) is not None}
+    return {k: point[k] for k in ("x", "y", "ms", "to_x", "to_y") if point.get(k) is not None}
 
 
 def _start(presses: list | None) -> list[dict]:
@@ -1021,7 +1023,8 @@ def _play(line: str, taps: list, language: str = "en") -> dict:
     """The beat's narrated step on a page played on camera: the presses
     spread over the line, the last one done before it ends."""
     points = [_point(tap) for tap in taps]
-    held_ms = sum(point.get("ms") or 0 for point in points)
+    # A drag takes its move's time even when it names none.
+    held_ms = sum(point.get("ms") or (DRAG_MS if "to_x" in point else 0) for point in points)
     line_ms = line_seconds(line, language) * 1000
     gap = (line_ms * 0.8 - held_ms) / max(1, len(points))
     return _act({"type": "tap", "points": points, "ms": int(min(2000, max(250, gap)))}, line)
