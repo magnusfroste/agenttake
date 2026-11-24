@@ -66,7 +66,8 @@ from . import pickup
 from .camera import MAX_OUTPUT_SCALE, MAX_ZOOM, Camera
 from . import review as checks
 from . import storyboard as boards
-from .schema import secret_names, ACTION_CONTRACT, ACTION_TYPES, FRAMINGS, Action, action_json_schema, mask_stylesheet
+from . import probe as scout
+from .schema import TapPoint, secret_names, ACTION_CONTRACT, ACTION_TYPES, FRAMINGS, Action, action_json_schema, mask_stylesheet
 from .tts import (
     TTSProviderError,
     elevenlabs_characters_left,
@@ -1584,6 +1585,12 @@ def docs_page(base_url: str = "/") -> str:
       LinkedIn, X or Slack show: the title, a description, and the moment of the
       film the 1200x630 preview image is taken from. Nothing is re-rendered.</p>
       <p><strong>Returns:</strong> <code>{{"ok": true, "watch_url": "...", "poster_url": "..."}}</code></p></div>
+    <div class="tool card"><h3><code>probe(url, presses?, read?, stills?)</code></h3>
+      <p>Scouts a page before a film, with no session or plan: opens it, does the
+      presses (a button's text, a point, a drag) and answers with a still gridded
+      in screen fractions and each press ringed, every visible button and canvas
+      with its x, y, the values of JavaScript expressions (a game's state), the
+      page's globals and its text. For a canvas game, where nothing has a name.</p></div>
     <div class="tool card"><h3><code>rehearse_beats(plan_id, beats, send_live?)</code></h3>
       <p>Tries beats in a real browser without recording, also behind a
       sign-in: ok or why not, the seconds it took, what the page showed, what
@@ -3530,6 +3537,134 @@ async def rehearse_status(
     if job is None:
         return feedback_result({"ok": False, "error": {"type": "unknown_job", "message": f"No rehearsal {job_id}"}})
     return await _rehearsal_reply(job)
+
+
+PROBE_PREFIX = "probe-"
+PROBE_SECONDS = 150.0
+PROBE_STILLS_MAX = 6
+
+
+async def _probe(url: str, presses: list, reads: list[str], wait_for_text: str | None, each: bool,
+                 size: tuple[int, int], color_scheme: str | None) -> CallToolResult:
+    out = output_root() / f"{PROBE_PREFIX}{uuid.uuid4().hex[:12]}"
+    for old in output_root().glob(f"{PROBE_PREFIX}*"):
+        shutil.rmtree(old, ignore_errors=True)
+    out.mkdir(parents=True, exist_ok=True)
+    live = await BrowserSession.create(
+        url, size[0], size[1], "en-US-JennyNeural", "edge",
+        mask_selectors=["input[type=password]", "[data-secret]"], color_scheme=color_scheme, show_pointer=False,
+    )
+    try:
+        async def act(_: str, action: dict, narration: str) -> tuple[dict, object]:
+            return await _rehearsal_act(live, action, narration)
+
+        stills: list[Path] = []
+        opened = await boards.run_ops(live, "probe", boards._open(url, wait_for_text), act)
+        result: dict[str, Any] = {"ok": opened["ok"], "url": url}
+        steps: list[dict] = []
+        if not opened["ok"]:
+            result["reason"] = opened["reason"]
+        else:
+            if each:
+                still = await scout.gridded_still(live.page, out / "0-opened.jpg")
+                if still:
+                    stills.append(still)
+            for number, press in enumerate(presses, 1):
+                done = await boards.run_ops(live, "probe", boards._start([press]), act)
+                step: dict[str, Any] = {"press": number, "ok": done["ok"]}
+                if not done["ok"]:
+                    step["reason"] = done["reason"]
+                if each:
+                    if reads:
+                        step["read"] = await scout.read_values(live.page, reads)
+                    mark = scout.press_mark(press)
+                    still = await scout.gridded_still(live.page, out / f"{number}-pressed.jpg", [mark] if mark else [])
+                    if still:
+                        stills.append(still)
+                steps.append(step)
+                if not done["ok"]:
+                    result["ok"] = False
+                    break
+        if not each:
+            marks = [mark for mark in map(scout.press_mark, presses[:len(steps)]) if mark]
+            still = await scout.gridded_still(live.page, out / "end.jpg", marks)
+            if still:
+                stills.append(still)
+        if steps:
+            result["presses"] = steps
+        if reads:
+            result["read"] = await scout.read_values(live.page, reads)
+        result["now_at"] = live.page.url
+        result["elements"] = await scout.elements(live.page)
+        result["globals"] = await scout.page_globals(live.page)
+        full = " ".join((await live.page_text()).split())
+        result["page_text"] = _page_excerpt(full, wait_for_text, await live.main_text())
+        result["coordinates"] = ("x and y are fractions of the screen, 0-1 from the top left, as a system beat's "
+                                 "start and taps take them; the still's grid marks every tenth, and each press "
+                                 "is ringed with its number.")
+        result["next"] = ("Probe again with the presses that worked and the next one, until the page shows what "
+                          "the line says. Then put them in a system beat: start for the way past a start screen, "
+                          "taps for what plays on camera, and a read that turned true as its expect. "
+                          "plan_storyboard, then rehearse_beats.")
+        return feedback_result(result, *stills[-PROBE_STILLS_MAX:])
+    finally:
+        try:
+            await live.abort()
+        except Exception:
+            pass
+        shutil.rmtree(live.directory, ignore_errors=True)
+
+
+@mcp.tool()
+async def probe(
+    url: Annotated[str, Field(description="The page to scout, http(s).")],
+    presses: Annotated[list[str | TapPoint] | None, Field(
+        description=f"Up to {scout.PROBE_PRESSES_MAX} presses, in order, as a system beat's start takes them: a "
+                    "button's text, or {x, y} fractions of the screen, with to_x, to_y to drag (ms its time)."
+    )] = None,
+    read: Annotated[list[str] | None, Field(
+        description=f"Up to {scout.PROBE_READS_MAX} JavaScript expressions to read in the page after the presses, "
+                    "as a beat's expect is read: a game's state (SCENES.bakery.rollDone, Object.keys(SCENES), "
+                    "G.scene) or the page's (document.title)."
+    )] = None,
+    wait_for_text: Annotated[str | None, Field(description="Words to wait for before the first press.")] = None,
+    stills: Annotated[Literal["end", "each"], Field(
+        description="end: one still after the last press. each: one after the page opens and one after each "
+                    "press, with the reads at each step."
+    )] = "end",
+    width: int = 1440,
+    height: int = 810,
+    color_scheme: Annotated[str | None, Field(description="light or dark, as start_session will have it.")] = None,
+) -> CallToolResult:
+    """Scout a page before a film: open it, press, and see where things are.
+
+    Nothing is recorded and no session or plan is needed. The reply has a
+    still of the page with a grid of screen fractions and each press ringed
+    where it landed, every visible button, link, field and canvas with its
+    middle as x, y fractions, the values of the expressions in read, the
+    page's globals and its text. A canvas game draws its buttons, so the grid
+    is how to find them: probe, look, adjust a press, probe again. The
+    fractions are what a system beat's start and taps take, and a read that
+    turns true after the presses is the beat's expect.
+    """
+    if not str(url).startswith(("http://", "https://")):
+        return feedback_result({"ok": False, "error": {"type": "invalid_url", "message": "url must be http(s)"}})
+    presses, reads = list(presses or []), [expr for expr in (read or []) if str(expr).strip()]
+    if len(presses) > scout.PROBE_PRESSES_MAX or len(reads) > scout.PROBE_READS_MAX:
+        return feedback_result({"ok": False, "error": {
+            "type": "too_many", "message": f"{scout.PROBE_PRESSES_MAX} presses and {scout.PROBE_READS_MAX} reads at most"}})
+    if sessions or any(job.running() for job in (*finish_jobs.values(), *rehearsal_jobs.values())):
+        return feedback_result({"ok": False, "error": {"type": "busy", "message": "A recording, a render or a rehearsal is running"},
+                                "hint": "Probe before start_session, or when it is done."})
+    try:
+        return await asyncio.wait_for(
+            _probe(url, presses, reads, wait_for_text, stills == "each", (width, height), color_scheme), PROBE_SECONDS)
+    except asyncio.TimeoutError:
+        return feedback_result({"ok": False, "error": {"type": "probe_timeout",
+                                                       "message": f"The probe took more than {PROBE_SECONDS:g} s"},
+                                "hint": "Fewer presses, or a wait_for_text the page really shows."})
+    except Exception as exc:  # a broken browser is reported, never raised
+        return feedback_result({"ok": False, "error": {"type": "probe_failed", "message": str(exc)}})
 
 
 @mcp.tool()
