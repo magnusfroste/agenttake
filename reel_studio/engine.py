@@ -834,6 +834,8 @@ class BrowserSession:
     ear: Any = None
     # How the last wait for a heard page ended, for the step's result.
     listened: dict | None = None
+    # When (on the session clock) that wait ended: the pause the ear heard.
+    heard_until: float | None = None
     # When the screen recording was started, on time.monotonic().
     screen_started: float | None = None
     # A step done offscreen before anything was shown: the video then opens on
@@ -2137,6 +2139,7 @@ class BrowserSession:
         if not action.offscreen:
             await self._clear_pointer()
         offset = time.monotonic() - self.t0
+        heard_until, self.heard_until = self.heard_until, None
         clip: Path | None = None
         duration = 0.0
         action_box: dict | None = None
@@ -2241,6 +2244,8 @@ class BrowserSession:
                     # Tomten's greeting, a word read aloud. To its end, or
                     # with listen to its first pause after that long.
                     self.listened = await page_sound.wait_heard(self.page, self.ear, action.listen_ms)
+                    # react holds the camera on the page that long more.
+                    self.heard_until = time.monotonic() - self.t0 + action.then_ms / 1000
                 if (action.then_ms or action.until_quiet) and glide_started_at is not None:
                     # Held from the first press, which is where the step
                     # starts in the video, to then_ms after the last.
@@ -2650,6 +2655,14 @@ class BrowserSession:
             # TTS is prepared before the browser action; align narration with
             # the settled visual state rather than with synthesis start.
             offset = action_completed_at
+        if heard_until is not None and narration.strip() and not action.offscreen:
+            # The line after a heard page starts where the ear heard its
+            # pause, not where this step came round: the step before ended,
+            # was reported, and this line was synthesized in between, and
+            # the line came in two seconds late, mid-sentence in the day's
+            # voice (julkalender, 2026-11-25). The footage from the pause is
+            # this step's, the page going on under the line.
+            offset = min(offset, heard_until)
         if self.pending_shot is None and card is None and not action.offscreen:
             await self._frame_dialog()
         moved_seconds = 0.0
