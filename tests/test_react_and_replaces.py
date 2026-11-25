@@ -8,14 +8,14 @@ an approval can now name the film it replaces, and that film's link leads to
 the new one."""
 from __future__ import annotations
 
-import os
+import asyncio
+import time
 from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
 
 from reel_studio import storyboard as boards
-from tests.test_beat_fixes import _browser_session, _in_browser
 
 LILL = "https://lillstaden.example/"
 OVEN = {"shot": "system", "label": "ugnen", "url": LILL, "line": "Kotten gräddar bullarna.",
@@ -49,6 +49,35 @@ def test_a_director_sees_expect_and_react_in_the_beat_schema():
     assert {"expect", "react"} <= set(properties)
     # Every field of a beat is in the schema an MCP client is given.
     assert set(boards.StoryBeat.model_fields) - set(properties) <= {"language"}
+
+
+def _browser_session(page, directory):
+    from reel_studio.engine import BrowserSession
+    from reel_studio.render import RenderConfig
+
+    return BrowserSession(
+        "s-browser", "about:blank", 800, 600, "en-US-JennyNeural", "edge", None, RenderConfig(),
+        directory, 0, None, None, None, page.context, page, None, time.monotonic(), refs_stale=False,
+    )
+
+
+def _in_browser(html, scenario):
+    playwright = pytest.importorskip("playwright.async_api")
+
+    async def run():
+        async with playwright.async_playwright() as p:
+            try:
+                browser = await p.chromium.launch()
+            except Exception as exc:  # no browser in this environment
+                pytest.skip(f"chromium unavailable: {exc}")
+            page = await browser.new_page(viewport={"width": 800, "height": 600})
+            await page.set_content(html)
+            try:
+                return await scenario(page)
+            finally:
+                await browser.close()
+
+    return asyncio.run(run())
 
 
 def test_a_tap_step_holds_until_then_ms_after_its_last_press(tmp_path):
