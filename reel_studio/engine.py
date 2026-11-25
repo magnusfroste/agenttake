@@ -1779,7 +1779,7 @@ class BrowserSession:
 
         A pointer left on a link makes Chrome show the link's address in a
         status bubble at the bottom of the window, and the recording keeps
-        it: "https://panel.froste.eu/agent/hermes-…" under a close-up in
+        it: "https://panel.example.com/agent/hermes-…" under a close-up in
         take 20 (2026-10-13). The pointer is visible in the video, so it is
         nudged to the nearest spot that is not a link, not sent to a corner.
         """
