@@ -99,6 +99,12 @@ EAR_SILENT_DB = -55.0
 # With listen, how long past it the ear waits for a pause before the line
 # comes in all the same.
 PAUSE_SEARCH_MS = 6000
+# Without listen, a turn ends where a sound the page played ends and the
+# ear hears a pause: Tomten's greeting is one mp3 and the day's voice the
+# next, so the line comes in between them, as a person answers the one
+# who spoke and not what is said after. A sound shorter than this (a
+# press's click) is not a turn.
+TURN_MIN_SECONDS = 1.0
 FIRST_ESTIMATE_SECONDS = 3.0
 
 # What the page plays, kept in the page itself: media elements, Web Audio
@@ -526,13 +532,29 @@ def paused(levels: Sequence[tuple[float, float]], now: float) -> bool:
     return len(recent) >= round(PAUSE_SECONDS / EAR_WINDOW) - 1 and all(level < floor for level in recent)
 
 
+def turn_ended(sounds: Sequence[dict], since: float) -> dict | None:
+    """The first sound, on the page's clock, that played TURN_MIN_SECONDS or
+    more and ended after ``since``: the end of a turn. None if none has."""
+    ended = [entry for entry in sounds
+             if entry.get("seconds") is not None and float(entry["seconds"]) >= TURN_MIN_SECONDS
+             and float(entry.get("at") or 0) + float(entry["seconds"]) >= since]
+    return min(ended, key=lambda entry: float(entry["at"]) + float(entry["seconds"])) if ended else None
+
+
 async def wait_heard(page: Any, ear: Ear | None, listen_ms: int = 0) -> dict:
-    """Wait while the page is heard, before a line comments on it: until it
-    has gone quiet, or, with ``listen_ms``, at the first pause the ear hears
-    once that long has gone (at most PAUSE_SEARCH_MS more), as a person waits
-    for the end of a sentence. Without an ear, listen_ms is where the line
-    comes in. Returns the seconds waited and what ended it."""
+    """Wait while the page is heard, before a line comments on it, and come
+    in as a person would:
+    - with ``listen_ms``, at the first pause the ear hears once that long has
+      gone (at most PAUSE_SEARCH_MS more), the end of a sentence;
+    - without it, where a sound the page played ends and the ear hears a
+      pause (turn_ended): one speaker's turn, not what follows it;
+    - and in any case once the page has gone quiet.
+    Without an ear, listen_ms is where the line comes in, and without it the
+    page is heard until quiet. Returns the seconds waited, what ended it,
+    and the sound whose end it was."""
     started = time.monotonic()
+    # The sounds the presses just set off count: a second back on the page's clock.
+    page_since = max(0.0, await page_now(page) - 1.0) if ear is not None and not listen_ms else None
     earliest = listen_ms / 1000 if listen_ms else None
     limit = QUIET_WAIT_MAX_MS / 1000
     if earliest is not None:
@@ -559,6 +581,11 @@ async def wait_heard(page: Any, ear: Ear | None, listen_ms: int = 0) -> dict:
         if ear is not None and earliest is not None and now - started >= earliest and paused(ear.since(started), now):
             ended = "pause"
             break
+        if page_since is not None and paused(ear.since(started), now):  # type: ignore[union-attr]
+            turn = turn_ended(await heard(page, page_since), page_since)
+            if turn is not None:
+                return {"seconds": round(time.monotonic() - started, 2), "ended": "sound_end",
+                        "sound": turn.get("src") or turn.get("kind")}
         await page.wait_for_timeout(int(EAR_WINDOW * 1000))
     return {"seconds": round(time.monotonic() - started, 2), "ended": ended}
 

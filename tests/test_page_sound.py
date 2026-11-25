@@ -482,3 +482,45 @@ def test_the_ear_hears_the_sink(tmp_path):
     levels = ear.since(started)
     assert max(level for _, level in levels) > -35
     assert page_sound.paused(levels, levels[-1][0])
+
+
+def test_a_turn_ends_with_a_sound_that_lasted_not_a_click():
+    sounds = [{"src": "click.mp3", "at": 1.0, "seconds": 0.2},
+              {"src": "halsning-01.mp3", "at": 1.5, "seconds": 6.0},
+              {"src": "dag-01.mp3", "at": 8.0}]
+    assert page_sound.turn_ended(sounds, 1.0)["src"] == "halsning-01.mp3"
+    assert page_sound.turn_ended(sounds[:1] + sounds[2:], 1.0) is None
+    # A sound that ended before the wait is not this turn.
+    assert page_sound.turn_ended(sounds, 8.0) is None
+
+
+class _TurnPage:
+    """Tomten's greeting for 1.4 s from the wait's start, the day's voice
+    from 1.9 s on; the ear (_Ear) hears breaths at 1.5 s and 3.0 s."""
+
+    def __init__(self):
+        import time
+        self.started = time.monotonic()
+
+    def _t(self):
+        import time
+        return time.monotonic() - self.started
+
+    async def evaluate(self, script, *args):
+        t = self._t()
+        if script == page_sound.NOW_JS:
+            return 10.0 + t
+        if script == page_sound.READ_SOUNDS_JS:
+            greeting = {"src": "halsning-01.mp3", "at": 10.0, **({"seconds": 1.4} if t >= 1.4 else {})}
+            return [greeting] + ([{"src": "dag-01.mp3", "at": 11.9}] if t >= 1.9 else [])
+        return 1
+
+    async def wait_for_timeout(self, ms):
+        await asyncio.sleep(ms / 1000)
+
+
+def test_without_listen_the_line_comes_in_where_the_first_sound_ends():
+    waited = asyncio.run(page_sound.wait_heard(_TurnPage(), _Ear(), 0))
+    # The greeting's end and the breath after it: 1.5 s + the pause heard.
+    assert waited["ended"] == "sound_end" and waited["sound"] == "halsning-01.mp3"
+    assert 1.7 <= waited["seconds"] <= 2.0

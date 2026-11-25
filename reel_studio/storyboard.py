@@ -254,8 +254,9 @@ class StoryBeat(BaseModel):
         description="sound first: about the seconds the page is heard before the line, when it goes on "
                     "after what the line comments on (Tomten's greeting, then the day's voice: listen 8). "
                     "The line comes in at the page's first pause after that, as a person waits for the end "
-                    f"of a sentence (at most {page_sound.PAUSE_SEARCH_MS // 1000} s later). Left out, it is "
-                    f"heard until it goes quiet, up to {page_sound.QUIET_WAIT_MAX_MS // 1000} s.",
+                    f"of a sentence (at most {page_sound.PAUSE_SEARCH_MS // 1000} s later). Left out, the line comes "
+                    "in where the first sound the page plays ends and it pauses (the greeting, not the day's "
+                    f"voice after it), or once it goes quiet, up to {page_sound.QUIET_WAIT_MAX_MS // 1000} s.",
     )
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
 
@@ -294,8 +295,8 @@ def beats_json_schema() -> dict[str, Any]:
                                  "taps' sound at full level, then the line as a comment on it (needs taps)"},
         "listen": {"type": "number", "minimum": 1, "maximum": page_sound.QUIET_WAIT_MAX_MS / 1000,
                    "description": "sound first: about the seconds the page is heard before the line; it comes "
-                                  "in at the page's next pause (a greeting without what follows it); "
-                                  "left out, until it goes quiet"},
+                                  "in at the page's next pause; left out, where the first sound it "
+                                  "plays ends and it pauses (a greeting, not what follows it)"},
         "start": {"type": "array",
                   "description": "system: presses done offscreen after the page opens (a start screen): a "
                                  "button's text, or {x, y} as fractions of the screen",
