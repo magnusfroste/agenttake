@@ -52,8 +52,9 @@ filmed and cut it with AgentTake.
   screen offscreen (`start`) and plays the page on camera (`taps`), with a soft
   dot where a finger would press; `to_x`/`to_y` drags, `expect` checks the
   game's own state afterwards, so a press that missed fails the beat instead of
-  ending up in the film, and `react` keeps the camera on the game after the
-  last press so its answer is seen before the cut.
+  ending up in the film, `react` keeps the camera on the game after the
+  last press so its answer is seen before the cut, and `sound` lets the page's
+  own sound be heard: under the line, or first, with the line as a comment.
 - 🔁 **Edit without a reshoot** — hide a step, hold a result, speed up a wait,
   or rewrite a line, then `rerender`: no re-recording the browser.
 - 📐 **Any format** — 16:9 for X and YouTube, or 4:5 from a site's phone

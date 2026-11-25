@@ -63,6 +63,7 @@ from .graphics import (CALLOUT_AFTER_MOVE, CALLOUT_LEAD, CALLOUT_MIN_SECONDS, ca
 from .review import FOCUS_COVER_JS, OPEN_OVERLAYS_JS, PANELS_JS, SHOT_FACTS_JS, describe_cover, focus_covered
 from .schema import DRAG_MS, resolve_secret, secret_names, Action, mask_stylesheet
 from .tts import synthesize
+from . import sound as page_sound
 
 
 DEFAULT_OUTPUT_DIR = Path("/home/ubuntu/.video-director/sessions")
@@ -823,6 +824,12 @@ class BrowserSession:
     # When each page-changing action began, visible or offscreen: the shot
     # before it ends there (render.plan_segments cuts).
     timeline_cuts: list[float] = field(default_factory=list)
+    # Each timeline step's page sound in the film: "full", "under" or None.
+    timeline_sounds: list[str | None] = field(default_factory=list)
+    # The page's sound: this session's PulseAudio sink (name, module) and
+    # the ffmpeg recording it, beside screen.mp4. None without PulseAudio.
+    sound_sink: tuple[str, str] | None = None
+    sound_recorder: subprocess.Popen[bytes] | None = None
     # A step done offscreen before anything was shown: the video then opens on
     # the first visible step rather than on the page it was set up from.
     offscreen_first: bool = False
@@ -885,8 +892,10 @@ class BrowserSession:
             # The film no longer opens on that step's page.
             self.offscreen_first = True
         for name in ("timeline", "timeline_pages", "timeline_floors", "timeline_speeds",
-                     "timeline_glides", "timeline_cards"):
-            values = getattr(self, name)
+                     "timeline_glides", "timeline_cards", "timeline_sounds"):
+            values = getattr(self, name, None)
+            if values is None:
+                continue
             setattr(self, name, [values[index] for index in keep if index < len(values)])
         self.narrations = [entry for entry in self.narrations if round(entry[0], 3) not in drop]
 
@@ -929,10 +938,15 @@ class BrowserSession:
         # recording to the next. Removed again in _close_runtime.
         profile_dir = Path(tempfile.mkdtemp(prefix="reel-profile-"))
         write_quiet_profile(profile_dir)
+        # The page's sound plays into a sink of this session's own.
+        sink = await asyncio.to_thread(page_sound.open_sink, session_id)
+        # A short buffer: by default Chrome's sound reached the sink a second
+        # or more after the picture, and by a varying amount (2026-11-25).
+        sound_env = {"PULSE_SINK": sink[0], "PULSE_LATENCY_MSEC": page_sound.PULSE_LATENCY_MSEC} if sink else {}
         context = await playwright.chromium.launch_persistent_context(
             str(profile_dir),
             headless=False,
-            env={**os.environ, "DISPLAY": display},
+            env={**os.environ, "DISPLAY": display, **sound_env},
             args=geometry["browser_args"],
             no_viewport=True,
             **({"color_scheme": color_scheme} if color_scheme else {}),
@@ -947,6 +961,9 @@ class BrowserSession:
             "document.addEventListener('invalid', (e) => e.preventDefault(), true);"
         )
         await context.add_init_script(SAME_TAB_JS)
+        # What the page plays, for a beat that waits for it to end and for
+        # what probe and a rehearsal report.
+        await context.add_init_script(page_sound.SOUND_JS)
         # The pointer the film shows is drawn in the page (pointer.py): the
         # screen's own never moves under Playwright's clicks.
         await context.add_init_script(pointer_script(show_pointer))
@@ -979,6 +996,7 @@ class BrowserSession:
             except Exception:
                 pass
             shutil.rmtree(profile_dir, ignore_errors=True)
+            page_sound.close_sink(sink[1] if sink else None)
             raise RuntimeError(
                 "The browser would not go fullscreen, so the recording would show its tab "
                 "and address bars. Nothing was recorded; start the session again."
@@ -990,9 +1008,12 @@ class BrowserSession:
         # counted from launch, a slow first page left it in the first seconds
         # of an agent's video. Recording starts after it.
         await asyncio.sleep(FULLSCREEN_NOTICE_SECONDS)
+        screen_started = time.monotonic()
         recorder = start_recording(
             display, *geometry["record_size"], directory / "screen.mp4", draw_mouse=False
         )
+        sound_started = time.monotonic()
+        sound_recorder = page_sound.start_capture(sink[0], directory / page_sound.CAPTURE_FILE) if sink else None
         # Give ffmpeg one frame before t0 is recorded.
         await asyncio.sleep(0.4)
         if recorder.poll() is not None:
@@ -1011,6 +1032,9 @@ class BrowserSession:
             except Exception:
                 pass
             shutil.rmtree(profile_dir, ignore_errors=True)
+            if sound_recorder is not None:
+                stop_recording(sound_recorder)
+            page_sound.close_sink(sink[1] if sink else None)
             raise RuntimeError(
                 f"Screen recorder exited during startup (exit code {exit_code})"
             )
@@ -1021,6 +1045,12 @@ class BrowserSession:
         )
         session.profile_dir = profile_dir
         session.show_pointer = show_pointer
+        session.sound_sink = sink
+        session.sound_recorder = sound_recorder
+        if sound_recorder is not None:
+            # The sound recording's time of the screen recording's start.
+            page_sound.record_span(directory, page_sound.CAPTURE_FILE, 0.0,
+                                   screen_started - sound_started - page_sound.SCREEN_START_LAG)
         session.camera = Camera(width, height, scale)
         # A lambda: Playwright cannot wrap a builtin such as list.append.
         context.on("page", lambda popup: session.popups.append(popup))
@@ -2201,7 +2231,11 @@ class BrowserSession:
                         await self._touch_mark(x, y, False)
                     pointer = (x, y)
                 self.pointer, self.pointer_held = pointer, False
-                if action.then_ms and glide_started_at is not None:
+                if action.until_quiet:
+                    # The page is heard to the end before the line comments
+                    # on it: Tomten's greeting, a word read aloud.
+                    await page_sound.wait_quiet(self.page)
+                if (action.then_ms or action.until_quiet) and glide_started_at is not None:
                     # Held from the first press, which is where the step
                     # starts in the video, to then_ms after the last.
                     pressed = time.monotonic() - self.t0 - glide_started_at
@@ -2654,6 +2688,7 @@ class BrowserSession:
             self.timeline_speeds.append(action.speed)
             self.timeline_glides.append(duration if glide else None)
             self.timeline_cards.append(card is not None)
+            self.timeline_sounds.append(action.sound or None)
             if card is not None:
                 record_card(self.directory, offset, *card)
             shown = {key: graphic[key] for key in ("callout", "caption") if graphic.get(key)}
@@ -2794,8 +2829,16 @@ class BrowserSession:
         )
         return sum(segment.output_duration for segment in segments) + cards
 
+    def _stop_sound(self) -> None:
+        if self.sound_recorder is not None:
+            try:
+                stop_recording(self.sound_recorder)
+            except Exception:
+                pass
+
     def _finish_media(self) -> Path:
         stop_recording(self.recorder)
+        self._stop_sound()
         video = self.directory / "screen.mp4"
         size = video.stat().st_size if video.is_file() else 0
         if size == 0:
@@ -2817,6 +2860,7 @@ class BrowserSession:
                 self.render_config, self.camera, self.timeline_pages,
                 self.timeline_floors, keeps_lead_in(self), self.timeline_speeds,
                 self.timeline_glides, cuts=self.timeline_cuts,
+                sounds=self.timeline_sounds,
             )
             write_storyboard(self.directory, final, result.timeline)
         else:
@@ -2844,6 +2888,7 @@ class BrowserSession:
             stop_recording(self.recorder)
         except Exception:
             pass
+        self._stop_sound()
         await self._close_runtime()
 
     async def _close_runtime(self) -> None:
@@ -2866,4 +2911,6 @@ class BrowserSession:
                 self.xvfb.kill()
             if self.profile_dir is not None:
                 shutil.rmtree(self.profile_dir, ignore_errors=True)
+            self._stop_sound()
+            page_sound.close_sink(self.sound_sink[1] if self.sound_sink else None)
             self.runtime_closed = True

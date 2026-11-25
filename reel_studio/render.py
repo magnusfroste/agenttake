@@ -13,6 +13,7 @@ import textwrap
 import time
 
 from . import signature as sig
+from . import sound as page_sound
 from .graphics import ass_events as graphic_events, ass_styles as graphic_styles, look_of
 
 if TYPE_CHECKING:
@@ -1181,8 +1182,14 @@ def segmented_render(
     glides: Sequence[float | None] | None = None,
     order: Sequence[float] | None = None,
     cuts: Sequence[float] | None = None,
+    sounds: Sequence[str | None] | None = None,
 ) -> SegmentedRenderResult:
     """Render kept step windows from the original continuous recording.
+
+    ``sounds`` gives each step its page sound, in the order of ``steps``:
+    "full" or "under" cuts the page's own sound for that step's footage from
+    the recording beside the screen's (sound.py) into the film; None leaves
+    the step silent but for its line.
 
     ``pages`` is the URL each step ended on, in the order of ``steps``; with
     transitions "smooth" it tells a page change (a hard cut) from a jump on
@@ -1227,6 +1234,9 @@ def segmented_render(
         segment_paths: list[Path] = []
         segment_pages: list[str | None] = []
         audio_clips: list[tuple[float, Path]] = []
+        # The page's own sound, per segment, where its step asks for it.
+        page_clips: list[Path | None] = []
+        spans = page_sound.load_spans(video_path.parent) if sounds and any(sounds) else []
         cumulative = 0.0
         # Cards are made once the footage around them is: "blur" is built on
         # the last frame before the card.
@@ -1271,6 +1281,11 @@ def segmented_render(
             )
             if segment.clip is not None:
                 audio_clips.append((cumulative, segment.clip))
+            heard = _page_clip(segment, sounds, spans, video_path.parent, temporary_path)
+            if heard is not None:
+                page_clips.extend([None] * (len(segment_paths) - 1 - len(page_clips)))
+                page_clips.append(heard)
+                audio_clips.append((cumulative, heard))
             cumulative += segment.output_duration
 
         if not segment_paths:
@@ -1311,6 +1326,7 @@ def segmented_render(
                 [segment.clip for segment in segments],
                 output_path, output_size, config, temporary_path,
                 [segment.step_index for segment in segments], is_card,
+                page_clips + [None] * (len(segment_paths) - len(page_clips)),
             )
             return SegmentedRenderResult(output_path, probe_duration(output_path), warnings, timeline)
 
@@ -1348,6 +1364,24 @@ def segmented_render(
     if config.cta_url.strip():
         timeline.append({"kind": "outro", "step": None, "start": round(at, 3), "duration": CARD_DURATION})
     return SegmentedRenderResult(output_path, probe_duration(output_path), warnings, timeline)
+
+
+def _page_clip(segment: Segment, sounds: Sequence[str | None] | None, spans: Sequence[dict],
+               directory: Path, temporary: Path) -> Path | None:
+    """The page's own sound under a segment, when its step asks for it: cut
+    from the sound recording at the segment's place on the session clock."""
+    if not sounds or not spans or segment.step_index is None or segment.step_index >= len(sounds):
+        return None
+    mode = sounds[segment.step_index]
+    # A time-lapse or a glide with stalls left out has no sound that fits.
+    if mode not in ("full", "under") or segment.speed != 1.0 or segment.drop:
+        return None
+    found = page_sound.locate(spans, directory, segment.offset)
+    if found is None:
+        return None
+    source, at = found
+    return page_sound.cut_clip(source, at, min(segment.source_duration, segment.output_duration), mode,
+                               temporary / f"page-{segment.name}.wav")
 
 
 SOFT_DISSOLVE = 0.25
@@ -1433,6 +1467,7 @@ def _assemble_smooth(
     temporary: Path,
     step_indices: Sequence[int | None] | None = None,
     cards: Sequence[bool] | None = None,
+    page_clips: Sequence[Path | None] | None = None,
 ) -> list[dict]:
     """Join segments and cards in one xfade chain, then lay the narration on.
 
@@ -1523,8 +1558,17 @@ def _assemble_smooth(
     end = probe_duration(parts[0][0])
     placed = [{"kind": kinds[0][0], "step": kinds[0][1], "start": 0.0, "duration": round(end, 3)}]
     audio: list[tuple[float, Path]] = []
+    first_segment_part = 1 if _has_title_card(config) else 0
+
+    def heard(index: int, start: float) -> None:
+        # The page's own sound for a segment, from where the segment starts.
+        segment = index - first_segment_part
+        if page_clips and 0 <= segment < len(page_clips) and page_clips[segment] is not None:
+            audio.append((start, cast(Path, page_clips[segment])))
+
     if parts[0][1] is not None:
         audio.append((0.0, parts[0][1]))
+    heard(0, 0.0)
     for index in range(1, len(parts)):
         overlap = joins[index - 1] or CUT_FRAME
         start = max(0.0, end - overlap)
@@ -1535,6 +1579,7 @@ def _assemble_smooth(
         label = f"[v{index}]"
         if parts[index][1] is not None:
             audio.append((start, cast(Path, parts[index][1])))
+        heard(index, start)
         length = probe_duration(parts[index][0])
         end = start + length
         placed.append({"kind": kinds[index][0], "step": kinds[index][1],
