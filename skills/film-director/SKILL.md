@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.16.3
+version: 0.17.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -124,7 +124,10 @@ Don't use for:
 7. **Show the plan when someone commissioned it.** Send the operator a table
    of beat, shot, line and source, and wait for a go. If the voice is not
    settled, send `audition_voice(text=<a line>, voices=[...])`'s page with
-   it: they choose by ear. A fixed line costs
+   it: they choose by ear. Music is optional: `list_music` lists free
+   tracks by mood (calm, bright, playful...); put the mood you would pass as
+   `start_session(music=...)` in the table, or none for a film about the
+   page's own sound. A fixed line costs
    seconds; a retake costs half an hour. Skip this step only when told to run
    unattended. *Done when* you have a go, or were told to skip it.
 8. **Run the film.** The handbook's "The whole film, start to done" and each
