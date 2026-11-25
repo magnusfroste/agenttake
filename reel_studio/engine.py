@@ -2234,7 +2234,7 @@ class BrowserSession:
                 if action.until_quiet:
                     # The page is heard to the end before the line comments
                     # on it: Tomten's greeting, a word read aloud.
-                    await page_sound.wait_quiet(self.page)
+                    await page_sound.wait_quiet(self.page, action.listen_ms or page_sound.QUIET_WAIT_MAX_MS)
                 if (action.then_ms or action.until_quiet) and glide_started_at is not None:
                     # Held from the first press, which is where the step
                     # starts in the video, to then_ms after the last.

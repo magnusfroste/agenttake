@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.15.0
+version: 0.16.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -99,8 +99,10 @@ Don't use for:
    so the answer is seen before the cut. A page that makes sound (a word
    read aloud, a greeting when a door opens) can be heard: `sound: "under"`
    keeps it under the line, `sound: "first"` lets it be heard to the end and
-   makes the line a comment on it. `probe` and `rehearse_beats` list what the
-   page played, so you know what you are commenting on. Save them with `write_file` to
+   makes the line a comment on it; when the page goes on after what you
+   comment on (a greeting, then more), `listen` is the seconds heard before
+   the line. `probe` and `rehearse_beats` list what the page played, so you
+   know what you are commenting on. Save them with `write_file` to
    `storyboard.json` in your working directory. Retakes must reuse identical
    lines: AgentTake reuses the voice clip of an unchanged line, so a retake
    costs no TTS. *Done when* the file holds every beat.

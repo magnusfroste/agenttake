@@ -571,12 +571,17 @@ def film_findings(frames: Sequence[bytes], parts: Sequence[dict], steps: Sequenc
         if index < len(frames) and changes[index] <= STILL_CHANGE:
             continue
         seconds = (index - start) / fps
-        if seconds >= LONG_STILL:
+        # A step whose page is heard at full level (Tomten's greeting) is
+        # listened to, not looked at: the still picture is the point there.
+        heard = sum(max(0.0, min(index / fps, float(part["start"]) + float(part["duration"]))
+                         - max(start / fps, float(part["start"])))
+                    for part, step in shots if step.get("sound") == "full")
+        if seconds - heard >= LONG_STILL:
             current = shot_at((start + index) / 2 / fps)
             step = current[1] if current else None
             where = f"step[{step.get('idx', 0)}]" if step else "session"
             findings.append({
-                "category": "long_still", "severity": "medium" if seconds >= VERY_LONG_STILL else "low",
+                "category": "long_still", "severity": "medium" if seconds - heard >= VERY_LONG_STILL else "low",
                 "location": where, "at_seconds": start / fps, "measured": {"seconds": seconds},
                 "message": f"Nothing moves for {seconds:.1f} s from {start / fps:.1f}s.",
                 "fix": "Shorten the line with update_step_narration, push in on what the line names (the beat's camera), "

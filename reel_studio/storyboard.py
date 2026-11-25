@@ -83,7 +83,7 @@ SHOT_FIELDS: dict[str, str] = {
               "SCENES.bakery.rollDone; still false, the beat failed); react optional (seconds, up to 6, the "
               "camera stays on the game after the last press so its answer is seen before the cut); sound "
               "optional (the page's own sound: under, heard under the line; first, the taps' sound heard "
-              "at full level and then the line, a commentator's)",
+              "at full level and then the line, a commentator's; listen optional, the seconds heard at most)",
     "live_answer": "input_text, wait_for_text optional (words the answer must have), timeout optional (seconds, "
                    "default 120), url optional (default: the page before): sends offscreen, waits until the "
                    "answer stops growing, shows it; camera optional (1-2.5, default 1.5)",
@@ -249,6 +249,13 @@ class StoryBeat(BaseModel):
                     "(Tomten's greeting), and the line comes when the page has gone quiet, a comment on what "
                     "was heard; needs taps. Left out, the page is silent.",
     )
+    listen: float | None = Field(
+        default=None, ge=1, le=page_sound.QUIET_WAIT_MAX_MS / 1000,
+        description="sound first: the seconds the page is heard at most before the line, when it goes on "
+                    "after what the line comments on (Tomten's greeting, then the day's voice: listen 9). "
+                    "Left out, it is heard until it goes quiet, up to "
+                    f"{page_sound.QUIET_WAIT_MAX_MS // 1000} s.",
+    )
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
 
 
@@ -284,6 +291,9 @@ def beats_json_schema() -> dict[str, Any]:
         "sound": {"type": "string", "enum": ["under", "first"],
                   "description": "system: the page's own sound in the film. under: under the line; first: the "
                                  "taps' sound at full level, then the line as a comment on it (needs taps)"},
+        "listen": {"type": "number", "minimum": 1, "maximum": page_sound.QUIET_WAIT_MAX_MS / 1000,
+                   "description": "sound first: the seconds the page is heard at most before the line "
+                                  "(a greeting without what follows it); left out, until it goes quiet"},
         "start": {"type": "array",
                   "description": "system: presses done offscreen after the page opens (a start screen): a "
                                  "button's text, or {x, y} as fractions of the screen",
@@ -378,7 +388,8 @@ def beat_seconds(beat: dict) -> float:
     if beat.get("sound") == "first" and beat.get("taps"):
         # The page is heard before the line: a guess at how long, until a
         # rehearsal says what it played.
-        return line + page_sound.FIRST_ESTIMATE_SECONDS + float(beat.get("react") or 0)
+        heard = float(beat.get("listen") or page_sound.FIRST_ESTIMATE_SECONDS)
+        return line + heard + float(beat.get("react") or 0)
     return max(line, reacted,
                SHOT_MIN_SECONDS.get(beat["shot"], DEFAULT_MIN_SECONDS if beat.get("line") else 0.0))
 
@@ -498,6 +509,10 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
                 items.append(_item(number, label, "fix", "sound_first_without_taps",
                                    "sound first plays what the beat's taps set off before the line: give the "
                                    "beat the taps on camera that start the sound (a door, a card), or use under"))
+        if beat.get("listen") and not (beat.get("sound") == "first" and beat.get("taps")):
+            items.append(_item(number, label, "warn", "listen_not_used",
+                               "listen is how long a sound first beat hears the page before its line: this "
+                               "beat is not one, so it is not used"))
         if beat.get("react") and not beat.get("taps"):
             items.append(_item(number, label, "warn", "react_not_used",
                                "react keeps the camera on the page after a beat's last press: this beat has no "
@@ -1112,12 +1127,14 @@ def _play(line: str, taps: list, language: str = "en", react: float | None = Non
     return _act(tap, line)
 
 
-def _heard_first(line: str, taps: list, react: float | None = None) -> list[dict]:
+def _heard_first(line: str, taps: list, react: float | None = None, listen: float | None = None) -> list[dict]:
     """A beat whose page is heard before its line: the taps on camera, held
     until what they set off has been heard to the end (and react after it),
     then the line, a comment on it, with the page under it."""
     tap: dict[str, Any] = {"type": "tap", "points": [_point(tap) for tap in taps], "quiet": True,
                            "until_quiet": True, "sound": "full"}
+    if listen:
+        tap["listen_ms"] = int(listen * 1000)
     if react:
         tap["then_ms"] = int(react * 1000)
     said = _say(line)
@@ -1235,7 +1252,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             ops = [{"op": "stay", "url": beat["url"], "open": ops}]
         sound = beat.get("sound")
         if beat.get("taps") and sound == "first":
-            said = _heard_first(line, beat["taps"], beat.get("react"))
+            said = _heard_first(line, beat["taps"], beat.get("react"), beat.get("listen"))
         elif beat.get("taps"):
             said = _play(line, beat["taps"], beat.get("language", "en"), beat.get("react"), sound)
         elif wait_text:

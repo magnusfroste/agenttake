@@ -14,6 +14,7 @@ TAP_HOLD_MAX_MS = 5000
 # the press sets off: Lillstaden's oven card flew in just as the beat was cut
 # (Kotten take 4, 2026-11-24).
 TAP_THEN_MAX_MS = 6000
+from .sound import QUIET_WAIT_MAX_MS  # noqa: E402
 # A drag's move when its point gives no ms.
 DRAG_MS = 700
 
@@ -95,6 +96,9 @@ class Action(BaseModel):
     # tap only: after the presses, wait until the page's own sound has ended
     # (Tomten's greeting) before the step's hold is counted.
     until_quiet: bool = False
+    # tap with until_quiet: listen this long at most, so a greeting can be
+    # heard without the day's voice that follows it (julkalender, 2026-11-25).
+    listen_ms: int = Field(default=0, ge=0, le=QUIET_WAIT_MAX_MS)
     # The page's own sound in the film for this step: "full" (heard at full
     # level, nothing said over it), "under" (heard under the line), or ""
     # (silent, as every film was before).
@@ -246,6 +250,9 @@ def action_json_schema() -> dict[str, Any]:
                         "description": "tap only: stay on the page this long after the last press"},
             "until_quiet": {"type": "boolean",
                             "description": "tap only: after the presses, wait until the page's own sound has ended"},
+            "listen_ms": {"type": "integer", "minimum": 0, "maximum": QUIET_WAIT_MAX_MS,
+                          "description": "tap with until_quiet: listen this long at most (0: up to "
+                                         f"{QUIET_WAIT_MAX_MS})"},
             "sound": {"type": "string", "enum": ["", "full", "under"],
                       "description": "The page's own sound in the film for this step: full (heard, nothing said "
                                      "over it), under (heard under the line), or left out: silent"},
