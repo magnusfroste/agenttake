@@ -579,14 +579,18 @@ def file_levels(path: Path, start: float, seconds: float) -> list[float]:
 
 
 # A line that starts while the page is still this close to its loud level
-# is spoken over it.
+# is spoken over it. Where it starts: its first TALK_OVER_SECONDS. A line in
+# the pause after Tomten's greeting, with the day's voice starting 0.2 s
+# into it, is the line coming in where a person would, the page going on
+# under it: measured over 0.3 s, it was reported (2026-11-25).
 TALK_OVER_DB = 12.0
+TALK_OVER_SECONDS = 0.1
 
 
 def talk_over(directory: Path, heard_offset: float, line_offset: float) -> dict | None:
     """Whether a line at ``line_offset`` (the session's clock) starts while
     the page it comments on, heard from ``heard_offset``, still speaks: its
-    level in the line's first 0.3 s against its loud level while heard.
+    level where the line starts against its loud level while heard.
     None when there is no recording to tell."""
     spans = load_spans(directory)
     found = locate(spans, directory, line_offset) if spans else None
@@ -595,7 +599,7 @@ def talk_over(directory: Path, heard_offset: float, line_offset: float) -> dict 
         return None
     source, at = found
     loud = loud_db(file_levels(source, before[1], max(0.5, at - before[1])))
-    start = file_levels(source, at, 0.3)
+    start = file_levels(source, at, TALK_OVER_SECONDS)
     if loud is None or not start:
         return None
     level = max(start)
