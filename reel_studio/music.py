@@ -5,7 +5,7 @@ hiss, not music (Magnus, 2026-11-25: "det vore ju fantastisk om agenten även
 kunde lägga på lite pausmusik"). Generating music costs a provider and a
 quota; cutting finished tracks costs nothing and sounds the same every time.
 
-The library is reel_studio/data/music/library.json and the files beside it,
+The library is reel_studio/tracks/library.json and the files beside it,
 each one CC0 (no credit needed, no licence to track): a person listened to
 every one before it went in. A director chooses a mood ("calm"), or a
 track's id for one track. The track is laid under the whole film: it fades
@@ -30,7 +30,7 @@ from typing import Sequence
 from . import sound as page_sound
 
 LIBRARY_ENV = "REEL_MUSIC_LIBRARY"
-DEFAULT_LIBRARY = Path(__file__).parent / "data" / "music" / "library.json"
+DEFAULT_LIBRARY = Path(__file__).parent / "tracks" / "library.json"
 # What a film without music says, and what the old "subtle" (a noise bed)
 # now means: the library's first calm track.
 NONE = "none"

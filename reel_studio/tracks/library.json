@@ -1,0 +1,148 @@
+{
+  "about": "Free music for AgentTake films: every track CC0 (no credit needed), its licence checked on its source page and listened to by a person (Magnus, 2026-11-25). The first track of a mood is what that mood gives. Files are mono 48 kHz; loops are FLAC so they join without a gap.",
+  "tracks": [
+    {
+      "id": "calm-vaporware",
+      "mood": "calm",
+      "file": "calm-vaporware.mp3",
+      "title": "Vaporware (Calm Piano 1)",
+      "artist": "cynicmusic (The Cynic Project)",
+      "source": "https://opengameart.org/content/calm-piano-1-vaporware",
+      "licence": "CC0",
+      "loop": false,
+      "about": "Soft pads under an uplifting piano melody."
+    },
+    {
+      "id": "calm-snowfall",
+      "mood": "calm",
+      "file": "calm-snowfall.flac",
+      "title": "Snowfall (Looped ver.)",
+      "artist": "Kistol",
+      "source": "https://opengameart.org/content/snowfall",
+      "licence": "CC0",
+      "loop": true,
+      "about": "Solo piano waltz, gentle; a seamless loop."
+    },
+    {
+      "id": "bright-bubbles",
+      "mood": "bright",
+      "file": "bright-bubbles.mp3",
+      "title": "Bubbles ( Lofi , Bright , Relaxed )",
+      "artist": "HoliznaCC0",
+      "source": "https://freemusicarchive.org/music/holiznacc0/public-domain-lofi/bubbles-lofi-bright-relaxed/",
+      "licence": "CC0",
+      "loop": false,
+      "about": "Bright, relaxed lo-fi with a soft beat."
+    },
+    {
+      "id": "bright-red-hair-blue-sky",
+      "mood": "bright",
+      "file": "bright-red-hair-blue-sky.mp3",
+      "title": "Red Hair, Blue Sky",
+      "artist": "Monplaisir",
+      "source": "https://freemusicarchive.org/music/Monplaisir/Relaxing_Ukulele/Monplaisir_-_Relaxing_Ukulele_-_01_Red_Hair_Blue_Sky/",
+      "licence": "CC0",
+      "loop": false,
+      "about": "Light, relaxed ukulele."
+    },
+    {
+      "id": "bright-happy-clappy",
+      "mood": "bright",
+      "file": "bright-happy-clappy.flac",
+      "title": "Happy Clappy Loop",
+      "artist": "OwlishMedia",
+      "source": "https://opengameart.org/content/happy-clappy-loop",
+      "licence": "CC0",
+      "loop": true,
+      "about": "Cheerful piano with hand claps; a short loop."
+    },
+    {
+      "id": "focused-theta-frequency",
+      "mood": "focused",
+      "file": "focused-theta-frequency.mp3",
+      "title": "Theta Frequency ( Lofi , Chill , Calm )",
+      "artist": "HoliznaCC0",
+      "source": "https://freemusicarchive.org/music/holiznacc0/public-domain-lofi/theta-frequency-lofi-chill-calm/",
+      "licence": "CC0",
+      "loop": false,
+      "about": "Calm lo-fi with a steady, soft beat."
+    },
+    {
+      "id": "focused-walking-away",
+      "mood": "focused",
+      "file": "focused-walking-away.mp3",
+      "title": "Walking Away ( Lofi , Peaceful , Motivating )",
+      "artist": "HoliznaCC0",
+      "source": "https://freemusicarchive.org/music/holiznacc0/public-domain-lofi/walking-away-lofi-peaceful-motivating/",
+      "licence": "CC0",
+      "loop": false,
+      "about": "Peaceful lo-fi that moves forward."
+    },
+    {
+      "id": "playful-feel-good-island",
+      "mood": "playful",
+      "file": "playful-feel-good-island.mp3",
+      "title": "Feel Good Island",
+      "artist": "Brandon75689 / Brandon Morris (submitted by HaelDB)",
+      "source": "https://opengameart.org/content/feel-good-island",
+      "licence": "CC0",
+      "loop": false,
+      "about": "Comical, soothing marimba, piano, bass and drums."
+    },
+    {
+      "id": "playful-carnival-rides",
+      "mood": "playful",
+      "file": "playful-carnival-rides.flac",
+      "title": "Carnival Rides",
+      "artist": "Écrivain",
+      "source": "https://opengameart.org/content/carnival-rides",
+      "licence": "CC0",
+      "loop": true,
+      "about": "A short, merry carousel loop."
+    },
+    {
+      "id": "christmas-wintery",
+      "mood": "christmas",
+      "file": "christmas-wintery.flac",
+      "title": "Wintery Loop",
+      "artist": "Emma_MA",
+      "source": "https://opengameart.org/content/wintery-loop",
+      "licence": "CC0",
+      "loop": true,
+      "about": "Piano, toy piano, woodwinds and a sleigh-bell tambourine; a loop."
+    },
+    {
+      "id": "christmas-happy-synths",
+      "mood": "christmas",
+      "file": "christmas-happy-synths.flac",
+      "title": "Happy synths loop with slight christmas feeling",
+      "artist": "3xBlast",
+      "source": "https://opengameart.org/content/happy-synths-loop-with-slight-christmas-feeling",
+      "licence": "CC0",
+      "loop": true,
+      "about": "Upbeat synths and bells, 160 bpm; busy under a voice."
+    },
+    {
+      "id": "inspiring-beautiful-forest",
+      "mood": "inspiring",
+      "file": "inspiring-beautiful-forest.mp3",
+      "title": "Beautiful Forest (orchestra)",
+      "artist": "nene",
+      "source": "https://opengameart.org/content/beautiful-forest-orchestra",
+      "licence": "CC0",
+      "loop": false,
+      "about": "Gentle orchestra: strings, brass, flute."
+    },
+    {
+      "id": "inspiring-field-of-dreams",
+      "mood": "inspiring",
+      "file": "inspiring-field-of-dreams.mp3",
+      "title": "The Field of Dreams",
+      "artist": "pauliuw",
+      "source": "https://opengameart.org/content/the-field-of-dreams",
+      "licence": "CC0",
+      "loop": false,
+      "about": "A short cinematic piece, notation playback."
+    }
+  ]
+}

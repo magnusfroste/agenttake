@@ -66,8 +66,9 @@ def test_without_a_library_there_is_no_music(tmp_path, monkeypatch):
 def test_the_shipped_library_is_free_and_complete():
     """Every track in the library is CC0, has its source and its file."""
     library = music.DEFAULT_LIBRARY
-    if not library.is_file():
-        pytest.skip("no music library in this checkout")
+    # Never skipped: under an ignored folder (data/) the library was missing
+    # from git, and so from the image, while this test skipped (#155).
+    assert library.is_file()
     entries = json.loads(library.read_text())["tracks"]
     assert entries
     for entry in entries:
