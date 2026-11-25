@@ -439,20 +439,25 @@ def spoken(lines: Sequence[tuple[float, float]], hold: float = DUCK_HOLD) -> lis
 
 
 def duck(lines: Sequence[tuple[float, float]], depth: float = DUCK_DB, lead: float = DUCK_LEAD,
-         after: float = DUCK_AFTER, release: float = DUCK_RELEASE, hold: float = DUCK_HOLD) -> str:
+         after: float = DUCK_AFTER, release: float = DUCK_RELEASE, hold: float = DUCK_HOLD,
+         last_release: float | None = None) -> str:
     """An ffmpeg volume filter that takes a sound ``depth`` dB down under
     the lines (seconds on the film's clock): linear in dB, down over
     ``lead`` before each line, up over ``release`` from ``after`` past it.
     The page's sound by default; the music (music.py) moves slower. A flat
     sum of trapezoids: the merged spans are at least ``hold`` apart, more
     than the three together, so no two overlap, and the expression nests no
-    deeper with more lines. "" when nothing is said."""
+    deeper with more lines. ``last_release`` is the last line's, quicker
+    for the music to come up at a film's end. "" when nothing is said."""
     spans = spoken(lines, max(hold, lead + after + release))
     if not spans:
         return ""
+    releases = [release] * len(spans)
+    if last_release:
+        releases[-1] = last_release
     terms = "+".join(
-        f"clip((t-{start - lead:.3f})/{lead},0,1)*clip(({end + after + release:.3f}-t)/{release},0,1)"
-        for start, end in spans
+        f"clip((t-{start - lead:.3f})/{lead},0,1)*clip(({end + after + up:.3f}-t)/{up},0,1)"
+        for (start, end), up in zip(spans, releases)
     )
     # Small frames: volume sets its gain once a frame, at the frame's start,
     # so a ramp over 1024-sample frames would step every 21 ms.
