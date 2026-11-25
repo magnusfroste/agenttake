@@ -41,6 +41,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-inter fonts-ibm-plex \
     && rm -rf /var/lib/apt/lists/*
 
+# The page's own sound: the browser plays into a PulseAudio null sink of the
+# session's own, recorded beside the screen, for a beat that lets the page be
+# heard (sound.py). Its own layer, after the browser, so it never reinstalls
+# Chromium. Without it every film is silent but for its voice, as before.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 # Skatteverket's open list of test personal numbers, for the check that keeps
 # a real one out of a film. Not in git; its own layer, so a code change does
 # not fetch it again. A build without network still works: every number is

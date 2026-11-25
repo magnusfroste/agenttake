@@ -67,6 +67,7 @@ from .camera import MAX_OUTPUT_SCALE, MAX_ZOOM, Camera
 from . import review as checks
 from . import storyboard as boards
 from . import probe as scout
+from . import sound as page_sound
 from .schema import TapPoint, secret_names, ACTION_CONTRACT, ACTION_TYPES, FRAMINGS, Action, action_json_schema, mask_stylesheet
 from .tts import (
     TTSProviderError,
@@ -2758,6 +2759,7 @@ async def _run_action(
         payload.get("open_overlays"),
         payload.get("focus_cover"),
         started_seconds=payload.get("started_at_seconds"),
+        sound=parsed_action.sound,
     )
     if narration.strip() and payload.get("ok") and not parsed_action.offscreen:
         await _remember_page_text(session, session_id, parsed_action)
@@ -3532,6 +3534,8 @@ async def _rehearse_one(job: "FinishJob", live: Any, beat: dict, send_live: bool
         return await _rehearsal_act(live, action, narration)
 
     ops = boards.rehearsal_ops(beat, send_live, plan_beats, continues)
+    # What the page plays during the beat, on the page's own clock.
+    sound_page, sound_since = live.page.url, await page_sound.page_now(live.page)
     outcome = await boards.run_ops(live, job.session_id, ops, act)
     report: dict[str, Any] = {"beat": number, "label": beat["label"], "shot": beat["shot"], "ok": outcome["ok"],
                               "seconds": round(time.monotonic() - started, 1)}
@@ -3544,6 +3548,15 @@ async def _rehearse_one(job: "FinishJob", live: Any, beat: dict, send_live: bool
         report["reason"] = outcome["reason"]
     if outcome.get("notes"):
         report["notes"] = outcome["notes"]
+    heard = await page_sound.heard(live.page, sound_since if live.page.url == sound_page else 0.0)
+    if heard:
+        report["sounds"] = heard
+    sound_notes = page_sound.sound_notes(heard)
+    if beat.get("sound") and not heard:
+        sound_notes.append(f"sound is {beat['sound']}, but the page played nothing during the beat: it would be "
+                           "silent. The press that starts the sound has to be one of the beat's taps")
+    if sound_notes:
+        report["notes"] = [*report.get("notes", []), *sound_notes]
     if beat["shot"] == "live_answer" and not send_live:
         found = bool((await live.form_fields()).get("message"))
         report["not_sent"] = "The prompt was not sent. send_live=true sends it, and it lands in the product's log."
@@ -3722,6 +3735,8 @@ async def rehearse_status(
 PROBE_PREFIX = "probe-"
 PROBE_SECONDS = 150.0
 PROBE_STILLS_MAX = 6
+# How long probe listens for a sound its presses started to end.
+PROBE_SOUND_WAIT_MS = 12000
 
 
 async def _probe(url: str, presses: list, reads: list[str], wait_for_text: str | None, each: bool,
@@ -3774,6 +3789,14 @@ async def _probe(url: str, presses: list, reads: list[str], wait_for_text: str |
             result["presses"] = steps
         if reads:
             result["read"] = await scout.read_values(live.page, reads)
+        # A sound still playing is heard out, so its length is known.
+        await page_sound.wait_quiet(live.page, PROBE_SOUND_WAIT_MS)
+        heard = await page_sound.heard(live.page)
+        if heard:
+            result["sounds"] = heard
+            notes = page_sound.sound_notes(heard)
+            if notes:
+                result["sound_notes"] = notes
         result["now_at"] = live.page.url
         result["elements"] = await scout.elements(live.page)
         result["globals"] = await scout.page_globals(live.page)
@@ -3785,6 +3808,8 @@ async def _probe(url: str, presses: list, reads: list[str], wait_for_text: str |
         result["next"] = ("Probe again with the presses that worked and the next one, until the page shows what "
                           "the line says. Then put them in a system beat: start for the way past a start screen, "
                           "taps for what plays on camera, and a read that turned true as its expect. "
+                          "sounds lists what the page played (at: seconds after it opened): a beat's sound "
+                          "puts it in the film, first to comment on it after it is heard. "
                           "plan_storyboard, then rehearse_beats.")
         return feedback_result(result, *stills[-PROBE_STILLS_MAX:])
     finally:
@@ -4855,6 +4880,7 @@ async def _rerender(job: "FinishJob", session: dict, voice: str | None, provider
     render_glides: list[float | None] = []
     render_order: list[int] = []
     render_cuts: list[float] = []
+    render_sounds: list[str | None] = []
     lead_in = wants_lead_in(session["steps"])
     steps = session["steps"]
     # Where each step plays (edit_step position); the steps themselves stay in
@@ -4902,6 +4928,7 @@ async def _rerender(job: "FinishJob", session: dict, voice: str | None, provider
         is_glide = step.get("action_type") == "scroll" and float(step.get("annotation_seconds") or 0.0) > 0
         render_glides.append(duration if is_glide else None)
         render_order.append(places[step["idx"]])
+        render_sounds.append(step.get("sound") or None)
     reordered = render_order != sorted(render_order)
     if segmented_render_enabled():
         output_width = session.get("output_width")
@@ -4915,7 +4942,7 @@ async def _rerender(job: "FinishJob", session: dict, voice: str | None, provider
             segmented_render, source_video, render_steps, video_path, output_size,
             render_config, Camera.load(output_dir), render_pages,
             render_floors, lead_in, render_speeds, render_glides,
-            order=render_order, cuts=render_cuts,
+            order=render_order, cuts=render_cuts, sounds=render_sounds,
         )
         await asyncio.to_thread(write_storyboard, output_dir, video_path, getattr(result, "timeline", []) or [])
         warnings = result.warnings

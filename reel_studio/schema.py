@@ -92,6 +92,13 @@ class Action(BaseModel):
     # tap only: the camera stays on the page this long after the last press,
     # however soon the line ends, so the game's answer to it is seen.
     then_ms: int = Field(default=0, ge=0, le=TAP_THEN_MAX_MS)
+    # tap only: after the presses, wait until the page's own sound has ended
+    # (Tomten's greeting) before the step's hold is counted.
+    until_quiet: bool = False
+    # The page's own sound in the film for this step: "full" (heard at full
+    # level, nothing said over it), "under" (heard under the line), or ""
+    # (silent, as every film was before).
+    sound: Literal["", "full", "under"] = ""
 
     @model_validator(mode="after")
     def _taps_have_points(self) -> "Action":
@@ -237,6 +244,11 @@ def action_json_schema() -> dict[str, Any]:
             "points": tap_points_json_schema(),
             "then_ms": {"type": "integer", "minimum": 0, "maximum": TAP_THEN_MAX_MS,
                         "description": "tap only: stay on the page this long after the last press"},
+            "until_quiet": {"type": "boolean",
+                            "description": "tap only: after the presses, wait until the page's own sound has ended"},
+            "sound": {"type": "string", "enum": ["", "full", "under"],
+                      "description": "The page's own sound in the film for this step: full (heard, nothing said "
+                                     "over it), under (heard under the line), or left out: silent"},
         },
     }
 

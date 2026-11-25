@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from . import sensitive
 from . import signature as sig
+from . import sound as page_sound
 from .camera import PUSH_ZOOM
 from .graphics import check_callout, check_caption, cue_share, said_at
 from .review import describe_cover, focus_covered, normalize_line
@@ -80,7 +81,9 @@ SHOT_FIELDS: dict[str, str] = {
               "press drags there over ms, default 700 — a piece pulled onto a board; a soft dot marks each); "
               "expect optional (a JavaScript expression true once the presses did what the line says: "
               "SCENES.bakery.rollDone; still false, the beat failed); react optional (seconds, up to 6, the "
-              "camera stays on the game after the last press so its answer is seen before the cut)",
+              "camera stays on the game after the last press so its answer is seen before the cut); sound "
+              "optional (the page's own sound: under, heard under the line; first, the taps' sound heard "
+              "at full level and then the line, a commentator's)",
     "live_answer": "input_text, wait_for_text optional (words the answer must have), timeout optional (seconds, "
                    "default 120), url optional (default: the page before): sends offscreen, waits until the "
                    "answer stops growing, shows it; camera optional (1-2.5, default 1.5)",
@@ -239,6 +242,13 @@ class StoryBeat(BaseModel):
                     "soon the line ends, so what the press sets off is seen before the cut: a card that flies "
                     "in, an oven that bakes. 1.5-3 for an animation; left out, the beat ends with its line.",
     )
+    sound: Literal["under", "first"] | None = Field(
+        default=None,
+        description="system: the page's own sound in the film. under: heard under the line, lower than the "
+                    "voice (a game's words read aloud). first: the taps' sound is heard first at full level "
+                    "(Tomten's greeting), and the line comes when the page has gone quiet, a comment on what "
+                    "was heard; needs taps. Left out, the page is silent.",
+    )
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
 
 
@@ -271,6 +281,9 @@ def beats_json_schema() -> dict[str, Any]:
         "react": {"type": "number", "minimum": 0, "maximum": REACT_MAX_SECONDS,
                   "description": "system with taps: seconds the camera stays on the page after the last press, "
                                  "so the game's answer to it (a card flying in) is seen before the cut"},
+        "sound": {"type": "string", "enum": ["under", "first"],
+                  "description": "system: the page's own sound in the film. under: under the line; first: the "
+                                 "taps' sound at full level, then the line as a comment on it (needs taps)"},
         "start": {"type": "array",
                   "description": "system: presses done offscreen after the page opens (a start screen): a "
                                  "button's text, or {x, y} as fractions of the screen",
@@ -362,6 +375,10 @@ def beat_seconds(beat: dict) -> float:
     line = line_seconds(beat.get("line", ""), beat.get("language", "en"))
     # The last press lands at about four fifths of the line; react runs from there.
     reacted = line * 0.8 + float(beat.get("react") or 0) if beat.get("taps") and beat.get("react") else 0.0
+    if beat.get("sound") == "first" and beat.get("taps"):
+        # The page is heard before the line: a guess at how long, until a
+        # rehearsal says what it played.
+        return line + page_sound.FIRST_ESTIMATE_SECONDS + float(beat.get("react") or 0)
     return max(line, reacted,
                SHOT_MIN_SECONDS.get(beat["shot"], DEFAULT_MIN_SECONDS if beat.get("line") else 0.0))
 
@@ -473,6 +490,14 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
             elif len(beat["expect"]) > EXPECT_MAX_CHARS:
                 items.append(_item(number, label, "fix", "long_expect",
                                    f"expect is one expression of {EXPECT_MAX_CHARS} characters at most"))
+        if beat.get("sound"):
+            if shot != "system":
+                items.append(_item(number, label, "warn", "sound_not_used",
+                                   f"sound is the page's own sound on a system shot: a {shot} shot has none"))
+            elif beat["sound"] == "first" and not beat.get("taps"):
+                items.append(_item(number, label, "fix", "sound_first_without_taps",
+                                   "sound first plays what the beat's taps set off before the line: give the "
+                                   "beat the taps on camera that start the sound (a door, a card), or use under"))
         if beat.get("react") and not beat.get("taps"):
             items.append(_item(number, label, "warn", "react_not_used",
                                "react keeps the camera on the page after a beat's last press: this beat has no "
@@ -1069,7 +1094,8 @@ def _start(presses: list | None) -> list[dict]:
     return ops
 
 
-def _play(line: str, taps: list, language: str = "en", react: float | None = None) -> dict:
+def _play(line: str, taps: list, language: str = "en", react: float | None = None,
+          sound: str | None = None) -> dict:
     """The beat's narrated step on a page played on camera: the presses
     spread over the line, the last one done before it ends, and with react
     the camera on the page that long after it."""
@@ -1081,7 +1107,22 @@ def _play(line: str, taps: list, language: str = "en", react: float | None = Non
     tap: dict[str, Any] = {"type": "tap", "points": points, "ms": int(min(2000, max(250, gap)))}
     if react:
         tap["then_ms"] = int(react * 1000)
+    if sound == "under":
+        tap["sound"] = "under"
     return _act(tap, line)
+
+
+def _heard_first(line: str, taps: list, react: float | None = None) -> list[dict]:
+    """A beat whose page is heard before its line: the taps on camera, held
+    until what they set off has been heard to the end (and react after it),
+    then the line, a comment on it, with the page under it."""
+    tap: dict[str, Any] = {"type": "tap", "points": [_point(tap) for tap in taps], "quiet": True,
+                           "until_quiet": True, "sound": "full"}
+    if react:
+        tap["then_ms"] = int(react * 1000)
+    said = _say(line)
+    said["action"]["sound"] = "under"
+    return [_act(tap), said]
 
 
 def glide_ms(line: str, language: str = "en") -> int:
@@ -1192,25 +1233,32 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             # Opened all the same if the browser is somewhere else: the beat
             # before failed, or the shoot was taken up again.
             ops = [{"op": "stay", "url": beat["url"], "open": ops}]
-        if beat.get("taps"):
-            said = _play(line, beat["taps"], beat.get("language", "en"), beat.get("react"))
+        sound = beat.get("sound")
+        if beat.get("taps") and sound == "first":
+            said = _heard_first(line, beat["taps"], beat.get("react"))
+        elif beat.get("taps"):
+            said = _play(line, beat["taps"], beat.get("language", "en"), beat.get("react"), sound)
         elif wait_text:
             said = _found(line, wait_text)
         else:
             said = _say(line)
+        said = said if isinstance(said, list) else [said]
+        if sound == "under":
+            for op in said:
+                op["action"].setdefault("sound", "under")
         check = [{"op": "expect", "js": beat["expect"], "seconds": EXPECT_SECONDS}] if beat.get("expect") else []
         if not wait_text:
             # Nothing to frame on: the whole screen, as a canvas game fills it.
             zoom = camera or 1.0
             return [*ops, _shot(zoom, None, keep_zoom=camera is not None, stays=stays,
-                                **_move(move, zoom, 2.5, same_page=stays)), said, *check]
+                                **_move(move, zoom, 2.5, same_page=stays)), *said, *check]
         return [
             *ops,
             _act({"type": "scroll_to_text", "text": wait_text, "offscreen": True}),
             _shot(camera or 1.3, wait_text, panels=True, keep_zoom=camera is not None, stays=stays,
                   **_move(move, camera or 1.3, 2.5, same_page=stays)),
             *_graphics(beat, wait_text),
-            said,
+            *said,
             *check,
         ]
     if shot == "live_answer":

@@ -176,7 +176,11 @@ compared side by side:
 **A canvas game.** A page that draws its buttons has no words to wait for
 or click: leave `wait_for_text` out, and the shot shows the whole screen.
 Find its points first with `probe(url, presses, read)`: the page gridded in
-screen fractions, each press ringed, and the game's own state read out.
+screen fractions, each press ringed, and the game's own state read out. Its
+`sounds` list what the page played after the presses (an mp3's name, a
+spoken text, how long), and a rehearsal lists each beat's: what there is to
+let be heard and comment on. A page that speaks with the browser's speech
+synthesis is silent in the film (no voice is installed), and the notes say so.
 
 | Field | What it does |
 |---|---|
@@ -184,6 +188,7 @@ screen fractions, each press ringed, and the game's own state read out.
 | `taps` | Presses on camera, spread over the line, the last at about four fifths of it: `{x, y, ms}` (`ms` holds a press), with `to_x`, `to_y` a drag there over `ms` (default 700). A soft dot marks each. |
 | `expect` | A JavaScript expression that is true once the presses did what the line says (`SCENES.bakery.rollDone`), read in the page for up to 4 s after them. Still false, the beat failed: a rehearsal says so, a shoot retakes it. |
 | `react` | Seconds (up to 6) the camera stays on the game after the last press, however soon the line ends, so what the press sets off is seen before the cut: a card that flies in, an oven that bakes. 1.5–3 for an animation. Without it the beat ends with its line, and the answer to a late press can fall in the cut. The plan's length counts it. |
+| `sound` | The page's own sound in the film; without it the page is silent, as it always was. `under`: heard under the line, well below the voice (a game reading its words aloud). `first`: what the beat's taps set off is heard first, at full level, until the page has gone quiet (Tomten's greeting when a door opens), and then the line, a comment on what was heard: a commentator's beat. `first` needs the taps that start the sound; a sound started by `start` presses is offscreen and lost. |
 
 Every narrated step waits for its text before the line plays, so a page that
 has not loaded is a failed beat with a reason, not a blank frame in the film.

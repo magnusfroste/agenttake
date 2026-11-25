@@ -13,6 +13,7 @@ import shutil
 import subprocess
 from typing import Any
 
+from . import sound as page_sound
 from .camera import Camera
 from .graphics import GRAPHICS_FILE, load_graphics, shift_graphics
 from .render import GLIDES_FILE, probe_duration, run_media
@@ -52,6 +53,11 @@ def take_in(directory: Path, pickup: Path, start: float, camera: Any) -> None:
         own.emphasis.extend({**entry, "t": round(float(entry["t"]) + start, 3)}
                             for entry in getattr(camera, "emphasis", []))
         own.save(directory)
+    # The page's sound of the pickup, placed where its footage was joined in.
+    for span in page_sound.load_spans(pickup):
+        name = f"page-sound-{round(start * 1000)}.mka"
+        shutil.copyfile(pickup / span["file"], directory / name)
+        page_sound.record_span(directory, name, start + float(span["video_start"]), float(span["shift"]))
     glides = pickup / GLIDES_FILE
     if glides.is_file():
         record = directory / GLIDES_FILE
