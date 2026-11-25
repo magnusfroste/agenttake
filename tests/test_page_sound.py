@@ -142,13 +142,37 @@ def _tone(path: Path, seconds: float, beeps: str) -> None:
 
 
 @needs_ffmpeg
-def test_a_clip_is_levelled_to_full_and_silence_is_left_out(tmp_path):
+def test_a_clip_is_as_loud_as_the_voice_and_silence_is_left_out(tmp_path):
     source = tmp_path / "page-sound.mka"
     _tone(source, 6, "between(t,1,3)")
-    full = page_sound.cut_clip(source, 0.5, 3.0, tmp_path / "full.wav")
+    full = page_sound.cut_clip(source, 0.5, 3.0, tmp_path / "full.wav", voice=-24.0)
     assert full
-    assert page_sound.peak_db(full) == pytest.approx(page_sound.FULL_PEAK_DB, abs=1.0)
+    # Two seconds of tone in three of clip: the silence is gated out.
+    assert page_sound.loudness(full) == pytest.approx(-24.0 - page_sound.PAGE_BELOW_VOICE_LU, abs=0.7)
     assert page_sound.cut_clip(source, 3.5, 2.0, tmp_path / "quiet.wav") is None
+
+
+@needs_ffmpeg
+def test_a_short_beep_and_a_long_tone_come_out_as_loud_and_never_over_the_ceiling(tmp_path):
+    source = tmp_path / "page-sound.mka"
+    # A 0.6 s beep, then a long tone of the same amplitude.
+    _tone(source, 10, "between(t,1,1.6)+between(t,4,9)")
+    beep = page_sound.cut_clip(source, 0.5, 2.5, tmp_path / "beep.wav", voice=-20.0)
+    tone = page_sound.cut_clip(source, 3.5, 6.0, tmp_path / "tone.wav", voice=-20.0)
+    assert abs(page_sound.loudness(beep) - page_sound.loudness(tone)) < 1.5
+    # Asked louder than its peak allows, it stops at the ceiling.
+    loud = page_sound.cut_clip(source, 3.5, 6.0, tmp_path / "loud.wav", voice=-2.0)
+    assert page_sound.peak_db(loud) <= page_sound.PEAK_CEILING_DB + 0.2
+
+
+@needs_ffmpeg
+def test_the_voice_is_measured_as_the_middle_of_its_lines(tmp_path):
+    quiet, loud = tmp_path / "quiet.wav", tmp_path / "loud.wav"
+    for path, amplitude in ((quiet, 0.05), (loud, 0.5)):
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        f"aevalsrc='{amplitude}*sin(2*PI*440*t)':s=24000:d=3", str(path)], check=True)
+    assert page_sound.voice_loudness([quiet, loud, loud]) == pytest.approx(page_sound.loudness(loud), abs=0.1)
+    assert page_sound.voice_loudness([]) == page_sound.VOICE_LUFS
 
 
 def test_lines_closer_than_the_hold_keep_the_page_down():
@@ -182,11 +206,11 @@ def test_the_page_goes_down_under_a_line_and_up_when_it_ends(tmp_path):
     _mux_segment_audio(video, [(2.0, line("a.wav", 2.0)), (6.0, line("b.wav", 1.0)), (7.5, line("c.wav", 1.0))],
                        film, 12.0, page=[(0.0, page)])
     level = lambda at, seconds: page_sound.peak_db(film, at, seconds)
-    # Measured against the page alone, before the first line: the mix with
-    # the mono narration sets the film's level.
+    # Measured against the page alone, before the first line.
     full = level(0.2, 1.2)
     under = full - page_sound.DUCK_DB
-    assert full == pytest.approx(page_sound.FULL_PEAK_DB, abs=3.5)
+    # Mono in a mono film: the mixer adds nothing to it.
+    assert full == pytest.approx(page_sound.peak_db(page), abs=0.5)
     # Already down when the line starts, and down all through it.
     assert level(2.0, 2.0) == pytest.approx(under, abs=1.0)
     # Halfway down before it, and up again a release after it.
@@ -224,7 +248,7 @@ def test_the_film_has_the_page_sound_only_where_a_step_asks_for_it(tmp_path, tra
     durations = [part["duration"] for part in result.timeline if part["kind"] == "step"]
     level = lambda at, seconds: page_sound.peak_db(film, at, seconds)
     assert level(starts[0] + 0.5, durations[0] - 1.0) < -60
-    assert level(starts[1] + 0.5, durations[1] - 1.0) == pytest.approx(page_sound.FULL_PEAK_DB, abs=1.5)
+    assert page_sound.loudness(film, starts[1] + 0.5, durations[1] - 1.0) == pytest.approx(page_sound.VOICE_LUFS, abs=1.0)
     assert level(starts[2] + 0.5, durations[2] - 1.0) < -60
 
 
