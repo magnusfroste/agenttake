@@ -5280,6 +5280,8 @@ async def review_session(session_id: str) -> dict:
         findings.extend(await asyncio.to_thread(checks.film_findings, scanned, parts, steps, checks.SCAN_FPS, holds))
 
     findings.extend(checks.lost_step_findings(parts, steps))
+    if session.get("output_dir"):
+        findings.extend(await asyncio.to_thread(checks.talk_over_findings, Path(session["output_dir"]), steps))
 
     # 6. What each shot framed, and what each line claims.
     findings.extend(checks.shot_findings(camera, steps))

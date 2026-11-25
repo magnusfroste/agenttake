@@ -18,7 +18,10 @@ Either way the page goes down under each line and back up after it (duck).
 """
 from __future__ import annotations
 
+import array
+import collections
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -81,6 +84,21 @@ PULSE_LATENCY_MSEC = "200"
 # quiet, and counts this long in the plan's estimate.
 QUIET_WAIT_MAX_MS = 20000
 QUIET_SECONDS = 0.5
+# The ear: the sink's level, read as it plays, so a line can come in where
+# the page pauses, as a person waits for the other to finish a sentence
+# before speaking (Magnus, 2026-11-25: "agenten behöver en form av gehör").
+# 50 ms windows at 8 kHz mono are enough to hear speech start and stop.
+EAR_RATE = 8000
+EAR_WINDOW = 0.05
+# A pause: PAUSE_SECONDS in a row PAUSE_BELOW_DB under what the page has
+# been heard at (its loud windows), or silent. A breath between two
+# sentences is 0.2 to 0.5 s; a word's own gaps are shorter.
+PAUSE_SECONDS = 0.3
+PAUSE_BELOW_DB = 18.0
+EAR_SILENT_DB = -55.0
+# With listen, how long past it the ear waits for a pause before the line
+# comes in all the same.
+PAUSE_SEARCH_MS = 6000
 FIRST_ESTIMATE_SECONDS = 3.0
 
 # What the page plays, kept in the page itself: media elements, Web Audio
@@ -430,6 +448,158 @@ def duck(lines: Sequence[tuple[float, float]]) -> str:
     # Small frames: volume sets its gain once a frame, at the frame's start,
     # so a ramp over 1024-sample frames would step every 21 ms.
     return f"asetnsamples=n=256,volume='pow(10,-{DUCK_DB / 20:.4f}*({terms}))':eval=frame"
+
+
+def window_db(samples: Sequence[int]) -> float:
+    """A window's level, RMS in dBFS of 16-bit samples."""
+    if not samples:
+        return -120.0
+    power = sum(value * value for value in samples) / len(samples)
+    return 10 * math.log10(power / (32768.0 ** 2)) if power > 0 else -120.0
+
+
+class Ear:
+    """The sink's level as it plays: (time.monotonic(), dBFS) every
+    EAR_WINDOW, from a parec of its own on the sink's monitor, so the
+    recording is never held up by it."""
+
+    def __init__(self, sink: str) -> None:
+        self.levels: collections.deque[tuple[float, float]] = collections.deque(maxlen=int(600 / EAR_WINDOW))
+        self.process = subprocess.Popen(
+            ["parec", f"--device={sink}.monitor", "--raw", "--format=s16le", "--channels=1",
+             f"--rate={EAR_RATE}", "--latency-msec=20"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        size = int(EAR_RATE * EAR_WINDOW) * 2
+        stream = self.process.stdout
+        try:
+            while stream is not None:
+                chunk = stream.read(size)
+                if not chunk:
+                    break
+                samples = array.array("h", chunk[: len(chunk) // 2 * 2])
+                self.levels.append((time.monotonic(), window_db(samples)))
+        except (OSError, ValueError):
+            pass
+
+    def since(self, started: float) -> list[tuple[float, float]]:
+        return [entry for entry in list(self.levels) if entry[0] >= started]
+
+    def close(self) -> None:
+        try:
+            self.process.terminate()
+            self.process.wait(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            try:
+                self.process.kill()
+            except OSError:
+                pass
+
+
+def open_ear(sink: str) -> Ear | None:
+    if not shutil.which("parec"):
+        return None
+    try:
+        return Ear(sink)
+    except OSError:
+        return None
+
+
+def loud_db(levels: Sequence[float]) -> float | None:
+    """What the page has been heard at: the level of its loud windows (the
+    90th percentile of those not silent). None when nothing was heard."""
+    heard = sorted(level for level in levels if level > EAR_SILENT_DB)
+    return heard[min(len(heard) - 1, int(len(heard) * 0.9))] if heard else None
+
+
+def paused(levels: Sequence[tuple[float, float]], now: float) -> bool:
+    """Whether the page is in a pause: heard before, and the last
+    PAUSE_SECONDS all PAUSE_BELOW_DB under that, or silent."""
+    loud = loud_db([level for _, level in levels])
+    if loud is None:
+        return False
+    floor = max(EAR_SILENT_DB, loud - PAUSE_BELOW_DB)
+    recent = [level for at, level in levels if at > now - PAUSE_SECONDS]
+    return len(recent) >= round(PAUSE_SECONDS / EAR_WINDOW) - 1 and all(level < floor for level in recent)
+
+
+async def wait_heard(page: Any, ear: Ear | None, listen_ms: int = 0) -> dict:
+    """Wait while the page is heard, before a line comments on it: until it
+    has gone quiet, or, with ``listen_ms``, at the first pause the ear hears
+    once that long has gone (at most PAUSE_SEARCH_MS more), as a person waits
+    for the end of a sentence. Without an ear, listen_ms is where the line
+    comes in. Returns the seconds waited and what ended it."""
+    started = time.monotonic()
+    earliest = listen_ms / 1000 if listen_ms else None
+    limit = QUIET_WAIT_MAX_MS / 1000
+    if earliest is not None:
+        limit = min(limit, earliest + (PAUSE_SEARCH_MS / 1000 if ear is not None else 0.0))
+    quiet_since: float | None = None
+    ended = "limit"
+    while True:
+        now = time.monotonic()
+        if now - started >= limit:
+            break
+        try:
+            playing = int(await page.evaluate(PLAYING_JS))
+        except Exception:
+            ended = "page"
+            break
+        now = time.monotonic()
+        if playing:
+            quiet_since = None
+        elif quiet_since is None:
+            quiet_since = now
+        elif now - quiet_since >= QUIET_SECONDS:
+            ended = "quiet"
+            break
+        if ear is not None and earliest is not None and now - started >= earliest and paused(ear.since(started), now):
+            ended = "pause"
+            break
+        await page.wait_for_timeout(int(EAR_WINDOW * 1000))
+    return {"seconds": round(time.monotonic() - started, 2), "ended": ended}
+
+
+def file_levels(path: Path, start: float, seconds: float) -> list[float]:
+    """A recording's level, EAR_WINDOW at a time, as the ear hears it."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-ss", f"{max(0.0, start):.3f}", "-t", f"{seconds:.3f}", "-i", str(path),
+             "-af", MONO, "-ar", str(EAR_RATE), "-f", "s16le", "-"],
+            capture_output=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    samples = array.array("h", result.stdout[: len(result.stdout) // 2 * 2])
+    size = int(EAR_RATE * EAR_WINDOW)
+    return [window_db(samples[index:index + size]) for index in range(0, len(samples) - size + 1, size)]
+
+
+# A line that starts while the page is still this close to its loud level
+# is spoken over it.
+TALK_OVER_DB = 12.0
+
+
+def talk_over(directory: Path, heard_offset: float, line_offset: float) -> dict | None:
+    """Whether a line at ``line_offset`` (the session's clock) starts while
+    the page it comments on, heard from ``heard_offset``, still speaks: its
+    level in the line's first 0.3 s against its loud level while heard.
+    None when there is no recording to tell."""
+    spans = load_spans(directory)
+    found = locate(spans, directory, line_offset) if spans else None
+    before = locate(spans, directory, heard_offset) if spans else None
+    if found is None or before is None or found[0] != before[0]:
+        return None
+    source, at = found
+    loud = loud_db(file_levels(source, before[1], max(0.5, at - before[1])))
+    start = file_levels(source, at, 0.3)
+    if loud is None or not start:
+        return None
+    level = max(start)
+    return {"page_db": round(level, 1), "loud_db": round(loud, 1), "over": level > loud - TALK_OVER_DB}
 
 
 async def heard(page: Any, since: float = 0.0) -> list[dict]:

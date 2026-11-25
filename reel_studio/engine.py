@@ -12,7 +12,7 @@ import subprocess
 import time
 import uuid
 import re
-from typing import Iterable, Sequence, cast
+from typing import Any, Iterable, Sequence, cast
 
 from playwright.async_api import (
     Browser,
@@ -830,6 +830,10 @@ class BrowserSession:
     # the ffmpeg recording it, beside screen.mp4. None without PulseAudio.
     sound_sink: tuple[str, str] | None = None
     sound_recorder: subprocess.Popen[bytes] | None = None
+    # The sink's level as it plays: where a heard page pauses (sound.Ear).
+    ear: Any = None
+    # How the last wait for a heard page ended, for the step's result.
+    listened: dict | None = None
     # When the screen recording was started, on time.monotonic().
     screen_started: float | None = None
     # A step done offscreen before anything was shown: the video then opens on
@@ -1048,6 +1052,7 @@ class BrowserSession:
         session.show_pointer = show_pointer
         session.sound_sink = sink
         session.sound_recorder = sound_recorder
+        session.ear = page_sound.open_ear(sink[0]) if sink else None
         # Where the sound recording sits against the screen's is written when
         # it stops, from when its clock says it started (CaptureClock).
         session.screen_started = screen_started
@@ -2232,9 +2237,10 @@ class BrowserSession:
                     pointer = (x, y)
                 self.pointer, self.pointer_held = pointer, False
                 if action.until_quiet:
-                    # The page is heard to the end before the line comments
-                    # on it: Tomten's greeting, a word read aloud.
-                    await page_sound.wait_quiet(self.page, action.listen_ms or page_sound.QUIET_WAIT_MAX_MS)
+                    # The page is heard before the line comments on it:
+                    # Tomten's greeting, a word read aloud. To its end, or
+                    # with listen to its first pause after that long.
+                    self.listened = await page_sound.wait_heard(self.page, self.ear, action.listen_ms)
                 if (action.then_ms or action.until_quiet) and glide_started_at is not None:
                     # Held from the first press, which is where the step
                     # starts in the video, to then_ms after the last.
@@ -2746,9 +2752,11 @@ class BrowserSession:
             **({"narration_clip": clip.name} if clip else {}),
             "visual_hold_duration": round(hold_duration, 3),
             "padding_applied": padding_applied,
+            **({"listened": self.listened} if self.listened else {}),
             "refs_stale": self.refs_stale,
             "screenshot_path": str(screenshot),
         }
+        self.listened = None
         if open_overlays is not None:
             result["open_overlays"] = open_overlays
         if graphic:
@@ -2830,6 +2838,9 @@ class BrowserSession:
         return sum(segment.output_duration for segment in segments) + cards
 
     def _stop_sound(self) -> None:
+        ear, self.ear = self.ear, None
+        if ear is not None:
+            ear.close()
         recorder, self.sound_recorder = self.sound_recorder, None
         if recorder is None:
             return
