@@ -610,6 +610,7 @@ def _compose_video(
     body_duration: float,
     output_size: tuple[int, int] | None,
     config: RenderConfig,
+    page: Sequence[tuple[float, Path]] = (),
 ) -> None:
     width, height = output_size or probe_video_size(body_path)
     temporary = body_path.parent
@@ -646,7 +647,8 @@ def _compose_video(
     if config.cta_url.strip():
         total_duration += CARD_DURATION
     _mux_segment_audio(
-        base, shifted, output_path, total_duration, config.music
+        base, shifted, output_path, total_duration, config.music,
+        [(offset + intro_duration, clip) for offset, clip in page],
     )
 
 
@@ -663,20 +665,60 @@ def probe_video_size(path: Path) -> tuple[int, int]:
     return int(width), int(height)
 
 
+def _page_bed(page: Sequence[tuple[float, Path]], lines: Sequence[tuple[float, float]],
+              first_input: int) -> tuple[list[str], list[str]]:
+    """The page's own sound as one track: its clips laid where their
+    segments are, faded out where nothing follows them, and taken down under
+    the lines (sound.duck). Returns the filters and the inputs' paths; the
+    track is [bed]."""
+    filters: list[str] = []
+    paths: list[str] = []
+    lengths = [probe_duration(clip) for _, clip in page]
+    for number, ((offset, clip), length) in enumerate(zip(page, lengths)):
+        index = first_input + number
+        paths.append(str(clip))
+        end = offset + length
+        # Followed by more of the page's sound: a cut, as the footage. With
+        # nothing after it, the sound goes out softly with its picture.
+        followed = any(abs(other - end) < 0.6 for other, _ in page if other > offset)
+        tail = min(page_sound.TAIL_FADE, length / 2)
+        fade = "" if followed else f"afade=t=out:st={length - tail:.3f}:d={tail:.3f},"
+        delay = max(0, round(offset * 1000))
+        filters.append(f"[{index}:a]{fade}adelay={delay}|{delay}[p{number}]")
+    labels = "".join(f"[p{number}]" for number in range(len(page)))
+    ducked = page_sound.duck(lines)
+    mixed = (f"{labels}amix=inputs={len(page)}:duration=longest:dropout_transition=0:normalize=0"
+             if len(page) > 1 else f"{labels}anull")
+    filters.append(f"{mixed}{',' + ducked if ducked else ''}[bed]")
+    return filters, paths
+
+
 def _mux_segment_audio(
     video_path: Path,
     clips: Sequence[tuple[float, Path]],
     output_path: Path,
     duration: float,
     music: str = "none",
+    page: Sequence[tuple[float, Path]] = (),
 ) -> None:
+    """Lay the narration clips, the page's own sound (``page``, ducked under
+    the lines) and the music bed on the video."""
     command = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(video_path)]
     filters: list[str] = []
+    lines: list[tuple[float, float]] = []
     for index, (offset, clip) in enumerate(clips, start=1):
         command.extend(["-i", str(clip)])
         delay = max(0, round(offset * 1000))
         filters.append(f"[{index}:a]adelay={delay}|{delay}[a{index}]")
+        if page:
+            lines.append((offset, offset + probe_duration(clip)))
     input_count = len(clips)
+    if page:
+        bed_filters, bed_paths = _page_bed(page, lines, input_count + 1)
+        for path in bed_paths:
+            command.extend(["-i", path])
+        filters += bed_filters
+        input_count += len(bed_paths)
     if music == "subtle":
         command.extend([
             "-f", "lavfi", "-i",
@@ -689,18 +731,19 @@ def _mux_segment_audio(
         music_index = input_count
         filters.append(
             f"[{music_index}:a]highpass=f=120,lowpass=f=1800,"
-            "volume=0.4[bed]"
+            "volume=0.4[music]"
         )
     labels = "".join(f"[a{i}]" for i in range(1, len(clips) + 1))
+    layers = (1 if page else 0) + (1 if music == "subtle" else 0)
+    if page:
+        labels += "[bed]"
+    if music == "subtle":
+        labels += "[music]"
     if labels:
-        if music == "subtle":
-            labels += "[bed]"
         filters.append(
-            f"{labels}amix=inputs={input_count}:duration=longest:"
+            f"{labels}amix=inputs={len(clips) + layers}:duration=longest:"
             "dropout_transition=0:normalize=0[a]"
         )
-    elif music == "subtle":
-        filters.append("[bed]anull[a]")
     if filters:
         command.extend(["-filter_complex", ";".join(filters), "-map", "0:v", "-map", "[a]"])
     else:
@@ -1236,6 +1279,7 @@ def segmented_render(
         audio_clips: list[tuple[float, Path]] = []
         # The page's own sound, per segment, where its step asks for it.
         page_clips: list[Path | None] = []
+        page_audio: list[tuple[float, Path]] = []
         spans = page_sound.load_spans(video_path.parent) if sounds and any(sounds) else []
         cumulative = 0.0
         # Cards are made once the footage around them is: "blur" is built on
@@ -1285,7 +1329,7 @@ def segmented_render(
             if heard is not None:
                 page_clips.extend([None] * (len(segment_paths) - 1 - len(page_clips)))
                 page_clips.append(heard)
-                audio_clips.append((cumulative, heard))
+                page_audio.append((cumulative, heard))
             cumulative += segment.output_duration
 
         if not segment_paths:
@@ -1345,10 +1389,10 @@ def segmented_render(
         if _has_branding(config) or config.music == "subtle":
             _compose_video(
                 joined, audio_clips, output_path, cumulative,
-                output_size, config,
+                output_size, config, page_audio,
             )
         else:
-            _mux_segment_audio(joined, audio_clips, output_path, cumulative)
+            _mux_segment_audio(joined, audio_clips, output_path, cumulative, page=page_audio)
     # Hard cuts: parts follow each other, after the title card if there is one.
     timeline: list[dict] = []
     at = 0.0
@@ -1380,7 +1424,7 @@ def _page_clip(segment: Segment, sounds: Sequence[str | None] | None, spans: Seq
     if found is None:
         return None
     source, at = found
-    return page_sound.cut_clip(source, at, min(segment.source_duration, segment.output_duration), mode,
+    return page_sound.cut_clip(source, at, min(segment.source_duration, segment.output_duration),
                                temporary / f"page-{segment.name}.wav")
 
 
@@ -1558,13 +1602,14 @@ def _assemble_smooth(
     end = probe_duration(parts[0][0])
     placed = [{"kind": kinds[0][0], "step": kinds[0][1], "start": 0.0, "duration": round(end, 3)}]
     audio: list[tuple[float, Path]] = []
+    bed: list[tuple[float, Path]] = []
     first_segment_part = 1 if _has_title_card(config) else 0
 
     def heard(index: int, start: float) -> None:
         # The page's own sound for a segment, from where the segment starts.
         segment = index - first_segment_part
         if page_clips and 0 <= segment < len(page_clips) and page_clips[segment] is not None:
-            audio.append((start, cast(Path, page_clips[segment])))
+            bed.append((start, cast(Path, page_clips[segment])))
 
     if parts[0][1] is not None:
         audio.append((0.0, parts[0][1]))
@@ -1591,7 +1636,7 @@ def _assemble_smooth(
     command += ["-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
                 "-r", "25", str(body)]
     run_media(command)
-    _mux_segment_audio(body, audio, output_path, end, config.music)
+    _mux_segment_audio(body, audio, output_path, end, config.music, bed)
     return placed
 
 

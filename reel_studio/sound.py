@@ -32,13 +32,28 @@ CAPTURE_FILE = "page-sound.mka"
 # Where the browser's sound goes: one sink per session, so two browsers are
 # never heard in each other's films.
 SINK_PREFIX = "take_"
-# How a page's sound sits in the film: its peak, in dB. The narration peaks
-# near -1 dB; under a line the page is well below it.
+# How a page's sound sits in the film: its peak, in dB, when no line is
+# spoken. The narration peaks near -1 dB.
 FULL_PEAK_DB = -3.0
-UNDER_PEAK_DB = -16.0
+# Under a line the page goes down and comes back up when the voice stops,
+# as a TV presenter brings an interview clip up and under: DUCK_DB down
+# over DUCK_LEAD, reached as the line starts; DUCK_AFTER past its end, back
+# up over DUCK_RELEASE; and a pause shorter than DUCK_HOLD keeps it down so
+# it does not pump between two lines. From Audacity's Auto Duck (-12 dB,
+# 0.5 s fades, 1 s max pause), Avid's newsroom duck (12 dB), and a deeper
+# dip for speech under speech (15-18 dB), as the page's sound often is: the
+# research report "Ljud upp och under rösten" (2026-11-25).
+DUCK_DB = 15.0
+DUCK_LEAD = 0.3
+DUCK_AFTER = 0.2
+DUCK_RELEASE = 0.6
+DUCK_HOLD = 2.0
+UNDER_PEAK_DB = FULL_PEAK_DB - DUCK_DB
 # Quieter than this, a clip is silence and is left out.
 SILENT_DB = -55.0
 FADE_SECONDS = 0.04
+# Where the page's sound ends with nothing after it, it is faded out, not cut.
+TAIL_FADE = 0.5
 # What is left between the screen recording's start and the sound's first
 # sample as its clock tells it (CaptureClock), the browser's buffer counted
 # in: measured with a beep and a white flash set off by one press, -0.59 to
@@ -311,15 +326,16 @@ def peak_db(path: Path, start: float = 0.0, seconds: float | None = None) -> flo
     return float(found.group(1)) if found else -120.0
 
 
-def cut_clip(source: Path, start: float, seconds: float, mode: str, output: Path) -> Path | None:
-    """The page's sound for one segment, at the level its mode asks for, with
-    short fades so a cut does not click. None when the page was silent."""
+def cut_clip(source: Path, start: float, seconds: float, output: Path) -> Path | None:
+    """The page's sound for one segment, at its full level, with short fades
+    so a cut does not click; duck() takes it down under the lines. None when
+    the page was silent."""
     if seconds <= 0.05:
         return None
     peak = peak_db(source, start, seconds)
     if peak <= SILENT_DB:
         return None
-    gain = (FULL_PEAK_DB if mode == "full" else UNDER_PEAK_DB) - peak
+    gain = FULL_PEAK_DB - peak
     fade_out = max(0.0, seconds - FADE_SECONDS)
     try:
         subprocess.run(
@@ -332,6 +348,37 @@ def cut_clip(source: Path, start: float, seconds: float, mode: str, output: Path
     except (OSError, subprocess.SubprocessError):
         return None
     return output if output.is_file() and output.stat().st_size > 100 else None
+
+
+def spoken(lines: Sequence[tuple[float, float]], hold: float = DUCK_HOLD) -> list[tuple[float, float]]:
+    """The spans the page is kept down for: each line from start to end, and
+    two lines closer than ``hold`` as one."""
+    merged: list[list[float]] = []
+    for start, end in sorted((float(a), float(b)) for a, b in lines if b > a):
+        if merged and start - merged[-1][1] < hold:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
+
+
+def duck(lines: Sequence[tuple[float, float]]) -> str:
+    """An ffmpeg volume filter that takes the page's sound DUCK_DB down under
+    the lines (seconds on the film's clock): linear in dB, down over
+    DUCK_LEAD before each line, up over DUCK_RELEASE from DUCK_AFTER past
+    it. A flat sum of trapezoids: the merged spans are at least DUCK_HOLD
+    apart, more than the three together, so no two overlap, and the
+    expression nests no deeper with more lines. "" when nothing is said."""
+    spans = spoken(lines, max(DUCK_HOLD, DUCK_LEAD + DUCK_AFTER + DUCK_RELEASE))
+    if not spans:
+        return ""
+    terms = "+".join(
+        f"clip((t-{start - DUCK_LEAD:.3f})/{DUCK_LEAD},0,1)*clip(({end + DUCK_AFTER + DUCK_RELEASE:.3f}-t)/{DUCK_RELEASE},0,1)"
+        for start, end in spans
+    )
+    # Small frames: volume sets its gain once a frame, at the frame's start,
+    # so a ramp over 1024-sample frames would step every 21 ms.
+    return f"asetnsamples=n=256,volume='pow(10,-{DUCK_DB / 20:.4f}*({terms}))':eval=frame"
 
 
 async def heard(page: Any, since: float = 0.0) -> list[dict]:

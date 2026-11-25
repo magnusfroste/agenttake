@@ -142,15 +142,64 @@ def _tone(path: Path, seconds: float, beeps: str) -> None:
 
 
 @needs_ffmpeg
-def test_a_clip_is_levelled_by_its_mode_and_silence_is_left_out(tmp_path):
+def test_a_clip_is_levelled_to_full_and_silence_is_left_out(tmp_path):
     source = tmp_path / "page-sound.mka"
     _tone(source, 6, "between(t,1,3)")
-    full = page_sound.cut_clip(source, 0.5, 3.0, "full", tmp_path / "full.wav")
-    under = page_sound.cut_clip(source, 0.5, 3.0, "under", tmp_path / "under.wav")
-    assert full and under
+    full = page_sound.cut_clip(source, 0.5, 3.0, tmp_path / "full.wav")
+    assert full
     assert page_sound.peak_db(full) == pytest.approx(page_sound.FULL_PEAK_DB, abs=1.0)
-    assert page_sound.peak_db(under) == pytest.approx(page_sound.UNDER_PEAK_DB, abs=1.0)
-    assert page_sound.cut_clip(source, 3.5, 2.0, "full", tmp_path / "quiet.wav") is None
+    assert page_sound.cut_clip(source, 3.5, 2.0, tmp_path / "quiet.wav") is None
+
+
+def test_lines_closer_than_the_hold_keep_the_page_down():
+    assert page_sound.spoken([(7.0, 8.0), (1.0, 2.0), (2.5, 4.0)]) == [(1.0, 4.0), (7.0, 8.0)]
+    assert page_sound.duck([]) == ""
+    # Deep films do not nest deeper: one flat sum, whatever the number of lines.
+    many = page_sound.duck([(index * 4.0, index * 4.0 + 1.5) for index in range(80)])
+    assert many.count("clip(") == 160 and "max(" not in many
+
+
+@needs_ffmpeg
+def test_the_page_goes_down_under_a_line_and_up_when_it_ends(tmp_path):
+    from reel_studio.render import _mux_segment_audio
+
+    video = tmp_path / "video.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=black:size=160x90:rate=25:d=12",
+                    "-pix_fmt", "yuv420p", str(video)], check=True)
+    # Lines as silence: only their times matter here, so what is measured is
+    # the page alone.
+    def line(name, seconds):
+        path = tmp_path / name
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        f"anullsrc=r=24000:cl=mono", "-t", str(seconds), str(path)], check=True)
+        return path
+    source = tmp_path / "page-sound.mka"
+    _tone(source, 11, "1")
+    page = page_sound.cut_clip(source, 0.0, 10.0, tmp_path / "page.wav")
+    film = tmp_path / "film.mp4"
+    # A line at 2-4 s, then two at 6-7 s and 7.5-8.5 s: a 0.5 s pause.
+    # Between the first two, 2 s: the page comes up.
+    _mux_segment_audio(video, [(2.0, line("a.wav", 2.0)), (6.0, line("b.wav", 1.0)), (7.5, line("c.wav", 1.0))],
+                       film, 12.0, page=[(0.0, page)])
+    level = lambda at, seconds: page_sound.peak_db(film, at, seconds)
+    # Measured against the page alone, before the first line: the mix with
+    # the mono narration sets the film's level.
+    full = level(0.2, 1.2)
+    under = full - page_sound.DUCK_DB
+    assert full == pytest.approx(page_sound.FULL_PEAK_DB, abs=3.5)
+    # Already down when the line starts, and down all through it.
+    assert level(2.0, 2.0) == pytest.approx(under, abs=1.0)
+    # Halfway down before it, and up again a release after it.
+    assert under + 3 < level(2.0 - page_sound.DUCK_LEAD / 2 - 0.025, 0.05) < full - 3
+    # Still down just past the line's end, up again after the release.
+    assert level(4.0, page_sound.DUCK_AFTER - 0.05) == pytest.approx(under, abs=1.0)
+    up = 4.0 + page_sound.DUCK_AFTER + page_sound.DUCK_RELEASE
+    assert level(up + 0.05, 5.7 - up - 0.1) == pytest.approx(full, abs=1.0)
+    # The short pause between the two lines does not bring the page up.
+    assert level(7.0, 0.5) == pytest.approx(under, abs=1.0)
+    # Nothing after the page's sound: it fades out, not cut.
+    assert level(9.0, 0.4) == pytest.approx(full, abs=1.0)
+    assert level(9.85, 0.1) < full - 6
 
 
 @needs_ffmpeg
