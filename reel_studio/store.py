@@ -179,6 +179,10 @@ def init_schema() -> None:
             # A person's approval. Films that were already public stay so.
             connection.execute("ALTER TABLE sessions ADD COLUMN approved_at TEXT")
             connection.execute("UPDATE sessions SET approved_at = finished_at WHERE status = 'finished'")
+        if "replaced_by" not in session_columns:
+            # The film a person published in this one's place: its old link
+            # leads there (Kotten take 2 and take 4, 2026-11-24).
+            connection.execute("ALTER TABLE sessions ADD COLUMN replaced_by TEXT")
         for column in ("output_width", "output_height"):
             if column not in session_columns:
                 connection.execute(f"ALTER TABLE sessions ADD COLUMN {column} INTEGER")
@@ -645,15 +649,48 @@ def list_finished_sessions(approved: bool | None = None) -> list[dict[str, Any]]
     return [dict(row) for row in rows]
 
 
-def set_approved(session_id: str, approved: bool) -> bool:
-    """A person's decision on a finished film. False when there is no such film."""
+def set_approved(session_id: str, approved: bool, replaces: str | None = None) -> bool:
+    """A person's decision on a finished film. False when there is no such film.
+
+    With ``replaces``, that older film is withdrawn and its link leads to this
+    one. Approving a film again by itself takes back where its link led."""
     init_schema()
     with _lock, _connect() as connection:
         changed = connection.execute(
-            "UPDATE sessions SET approved_at = CASE WHEN ? THEN ? ELSE NULL END WHERE id = ? AND status = 'finished'",
-            (int(approved), _now(), session_id),
+            "UPDATE sessions SET approved_at = CASE WHEN ? THEN ? ELSE NULL END, "
+            "replaced_by = CASE WHEN ? THEN NULL ELSE replaced_by END WHERE id = ? AND status = 'finished'",
+            (int(approved), _now(), int(approved), session_id),
         ).rowcount
+        if changed and approved and replaces:
+            connection.execute(
+                "UPDATE sessions SET approved_at = NULL, replaced_by = ? WHERE id = ? AND status = 'finished'",
+                (session_id, replaces),
+            )
     return bool(changed)
+
+
+def replacement_of(session_id: str, depth: int = 10) -> str | None:
+    """The approved film that took this one's place, followed through those
+    replaced in turn to the last one published; None when none of them is."""
+    init_schema()
+    found: str | None = None
+    seen = {session_id}
+    with _lock, _connect() as connection:
+        current = session_id
+        for _ in range(depth):
+            row = connection.execute("SELECT replaced_by FROM sessions WHERE id = ?", (current,)).fetchone()
+            target = row["replaced_by"] if row else None
+            if not target or target in seen:
+                break
+            seen.add(target)
+            approved = connection.execute(
+                "SELECT approved_at FROM sessions WHERE id = ? AND status = 'finished'", (target,)
+            ).fetchone()
+            # A film replaced in turn is withdrawn: go on to the one after it.
+            if approved and approved["approved_at"]:
+                found = target
+            current = target
+    return found
 
 
 def delete_session(session_id: str) -> None:

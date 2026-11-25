@@ -65,7 +65,9 @@ You need nothing but these tools. Every reply says what comes next under
 9. **Deliver.** Download the film from `video_url`, because a finished session
    can be pruned later. Report the watch URL, the duration, each beat's status
    and every source URL. A person approves a film on its watch page, and only
-   then is it listed in the theater. Re-rendering withdraws the approval.
+   then is it listed in the theater. Re-rendering withdraws the approval. A
+   new take can replace one already published: approved with "Replaces", the
+   old film is withdrawn and its link, already shared, leads to the new one.
 
 **A score is not a verdict on the film.** The measures find what can be
 measured. Go through the contact sheet beat by beat as well. `contact_sheet`
@@ -170,6 +172,18 @@ compared side by side:
 | `ink` | Both on the house's ink with the paper's text; the accent only as the lower third's bar. | Busy or colourful pages, a sober assignment. |
 | `paper` | Both on the paper colour with the ink's text and an accent bar. | Dark pages. |
 | `bare` | No plate: outlined text, the callout in the accent, the lower third in the paper colour. | Pages where a plate would hide too much. |
+
+**A canvas game.** A page that draws its buttons has no words to wait for
+or click: leave `wait_for_text` out, and the shot shows the whole screen.
+Find its points first with `probe(url, presses, read)`: the page gridded in
+screen fractions, each press ringed, and the game's own state read out.
+
+| Field | What it does |
+|---|---|
+| `start` | Presses done offscreen after the page opens, to get past a start screen: a button's text, or `{x, y}` as fractions of the screen for a drawn one. |
+| `taps` | Presses on camera, spread over the line, the last at about four fifths of it: `{x, y, ms}` (`ms` holds a press), with `to_x`, `to_y` a drag there over `ms` (default 700). A soft dot marks each. |
+| `expect` | A JavaScript expression that is true once the presses did what the line says (`SCENES.bakery.rollDone`), read in the page for up to 4 s after them. Still false, the beat failed: a rehearsal says so, a shoot retakes it. |
+| `react` | Seconds (up to 6) the camera stays on the game after the last press, however soon the line ends, so what the press sets off is seen before the cut: a card that flies in, an oven that bakes. 1.5–3 for an animation. Without it the beat ends with its line, and the answer to a late press can fall in the cut. The plan's length counts it. |
 
 Every narrated step waits for its text before the line plays, so a page that
 has not loaded is a failed beat with a reason, not a blank frame in the film.

@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.13.0
+version: 0.14.0
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -93,7 +93,10 @@ Don't use for:
    with `taps` ({x, y} fractions, `to_x`/`to_y` for a drag) and give the beat an
    `expect`, a JavaScript check of the game's own state that is true once
    the presses did what the line says (`SCENES.bakery.rollDone`); a beat
-   whose expect stays false is reported failed instead of shown. Save them with `write_file` to
+   whose expect stays false is reported failed instead of shown. When a
+   press sets something off (a card flies in, the oven bakes), give the beat
+   `react`, the seconds the camera stays on the game after the last press,
+   so the answer is seen before the cut. Save them with `write_file` to
    `storyboard.json` in your working directory. Retakes must reuse identical
    lines: AgentTake reuses the voice clip of an unchanged line, so a retake
    costs no TTS. *Done when* the file holds every beat.
