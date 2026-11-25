@@ -830,6 +830,8 @@ class BrowserSession:
     # the ffmpeg recording it, beside screen.mp4. None without PulseAudio.
     sound_sink: tuple[str, str] | None = None
     sound_recorder: subprocess.Popen[bytes] | None = None
+    # When the screen recording was started, on time.monotonic().
+    screen_started: float | None = None
     # A step done offscreen before anything was shown: the video then opens on
     # the first visible step rather than on the page it was set up from.
     offscreen_first: bool = False
@@ -1012,7 +1014,6 @@ class BrowserSession:
         recorder = start_recording(
             display, *geometry["record_size"], directory / "screen.mp4", draw_mouse=False
         )
-        sound_started = time.monotonic()
         sound_recorder = page_sound.start_capture(sink[0], directory / page_sound.CAPTURE_FILE) if sink else None
         # Give ffmpeg one frame before t0 is recorded.
         await asyncio.sleep(0.4)
@@ -1047,10 +1048,9 @@ class BrowserSession:
         session.show_pointer = show_pointer
         session.sound_sink = sink
         session.sound_recorder = sound_recorder
-        if sound_recorder is not None:
-            # The sound recording's time of the screen recording's start.
-            page_sound.record_span(directory, page_sound.CAPTURE_FILE, 0.0,
-                                   screen_started - sound_started - page_sound.SCREEN_START_LAG)
+        # Where the sound recording sits against the screen's is written when
+        # it stops, from when its clock says it started (CaptureClock).
+        session.screen_started = screen_started
         session.camera = Camera(width, height, scale)
         # A lambda: Playwright cannot wrap a builtin such as list.append.
         context.on("page", lambda popup: session.popups.append(popup))
@@ -2830,11 +2830,23 @@ class BrowserSession:
         return sum(segment.output_duration for segment in segments) + cards
 
     def _stop_sound(self) -> None:
-        if self.sound_recorder is not None:
-            try:
-                stop_recording(self.sound_recorder)
-            except Exception:
-                pass
+        recorder, self.sound_recorder = self.sound_recorder, None
+        if recorder is None:
+            return
+        stopped_at = time.monotonic()
+        try:
+            stop_recording(recorder)
+        except Exception:
+            pass
+        capture = self.directory / page_sound.CAPTURE_FILE
+        clock = getattr(recorder, "clock", None)
+        started = clock.started if clock is not None and clock.started is not None else (
+            page_sound.anchored_start(capture, stopped_at) if capture.is_file() else None)
+        screen_started = self.screen_started
+        if started is not None and screen_started is not None:
+            # The sound recording's time of the screen recording's start.
+            page_sound.record_span(self.directory, page_sound.CAPTURE_FILE, 0.0,
+                                   screen_started - started - page_sound.SCREEN_START_LAG)
 
     def _finish_media(self) -> Path:
         stop_recording(self.recorder)
