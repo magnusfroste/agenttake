@@ -66,10 +66,11 @@ class Track:
     source: str
     licence: str
     loop: bool = False
+    about: str = ""
 
     def public(self) -> dict:
         return {"id": self.id, "mood": self.mood, "title": self.title, "artist": self.artist,
-                "source": self.source, "licence": self.licence, "loop": self.loop,
+                "about": self.about, "source": self.source, "licence": self.licence, "loop": self.loop,
                 "seconds": round(duration(self.path), 1)}
 
 
@@ -98,7 +99,7 @@ def _load(path: str) -> tuple[Track, ...]:
             id=str(entry["id"]).lower(), mood=str(entry.get("mood", "")).lower(), path=track_path,
             title=str(entry.get("title", "")), artist=str(entry.get("artist", "")),
             source=str(entry.get("source", "")), licence=str(entry.get("licence", "")),
-            loop=bool(entry.get("loop", False)),
+            loop=bool(entry.get("loop", False)), about=str(entry.get("about", "")),
         ))
     return tuple(found)
 
