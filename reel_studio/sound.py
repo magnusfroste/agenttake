@@ -459,6 +459,39 @@ def duck(lines: Sequence[tuple[float, float]], depth: float = DUCK_DB, lead: flo
     return f"asetnsamples=n=256,volume='pow(10,-{depth / 20:.4f}*({terms}))':eval=frame"
 
 
+# Where a page clip is heard, for the music to make way: quieter than
+# SOUNDING_FLOOR_DB for SOUNDING_GAP seconds is silence.
+SOUNDING_FLOOR_DB = -45.0
+SOUNDING_GAP = 0.4
+
+
+def sounding(path: Path, offset: float = 0.0) -> list[tuple[float, float]]:
+    """Where ``path`` makes sound, on the film's clock (``offset`` its
+    start): a page clip is its whole segment, mostly silence around a
+    greeting, and the music stayed down through all of it (the julkalender
+    proof, 2026-11-25). The whole clip when it cannot be read."""
+    command = ["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-af",
+               f"silencedetect=noise={SOUNDING_FLOOR_DB}dB:d={SOUNDING_GAP}", "-f", "null", "-"]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+        length = float(subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=60).stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    starts = [float(value) for value in re.findall(r"silence_start: (-?[0-9.]+)", result.stderr)]
+    ends = [float(value) for value in re.findall(r"silence_end: (-?[0-9.]+)", result.stderr)]
+    spans: list[tuple[float, float]] = []
+    cursor = 0.0
+    for index, start in enumerate(starts):
+        if start > cursor:
+            spans.append((cursor, start))
+        cursor = ends[index] if index < len(ends) else length
+    if cursor < length:
+        spans.append((cursor, length))
+    return [(offset + max(0.0, start), offset + end) for start, end in spans if end - start > 0.05]
+
+
 def window_db(samples: Sequence[int]) -> float:
     """A window's level, RMS in dBFS of 16-bit samples."""
     if not samples:

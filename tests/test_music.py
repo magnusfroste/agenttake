@@ -180,3 +180,25 @@ def test_music_rises_over_the_closing_card_and_then_fades(library, tmp_path):
     assert _at(levels, 13.75) < card - 10
     assert music.end_lift([], 10.0) == ""
     assert music.end_lift([(1.0, 9.5)], 10.0) == ""
+
+
+@needs_ffmpeg
+def test_music_makes_way_where_the_page_sounds_not_for_its_silence(library, tmp_path):
+    from reel_studio import sound as page_sound
+    from reel_studio.render import _mux_segment_audio
+
+    video = tmp_path / "video.mp4"
+    _ffmpeg("-f", "lavfi", "-i", "color=black:size=160x90:rate=25:d=16", "-pix_fmt", "yuv420p", str(video))
+    # A page clip of 8 s from 2 s: a greeting for its first second, then
+    # silence, as a segment's clip is.
+    page = tmp_path / "page.wav"
+    _ffmpeg("-f", "lavfi", "-i", "aevalsrc='if(lt(t,1),0.2*sin(2*PI*500*t),0)':s=48000:d=8", str(page))
+    assert page_sound.sounding(page, 2.0) == [(2.0, pytest.approx(3.0, abs=0.05))]
+    line = tmp_path / "line.wav"
+    _ffmpeg("-f", "lavfi", "-i", "aevalsrc='0.1*sin(2*PI*300*t)':s=24000:d=2", str(line))
+    film = tmp_path / "film.mp4"
+    _mux_segment_audio(video, [(12.0, line)], film, 16.0, music="bright", page=[(2.0, page)])
+    levels = _band_levels(film, 2000)
+    # Down under the greeting, back up in the page's silence before the line.
+    assert _at(levels, 2.5) < _at(levels, 7.0) - 8
+    assert _at(levels, 7.0) == pytest.approx(_at(levels, 1.25), abs=2.5)
