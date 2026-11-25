@@ -1281,6 +1281,10 @@ def segmented_render(
         page_clips: list[Path | None] = []
         page_audio: list[tuple[float, Path]] = []
         spans = page_sound.load_spans(video_path.parent) if sounds and any(sounds) else []
+        # The page's sound is set as loud as the narrator.
+        voice = page_sound.voice_loudness(
+            list(dict.fromkeys(segment.clip for segment in segments if segment.clip is not None))
+        ) if spans else page_sound.VOICE_LUFS
         cumulative = 0.0
         # Cards are made once the footage around them is: "blur" is built on
         # the last frame before the card.
@@ -1325,7 +1329,7 @@ def segmented_render(
             )
             if segment.clip is not None:
                 audio_clips.append((cumulative, segment.clip))
-            heard = _page_clip(segment, sounds, spans, video_path.parent, temporary_path)
+            heard = _page_clip(segment, sounds, spans, video_path.parent, temporary_path, voice)
             if heard is not None:
                 page_clips.extend([None] * (len(segment_paths) - 1 - len(page_clips)))
                 page_clips.append(heard)
@@ -1411,7 +1415,7 @@ def segmented_render(
 
 
 def _page_clip(segment: Segment, sounds: Sequence[str | None] | None, spans: Sequence[dict],
-               directory: Path, temporary: Path) -> Path | None:
+               directory: Path, temporary: Path, voice: float = page_sound.VOICE_LUFS) -> Path | None:
     """The page's own sound under a segment, when its step asks for it: cut
     from the sound recording at the segment's place on the session clock."""
     if not sounds or not spans or segment.step_index is None or segment.step_index >= len(sounds):
@@ -1425,7 +1429,7 @@ def _page_clip(segment: Segment, sounds: Sequence[str | None] | None, spans: Seq
         return None
     source, at = found
     return page_sound.cut_clip(source, at, min(segment.source_duration, segment.output_duration),
-                               temporary / f"page-{segment.name}.wav")
+                               temporary / f"page-{segment.name}.wav", voice)
 
 
 SOFT_DISSOLVE = 0.25

@@ -12,8 +12,9 @@ image nothing changes: no sink, no recording, a silent page as before.
 
 A beat's ``sound``:
 - "under": the page is heard under the line, lower than the voice.
-- "first": the page is heard first, at full level; the line comes after it
-  has gone quiet, a comment on what was heard.
+- "first": the page is heard first, as loud as the voice; the line comes
+  after it has gone quiet, a comment on what was heard.
+Either way the page goes down under each line and back up after it (duck).
 """
 from __future__ import annotations
 
@@ -32,9 +33,22 @@ CAPTURE_FILE = "page-sound.mka"
 # Where the browser's sound goes: one sink per session, so two browsers are
 # never heard in each other's films.
 SINK_PREFIX = "take_"
-# How a page's sound sits in the film: its peak, in dB, when no line is
-# spoken. The narration peaks near -1 dB.
+# How loud the page's sound is when no line is spoken: as loud as the
+# narrator, measured as a listener hears it (EBU R128 loudness, LUFS), the
+# band an interview clip sits in beside a presenter. Set by its peak, a
+# short beep and a long greeting came out at different loudness, and the
+# greeting played 4.5 LU over the voice with its peak at 0 dBFS (2026-11-25).
+PAGE_BELOW_VOICE_LU = 0.0
+# The narration's loudness when a film has none to measure (Edge's voices
+# measure -20.3 LUFS).
+VOICE_LUFS = -20.0
+# No page sound peaks over this, however quiet it sounds.
+PEAK_CEILING_DB = -1.5
+# A clip too short or quiet to measure as loudness is set by its peak.
 FULL_PEAK_DB = -3.0
+# The film's sound is mono: a stereo page is averaged into one channel. The
+# mixer's own downmix put it 3 dB louder than it was measured.
+MONO = "pan=mono|c0=0.5*c0+0.5*c1"
 # Under a line the page goes down and comes back up when the voice stops,
 # as a TV presenter brings an interview clip up and under: DUCK_DB down
 # over DUCK_LEAD, reached as the line starts; DUCK_AFTER past its end, back
@@ -48,7 +62,6 @@ DUCK_LEAD = 0.3
 DUCK_AFTER = 0.2
 DUCK_RELEASE = 0.6
 DUCK_HOLD = 2.0
-UNDER_PEAK_DB = FULL_PEAK_DB - DUCK_DB
 # Quieter than this, a clip is silence and is left out.
 SILENT_DB = -55.0
 FADE_SECONDS = 0.04
@@ -326,23 +339,61 @@ def peak_db(path: Path, start: float = 0.0, seconds: float | None = None) -> flo
     return float(found.group(1)) if found else -120.0
 
 
-def cut_clip(source: Path, start: float, seconds: float, output: Path) -> Path | None:
-    """The page's sound for one segment, at its full level, with short fades
-    so a cut does not click; duck() takes it down under the lines. None when
-    the page was silent."""
-    if seconds <= 0.05:
+def loudness(path: Path, start: float = 0.0, seconds: float | None = None, mono: bool = False) -> float | None:
+    """Integrated loudness (EBU R128, gated, so the silence around a sound
+    does not count), in LUFS; None when there is too little to measure."""
+    command = ["ffmpeg", "-hide_banner", "-nostats", "-ss", f"{start:.3f}"]
+    if seconds is not None:
+        command += ["-t", f"{seconds:.3f}"]
+    chain = f"{MONO}," if mono else ""
+    command += ["-i", str(path), "-af", f"{chain}ebur128", "-f", "null", "-"]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
         return None
+    found = re.findall(r"I:\s+(-?[0-9.]+) LUFS", result.stderr)
+    value = float(found[-1]) if found else None
+    return value if value is not None and value > -69.0 else None
+
+
+def voice_loudness(clips: Sequence[Path]) -> float:
+    """The narration's loudness, the level the page's sound is set to: the
+    middle of its lines'."""
+    found = sorted(value for value in (loudness(clip) for clip in clips) if value is not None)
+    return found[len(found) // 2] if found else VOICE_LUFS
+
+
+def clip_gain(source: Path, start: float, seconds: float, voice: float) -> float | None:
+    """The gain, in dB, that sets the page's sound for a segment as loud as
+    the voice (less PAGE_BELOW_VOICE_LU), its peak kept under
+    PEAK_CEILING_DB. None when the page was silent."""
     peak = peak_db(source, start, seconds)
     if peak <= SILENT_DB:
         return None
-    gain = FULL_PEAK_DB - peak
+    # Averaged into mono, as the film plays it; a sound in both channels
+    # peaks where it did.
+    heard = loudness(source, start, seconds, mono=True)
+    if heard is None:
+        return FULL_PEAK_DB - peak
+    return min(voice - PAGE_BELOW_VOICE_LU - heard, PEAK_CEILING_DB - peak)
+
+
+def cut_clip(source: Path, start: float, seconds: float, output: Path, voice: float = VOICE_LUFS) -> Path | None:
+    """The page's sound for one segment, mono, as loud as the voice (``voice``,
+    in LUFS), with short fades so a cut does not click; duck() takes it down
+    under the lines. None when the page was silent."""
+    if seconds <= 0.05:
+        return None
+    gain = clip_gain(source, start, seconds, voice)
+    if gain is None:
+        return None
     fade_out = max(0.0, seconds - FADE_SECONDS)
     try:
         subprocess.run(
             ["ffmpeg", "-loglevel", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{seconds:.3f}",
              "-i", str(source),
-             "-af", f"volume={gain:.2f}dB,afade=t=in:d={FADE_SECONDS},afade=t=out:st={fade_out:.3f}:d={FADE_SECONDS}",
-             "-ac", "2", "-ar", "48000", "-c:a", "pcm_s16le", str(output)],
+             "-af", f"{MONO},volume={gain:.2f}dB,afade=t=in:d={FADE_SECONDS},afade=t=out:st={fade_out:.3f}:d={FADE_SECONDS}",
+             "-ar", "48000", "-c:a", "pcm_s16le", str(output)],
             capture_output=True, timeout=120, check=True,
         )
     except (OSError, subprocess.SubprocessError):
