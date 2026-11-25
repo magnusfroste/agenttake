@@ -744,18 +744,60 @@ def _mux_segment_audio(
             f"{labels}amix=inputs={len(clips) + layers}:duration=longest:"
             "dropout_transition=0:normalize=0[a]"
         )
-    if filters:
-        command.extend(["-filter_complex", ";".join(filters), "-map", "0:v", "-map", "[a]"])
-    else:
+    if not filters:
         command.extend([
             "-f", "lavfi", "-i",
             "anullsrc=channel_layout=mono:sample_rate=24000",
             "-map", "0:v", "-map", "1:a",
+            "-t", f"{duration:.3f}", "-c:v", "copy", "-c:a", "aac",
+            str(output_path),
         ])
-    command.extend([
-        "-t", f"{duration:.3f}", "-c:v", "copy", "-c:a", "aac",
-        str(output_path),
-    ])
+        run_media(command)
+        return
+    # Mixed first, then measured and set to the film's loudness.
+    mixed = output_path.with_name(f".{output_path.stem}-mix.wav")
+    command.extend(["-filter_complex", ";".join(filters), "-map", "[a]",
+                    "-t", f"{duration:.3f}", "-c:a", "pcm_s16le", str(mixed)])
+    try:
+        run_media(command)
+        level_audio(video_path, mixed, output_path, duration)
+    finally:
+        mixed.unlink(missing_ok=True)
+
+
+# The finished film's loudness: what YouTube and most feeds play web video
+# at (they turn louder films down, never quieter ones up), and its peaks
+# under -1 dB true peak. Measured as EBU R128 integrated loudness; the
+# research report "Ljud upp och under rösten" (2026-11-25).
+FILM_LUFS = -14.0
+# A sample-peak limit a little under -1 dBTP: the film's sound is 24 kHz mono
+# AAC, and its peaks between samples come out higher than the samples'.
+FILM_PEAK_LIMIT = 0.84
+# A film quieter than this is silence, or close to it: left as it is.
+QUIET_FILM_LUFS = -50.0
+
+
+def film_gain(audio: Path) -> float:
+    """The gain, in dB, that takes ``audio`` to FILM_LUFS; 0 when it is too
+    quiet to measure."""
+    heard = page_sound.loudness(audio)
+    if heard is None or heard < QUIET_FILM_LUFS:
+        return 0.0
+    return FILM_LUFS - heard
+
+
+def level_audio(video_path: Path, audio: Path, output_path: Path, duration: float | None = None) -> None:
+    """Mux ``audio`` with ``video_path``'s picture at the film's loudness: one
+    gain for the whole film, so the mix stays as it was, and a limiter with
+    its delay made good for the few peaks the gain lifts over the limit."""
+    gain = film_gain(audio)
+    chain = (f"volume={gain:.2f}dB,alimiter=limit={FILM_PEAK_LIMIT}:attack=5:release=50:level=false:latency=true"
+             if gain else "anull")
+    command = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(video_path), "-i", str(audio),
+               "-map", "0:v", "-map", "1:a", "-af", chain]
+    if duration is not None:
+        command += ["-t", f"{duration:.3f}"]
+    command += ["-c:v", "copy", "-c:a", "aac", "-b:a", "96k", str(output_path)]
     run_media(command)
 
 
@@ -1847,7 +1889,10 @@ def rerender_narration(
         )
         temp_path.unlink(missing_ok=True)
     else:
-        temp_path.replace(output_path)
+        try:
+            level_audio(temp_path, temp_path, output_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
     return output_path
 
 

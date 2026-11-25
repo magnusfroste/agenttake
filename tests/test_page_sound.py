@@ -6,6 +6,7 @@ sound lets the page be heard: under the line, or first, with the line as a
 comment on what was heard (Magnus, 2026-11-25)."""
 from __future__ import annotations
 
+import array
 import asyncio
 import json
 import shutil
@@ -209,8 +210,6 @@ def test_the_page_goes_down_under_a_line_and_up_when_it_ends(tmp_path):
     # Measured against the page alone, before the first line.
     full = level(0.2, 1.2)
     under = full - page_sound.DUCK_DB
-    # Mono in a mono film: the mixer adds nothing to it.
-    assert full == pytest.approx(page_sound.peak_db(page), abs=0.5)
     # Already down when the line starts, and down all through it.
     assert level(2.0, 2.0) == pytest.approx(under, abs=1.0)
     # Halfway down before it, and up again a release after it.
@@ -248,7 +247,8 @@ def test_the_film_has_the_page_sound_only_where_a_step_asks_for_it(tmp_path, tra
     durations = [part["duration"] for part in result.timeline if part["kind"] == "step"]
     level = lambda at, seconds: page_sound.peak_db(film, at, seconds)
     assert level(starts[0] + 0.5, durations[0] - 1.0) < -60
-    assert page_sound.loudness(film, starts[1] + 0.5, durations[1] - 1.0) == pytest.approx(page_sound.VOICE_LUFS, abs=1.0)
+    from reel_studio.render import FILM_LUFS
+    assert page_sound.loudness(film, starts[1] + 0.5, durations[1] - 1.0) == pytest.approx(FILM_LUFS, abs=1.0)
     assert level(starts[2] + 0.5, durations[2] - 1.0) < -60
 
 
@@ -314,7 +314,7 @@ def test_the_capture_clock_takes_the_earliest_start_its_progress_gives():
 def test_the_sink_is_recorded_whole_and_its_clock_read(tmp_path):
     """Stamped by the wall clock and resampled to it, a steady tone came out
     of the recording with 2.5 s of its 7.8 s gone in pieces (2026-11-25)."""
-    import array
+
     import time
 
     if not page_sound.available() or not shutil.which("paplay"):
@@ -352,3 +352,31 @@ def test_without_pulseaudio_nothing_changes(monkeypatch):
     monkeypatch.setattr(page_sound.shutil, "which", lambda name: None)
     assert page_sound.open_sink("abc") is None and not page_sound.ensure_server()
     page_sound.close_sink(None)
+
+
+@needs_ffmpeg
+def test_the_film_is_set_to_its_loudness_with_its_peaks_limited_and_in_time(tmp_path):
+    from reel_studio.render import FILM_LUFS, _mux_segment_audio
+
+    video = tmp_path / "video.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=black:size=160x90:rate=25:d=6",
+                    "-pix_fmt", "yuv420p", str(video)], check=True)
+    # A line with one loud click at 2 s: the gain lifts the click over the
+    # limit, and the limiter must not move it.
+    line = tmp_path / "line.wav"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "aevalsrc='0.1*sin(2*PI*300*t)+if(between(t,1.0,1.01),0.9*sin(2*PI*1000*t),0)':s=24000:d=4",
+                    str(line)], check=True)
+    film = tmp_path / "film.mp4"
+    _mux_segment_audio(video, [(1.0, line)], film, 6.0)
+    assert page_sound.loudness(film) == pytest.approx(FILM_LUFS, abs=1.0)
+    assert page_sound.peak_db(film) <= -1.0
+    # The click is still at 2 s.
+    wave = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(film), "-f", "s16le", "-ac", "1", "-ar", "24000", "-"],
+                          capture_output=True, check=True).stdout
+
+    samples = array.array("h", wave)
+    loudest = max(range(len(samples)), key=lambda index: abs(samples[index]))
+    assert loudest / 24000 == pytest.approx(2.0, abs=0.02)
+    from reel_studio.render import probe_duration
+    assert probe_duration(film) == pytest.approx(6.0, abs=0.1)
