@@ -68,6 +68,7 @@ from . import review as checks
 from . import storyboard as boards
 from . import probe as scout
 from . import sound as page_sound
+from . import music as music_library
 from .schema import TapPoint, secret_names, ACTION_CONTRACT, ACTION_TYPES, FRAMINGS, Action, action_json_schema, mask_stylesheet
 from .tts import (
     TTSProviderError,
@@ -331,7 +332,8 @@ Secrets: type a password as `{{{{secret:NAME}}}}` and AgentTake types its own
 Formats: 1920x1080 by default; `output_size` larger than the page at the same
 aspect records at that scale (a 720x900 page with `output_size` `1080x1350` is a
 sharp 4:5 video of a site's phone layout). Voices: `list_voices`, Edge free by
-default, ElevenLabs with `provider="elevenlabs"`.
+default, ElevenLabs with `provider="elevenlabs"`. Music: `list_music`, a mood
+or a track as `start_session(music=...)`, mixed under the voice by AgentTake.
 `act_batch(session_id, steps)` runs a whole beat of actions in one call; each
 step is `{{"action": ..., "narration": ...}}` and execution stops on first error.
 Finished sessions can be removed explicitly with `delete_session(session_id,
@@ -346,7 +348,7 @@ link, already shared, redirects to the new one (`?stay=1` shows the old).
 
 Optional `start_session` branding parameters: `title`, `subtitle`, `accent`,
 `cta_url`, `cta_text` (a closing card with a QR code of the link), `transitions`
-(`smooth` or `cuts`), `title_background`, and `music` (`none` or `subtle`).
+(`smooth` or `cuts`), `title_background`, and `music` (a mood or a track from `list_music`, or `none`).
 Target text reliably with `scroll_to_text` and non-recording `assert_visible`.
 Use `click_and_wait` (or `click` with `wait_for_url`, `wait_for_text`, and
 `settle_ms`) so narration starts after the destination page is visibly ready.
@@ -1483,9 +1485,7 @@ def _render_config(
         normalized_accent = signature.current().accent
     elif not normalized_accent.startswith("#"):
         normalized_accent = f"#{normalized_accent}"
-    normalized_music = music.strip().lower()
-    if normalized_music != "subtle":
-        normalized_music = "none"
+    normalized_music = music_library.normalize(music)
     return RenderConfig(
         title=title.strip(),
         subtitle=subtitle.strip(),
@@ -1525,8 +1525,9 @@ def docs_page(base_url: str = "/") -> str:
       <code>ELEVENLABS_API_KEY</code>. Optional title/subtitle and
       <code>cta_url</code>/<code>cta_text</code> add server-rendered three-second
       intro/outro cards; <code>accent</code> controls their hex background.
-      Set <code>music</code> to <code>subtle</code> for a quiet generated music
-      bed; it defaults to <code>none</code>.</p>
+      Set <code>music</code> to a mood or a track id from <code>list_music</code>
+      for music under the film, down under every line; it defaults to
+      <code>none</code>.</p>
       <p><code>beats</code> is the script, in order:
       <code>[{{"line": "&lt;the exact narration&gt;", "label": "&lt;a short name&gt;"}}]</code>,
       one entry per narrated line. <code>review_session</code> and
@@ -2069,6 +2070,9 @@ recipes. What follows is the hand-directed way, act by act.
    list_voices(provider="elevenlabs") gives natural voices — use
    start_session(provider="elevenlabs", voice=<id>). rerender(voice=...,
    provider=...) re-voices a finished video without recording it again.
+   Music is optional: list_music lists free tracks by mood; pass one as
+   start_session(music=<mood or id>), or rerender(music=...) to change it.
+   AgentTake mixes it: down under every line, up a little where nobody speaks.
    The title and closing cards are a hero section by default: a still from
    your own video, blurred and dimmed under the text (title_background="auto").
    Pass an https image URL for a brand image, or "solid" for the accent colour.
@@ -2316,6 +2320,29 @@ async def audition_voice(
     return result
 
 
+MUSIC_HELP = (
+    "Music under the film: a mood (calm, bright, ...) or a track's id from list_music, or none (the default). "
+    "It fades in, sits a little under the voice where nobody speaks, goes well down under every line and "
+    "under the page's own sound, and fades out with the film; the mixing is AgentTake's."
+)
+
+
+@mcp.tool()
+async def list_music() -> dict:
+    """List the music start_session(music=...) and rerender(music=...) take.
+
+    Every track is free (CC0: no credit needed) and was listened to by a
+    person before it went into the library. Pass a mood for its first track,
+    or a track's id. Choose by the film's feeling and audience: calm for a
+    serious or reflective film, bright for a product, playful for a game.
+    Music is optional; a film about a page's own sound may be better without.
+    """
+    found = [track.public() for track in music_library.tracks()]
+    return {"moods": music_library.moods(), "tracks": found,
+            "note": "Pass a mood or an id as music; none for no music." if found
+                    else "This AgentTake has no music library: music stays none."}
+
+
 @mcp.tool()
 async def list_voices(
     language: Annotated[
@@ -2415,7 +2442,7 @@ async def start_session(
     ] = "",
     cta_url: str = "",
     cta_text: str = "Learn more",
-    music: str = "none",
+    music: Annotated[str, Field(description=MUSIC_HELP)] = "none",
     transitions: Annotated[
         str,
         Field(description="How steps are joined. smooth (default): a hard cut on a page "
@@ -2489,7 +2516,7 @@ async def start_session(
     (provider "elevenlabs" needs ELEVENLABS_API_KEY and takes a voice id, with
     settings, language and model after "?" if wanted:
     "<id>?stability=0.35&style=0.35&language=sv"); no
-    music ("subtle" adds a quiet bed); title/subtitle are laid over the film's
+    music (a mood or a track from list_music); title/subtitle are laid over the film's
     first footage (title_at "card" puts them on a 3-second card before it
     instead), cta_url/cta_text an outro; transitions smooth (default) or cuts.
 
@@ -2601,6 +2628,11 @@ async def start_session(
     result: dict = {"session_id": session.session_id}
     if planned_beats:
         result["beats"] = len(planned_beats)
+    chosen_track = music_library.choose(render_config.music)
+    if chosen_track is not None:
+        result["music"] = {"id": chosen_track.id, "mood": chosen_track.mood, "title": chosen_track.title}
+    elif (music or "").strip().lower() not in ("", "none"):
+        result["music_warning"] = f"No music {music!r} here: the film has none. list_music lists the moods and tracks."
     secrets = secret_names()
     if secrets:
         # Names only: type {{secret:NAME}} and AgentTake types the value.
@@ -4780,6 +4812,10 @@ async def rerender(
         Field(description="What the title and closing cards stand on: auto (the film's first and last frame), "
                           "solid (the house's colour), or an https image. Omit to keep it."),
     ] = None,
+    music: Annotated[
+        str | None,
+        Field(description=MUSIC_HELP + " Omit to keep the music the film has."),
+    ] = None,
 ) -> dict:
     """Rebuild narration audio and mux it onto an existing finished video.
 
@@ -4813,6 +4849,14 @@ async def rerender(
         # lead-in finish kept, not the ground (engine.keeps_lead_in).
         store.update_session_branding(session_id, {"title_background": _title_background(title_background)})
         session["title_background"] = _title_background(title_background)
+    if music is not None:
+        # Other music, or none, without recording again.
+        chosen = music_library.normalize(music)
+        if chosen == "none" and music.strip().lower() not in ("", "none"):
+            return {"ok": False, "error": {"type": "unknown_music",
+                    "message": f"No music {music!r} here. list_music lists the moods and tracks."}}
+        store.update_session_branding(session_id, {"music": chosen})
+        session["music"] = chosen
     job = FinishJob(session_id, Path(session["video_path"]).parent, 0, tool="rerender")
     job.task = asyncio.create_task(
         _run_rerender(job, session, voice, provider, subtitles, subtitle_style, graphics_style))

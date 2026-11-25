@@ -13,6 +13,7 @@ import textwrap
 import time
 
 from . import signature as sig
+from . import music as music_library
 from . import sound as page_sound
 from .graphics import ass_events as graphic_events, ass_styles as graphic_styles, look_of
 
@@ -702,42 +703,47 @@ def _mux_segment_audio(
     page: Sequence[tuple[float, Path]] = (),
 ) -> None:
     """Lay the narration clips, the page's own sound (``page``, ducked under
-    the lines) and the music bed on the video."""
+    the lines) and the music (music.py: under everyone who speaks) on the
+    video."""
+    track = music_library.choose(music)
+    # With music the film's sound is 48 kHz: music has more above 12 kHz
+    # than a 24 kHz voice.
+    rate = f",aresample={music_library.SAMPLE_RATE}" if track else ""
     command = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(video_path)]
     filters: list[str] = []
     lines: list[tuple[float, float]] = []
     for index, (offset, clip) in enumerate(clips, start=1):
         command.extend(["-i", str(clip)])
         delay = max(0, round(offset * 1000))
-        filters.append(f"[{index}:a]adelay={delay}|{delay}[a{index}]")
-        if page:
+        filters.append(f"[{index}:a]adelay={delay}|{delay}{rate}[a{index}]")
+        if page or track:
             lines.append((offset, offset + probe_duration(clip)))
     input_count = len(clips)
     if page:
         bed_filters, bed_paths = _page_bed(page, lines, input_count + 1)
         for path in bed_paths:
             command.extend(["-i", path])
+        if rate:
+            bed_filters[-1] = bed_filters[-1].replace("[bed]", f"{rate}[bed]")
         filters += bed_filters
         input_count += len(bed_paths)
-    if music == "subtle":
-        command.extend([
-            "-f", "lavfi", "-i",
-            (
-                "anoisesrc=color=pink:amplitude=0.015:"
-                f"sample_rate=48000:d={duration:.3f}"
-            ),
-        ])
-        input_count += 1
-        music_index = input_count
-        filters.append(
-            f"[{music_index}:a]highpass=f=120,lowpass=f=1800,"
-            "volume=0.4[music]"
-        )
+    music_layer = False
+    if track:
+        voice = (page_sound.voice_loudness([clip for _, clip in clips]) if clips
+                 else page_sound.VOICE_LUFS)
+        # Down for the narrator and for the page's own sound alike.
+        spans = lines + [(offset, offset + probe_duration(clip)) for offset, clip in page]
+        music_filters, music_arguments = music_library.bed(track, duration, voice, spans, input_count + 1)
+        if music_filters:
+            command.extend(music_arguments)
+            filters += music_filters
+            input_count += music_arguments.count("-i")
+            music_layer = True
     labels = "".join(f"[a{i}]" for i in range(1, len(clips) + 1))
-    layers = (1 if page else 0) + (1 if music == "subtle" else 0)
+    layers = (1 if page else 0) + (1 if music_layer else 0)
     if page:
         labels += "[bed]"
-    if music == "subtle":
+    if music_layer:
         labels += "[music]"
     if labels:
         filters.append(
@@ -1432,7 +1438,7 @@ def segmented_render(
                 str(joined),
             ],
         )
-        if _has_branding(config) or config.music == "subtle":
+        if _has_branding(config) or config.music != "none":
             _compose_video(
                 joined, audio_clips, output_path, cumulative,
                 output_size, config, page_audio,
@@ -1829,7 +1835,7 @@ def rerender_narration(
             str(temp_path),
         ]
         run_media(command)
-        if _has_branding(config) or config.music == "subtle":
+        if _has_branding(config) or config.music != "none":
             _compose_video(
                 temp_path, clips, output_path, video_duration,
                 output_size, config,
@@ -1882,7 +1888,7 @@ def rerender_narration(
         *video_codec, "-c:a", "aac", str(temp_path),
     ])
     run_media(command)
-    if _has_branding(config) or config.music == "subtle":
+    if _has_branding(config) or config.music != "none":
         _compose_video(
             temp_path, clips, output_path,
             max(video_duration, audio_end), output_size, config,

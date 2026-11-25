@@ -40,6 +40,12 @@ You need nothing but these tools. Every reply says what comes next under
    A `title` is laid over the first shot, top left, for its first three
    seconds, so the film opens on the product (`title_at="card"` puts it on a
    card before the film instead). The look is the signature's: pass no `accent`.
+   `music` is optional: a mood or a track's id from `list_music` (free tracks
+   a person has listened to). AgentTake mixes it under the film: it fades in,
+   sits 8 LU under the voice where nobody speaks, goes 14 dB further down
+   under every line and under the page's own sound (down over 0.5 s before,
+   back up over 1 s, kept down through a gap under 2 s), and fades out over
+   the last 3 s. `rerender(music=...)` changes it without recording again.
 4. **Shoot.** `shoot_storyboard(session_id, plan_id)`, and again while
    `to_come` is not empty. `status: "shooting"` means `shoot_status` until
    `done`.

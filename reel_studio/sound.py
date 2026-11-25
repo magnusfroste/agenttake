@@ -369,7 +369,8 @@ def loudness(path: Path, start: float = 0.0, seconds: float | None = None, mono:
     command = ["ffmpeg", "-hide_banner", "-nostats", "-ss", f"{start:.3f}"]
     if seconds is not None:
         command += ["-t", f"{seconds:.3f}"]
-    chain = f"{MONO}," if mono else ""
+    # A mono file is made two channels first, so MONO has both to average.
+    chain = f"aformat=channel_layouts=stereo,{MONO}," if mono else ""
     command += ["-i", str(path), "-af", f"{chain}ebur128", "-f", "null", "-"]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=120)
@@ -437,23 +438,25 @@ def spoken(lines: Sequence[tuple[float, float]], hold: float = DUCK_HOLD) -> lis
     return [(start, end) for start, end in merged]
 
 
-def duck(lines: Sequence[tuple[float, float]]) -> str:
-    """An ffmpeg volume filter that takes the page's sound DUCK_DB down under
+def duck(lines: Sequence[tuple[float, float]], depth: float = DUCK_DB, lead: float = DUCK_LEAD,
+         after: float = DUCK_AFTER, release: float = DUCK_RELEASE, hold: float = DUCK_HOLD) -> str:
+    """An ffmpeg volume filter that takes a sound ``depth`` dB down under
     the lines (seconds on the film's clock): linear in dB, down over
-    DUCK_LEAD before each line, up over DUCK_RELEASE from DUCK_AFTER past
-    it. A flat sum of trapezoids: the merged spans are at least DUCK_HOLD
-    apart, more than the three together, so no two overlap, and the
-    expression nests no deeper with more lines. "" when nothing is said."""
-    spans = spoken(lines, max(DUCK_HOLD, DUCK_LEAD + DUCK_AFTER + DUCK_RELEASE))
+    ``lead`` before each line, up over ``release`` from ``after`` past it.
+    The page's sound by default; the music (music.py) moves slower. A flat
+    sum of trapezoids: the merged spans are at least ``hold`` apart, more
+    than the three together, so no two overlap, and the expression nests no
+    deeper with more lines. "" when nothing is said."""
+    spans = spoken(lines, max(hold, lead + after + release))
     if not spans:
         return ""
     terms = "+".join(
-        f"clip((t-{start - DUCK_LEAD:.3f})/{DUCK_LEAD},0,1)*clip(({end + DUCK_AFTER + DUCK_RELEASE:.3f}-t)/{DUCK_RELEASE},0,1)"
+        f"clip((t-{start - lead:.3f})/{lead},0,1)*clip(({end + after + release:.3f}-t)/{release},0,1)"
         for start, end in spans
     )
     # Small frames: volume sets its gain once a frame, at the frame's start,
     # so a ramp over 1024-sample frames would step every 21 ms.
-    return f"asetnsamples=n=256,volume='pow(10,-{DUCK_DB / 20:.4f}*({terms}))':eval=frame"
+    return f"asetnsamples=n=256,volume='pow(10,-{depth / 20:.4f}*({terms}))':eval=frame"
 
 
 def window_db(samples: Sequence[int]) -> float:
