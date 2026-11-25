@@ -201,13 +201,15 @@ def _chromium(run):
 def test_the_page_says_what_it_played_and_when_it_is_quiet():
     async def run(page):
         await page.evaluate("""() => {
-          const c = new AudioContext();
+          const c = new AudioContext({latencyHint: "interactive"});
           const buffer = c.createBuffer(1, c.sampleRate * 0.6, c.sampleRate);
           const source = c.createBufferSource(); source.buffer = buffer; source.connect(c.destination); source.start();
           const u = new SpeechSynthesisUtterance("God jul"); speechSynthesis.speak(u);
           const a = new Audio("https://example.invalid/roster/dag-01.mp3"); a.play().catch(() => {});
         }""")
         waited = await page_sound.wait_quiet(page, 5000)
+        # Asked for "interactive", the page gets the playback buffer all the same.
+        assert await page.evaluate("() => AudioContext.__take === true && new AudioContext() instanceof AudioContext")
         return waited, await page_sound.heard(page)
 
     waited, heard = _chromium(run)
@@ -218,6 +220,59 @@ def test_the_page_says_what_it_played_and_when_it_is_quiet():
     assert waited < 4.5
     if not kinds["speech"]["voices"]:
         assert "speech synthesis" in " ".join(page_sound.sound_notes(heard))
+
+
+def test_the_capture_clock_takes_the_earliest_start_its_progress_gives():
+    import io
+    import time
+
+    stream = io.BytesIO(b"frame=0\nout_time_us=N/A\nout_time_us=2000000\nout_time_us=1500000\nprogress=end\n")
+    clock = page_sound.CaptureClock(stream)
+    for _ in range(50):
+        if clock.started is not None:
+            break
+        time.sleep(0.01)
+    time.sleep(0.05)
+    # Read at once, the 2 s report says the recording began 2 s ago.
+    assert clock.started == pytest.approx(time.monotonic() - 2.0, abs=0.3)
+
+
+@needs_ffmpeg
+def test_the_sink_is_recorded_whole_and_its_clock_read(tmp_path):
+    """Stamped by the wall clock and resampled to it, a steady tone came out
+    of the recording with 2.5 s of its 7.8 s gone in pieces (2026-11-25)."""
+    import array
+    import time
+
+    if not page_sound.available() or not shutil.which("paplay"):
+        pytest.skip("no PulseAudio")
+    opened = page_sound.open_sink("wholetest")
+    if opened is None:
+        pytest.skip("no PulseAudio server")
+    sink, module = opened
+    tone = tmp_path / "tone.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=3", "-ac", "2", "-ar",
+                    "48000", str(tone)], check=True)
+    try:
+        process = page_sound.start_capture(sink, tmp_path / "capture.mka")
+        time.sleep(1)
+        subprocess.run(["paplay", "-d", sink, str(tone)], check=True, timeout=20)
+        time.sleep(0.5)
+        from reel_studio.render import stop_recording
+        stop_recording(process)
+    finally:
+        page_sound.close_sink(module)
+    assert process.clock.started is not None
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(tmp_path / "capture.mka"), "-ac", "1", "-f", "s16le",
+                          "-"], capture_output=True, check=True).stdout
+    samples = array.array("h", raw)
+    loud = [i for i in range(0, len(samples), 48) if abs(samples[i]) > 1000]
+    inside = samples[loud[0] + 4800:loud[-1] - 4800]
+    run = longest = 0
+    for value in inside:
+        run = run + 1 if abs(value) < 2 else 0
+        longest = max(longest, run)
+    assert longest < 48, f"a gap of {longest / 48:.1f} ms in a steady tone"
 
 
 def test_without_pulseaudio_nothing_changes(monkeypatch):

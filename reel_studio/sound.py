@@ -21,6 +21,7 @@ import json
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Sequence
@@ -38,13 +39,16 @@ UNDER_PEAK_DB = -16.0
 # Quieter than this, a clip is silence and is left out.
 SILENT_DB = -55.0
 FADE_SECONDS = 0.04
-# The screen recording's first frame comes this much later than the sound
-# recording's first sample, for recorders started together: measured with a
-# beep and a white flash set off by one press, 24 presses in four sessions,
-# 0.25-0.42 s, within ±0.05 s in one session (2026-11-25).
-SCREEN_START_LAG = 0.34
+# What is left between the screen recording's start and the sound's first
+# sample as its clock tells it (CaptureClock), the browser's buffer counted
+# in: measured with a beep and a white flash set off by one press, -0.59 to
+# -0.53 s in three sessions, -0.87 to -0.66 s in four on a host with every
+# core taken (2026-11-25). Off by 0.1 s or less on a host as it usually is.
+SCREEN_START_LAG = -0.43
 # The buffer the browser plays into the sink with, in ms (PULSE_LATENCY_MSEC).
-PULSE_LATENCY_MSEC = "30"
+# 30 ms cut a two-second tone in up to 36 places on a busy host; with 200 ms,
+# and Web Audio asked for its playback buffer, it came through whole.
+PULSE_LATENCY_MSEC = "200"
 # A beat whose sound comes first waits at most this long for the page to go
 # quiet, and counts this long in the plan's estimate.
 QUIET_WAIT_MAX_MS = 20000
@@ -89,6 +93,16 @@ SOUND_JS = r"""(() => {
     if (result && result.catch) result.catch((e) => { entry.blocked = String(e && e.name || e); end(entry); });
     return result;
   };
+  // A film is not played live: the largest buffer the page can have, so a
+  // busy host does not cut its sound to pieces (2026-11-25).
+  for (const name of ["AudioContext", "webkitAudioContext"]) {
+    const Native = window[name];
+    if (!Native || Native.__take) continue;
+    const Wrapped = function (options) { return new Native(Object.assign({}, options, {latencyHint: "playback"})); };
+    Wrapped.prototype = Native.prototype;
+    Wrapped.__take = true;
+    window[name] = Wrapped;
+  }
   // Chrome gives AudioBufferSourceNode a start of its own: each kind of
   // source that has one is followed.
   for (const kind of ["AudioScheduledSourceNode", "AudioBufferSourceNode", "OscillatorNode", "ConstantSourceNode"]) {
@@ -179,23 +193,79 @@ def close_sink(module: str | None) -> None:
         pass
 
 
+# How long the capture's clock is read: its first seconds are enough.
+CLOCK_SECONDS = 15.0
+
+
+class CaptureClock:
+    """When a recording's first sample was heard, on time.monotonic().
+
+    ffmpeg takes 0.5 to 2 s to open the sink on a busy host, never the same
+    twice, so the moment it was started says little. Its progress says how
+    much it has recorded: now less that is the start, late by however long
+    the report took to arrive and never early, so the least of them is it."""
+
+    def __init__(self, stream: Any) -> None:
+        self.started: float | None = None
+        self._opened = time.monotonic()
+        threading.Thread(target=self._read, args=(stream,), daemon=True).start()
+
+    def _read(self, stream: Any) -> None:
+        try:
+            for line in iter(stream.readline, b""):
+                now = time.monotonic()
+                if not line.startswith(b"out_time_us=") or now - self._opened > CLOCK_SECONDS:
+                    continue
+                try:
+                    recorded = int(line.split(b"=", 1)[1]) / 1e6
+                except ValueError:
+                    continue
+                if recorded > 0:
+                    start = now - recorded
+                    self.started = start if self.started is None else min(self.started, start)
+        except (OSError, ValueError):
+            pass
+
+
 def start_capture(sink: str, output: Path) -> subprocess.Popen[bytes] | None:
-    """Record the sink: Matroska with FLAC, readable even if cut short."""
+    """Record the sink: Matroska with FLAC, readable even if cut short. The
+    process has a ``clock`` (CaptureClock) that says when it started."""
     try:
-        return subprocess.Popen(
+        process = subprocess.Popen(
             ["ffmpeg", "-loglevel", "error", "-nostats", "-y", "-f", "pulse",
+             # Small fragments: what is still in the server when the
+             # recording stops is lost, so the end is on time.
              "-fragment_size", "1920",
-             # Stamped by the clock, and gaps filled with silence: a sink
-             # that went idle delivered nothing for a while, and the file
-             # came out 1.3 s short of the screen's, every sound after it
-             # early by that much (2026-11-25).
-             "-use_wallclock_as_timestamps", "1", "-i", f"{sink}.monitor",
-             "-af", "aresample=async=1000:first_pts=0",
+             # Every sample as the sink gave it. Stamped by the clock and
+             # resampled to it, the recording was cut to pieces: Tomten's
+             # greeting had 58 gaps of silence and stuttered (2026-11-25).
+             # Where it starts is read from its progress (CaptureClock).
+             "-i", f"{sink}.monitor", "-progress", "pipe:1", "-stats_period", "0.05",
              "-ac", "2", "-ar", "48000", "-c:a", "flac", str(output)],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
     except OSError:
         return None
+    process.clock = CaptureClock(process.stdout)  # type: ignore[attr-defined]
+    return process
+
+
+def recorded_seconds(path: Path) -> float | None:
+    try:
+        result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                 "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                                capture_output=True, text=True, timeout=30)
+        return float(result.stdout.strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def anchored_start(path: Path, stopped_at: float) -> float | None:
+    """When the recording's first sample was heard, from where it was
+    stopped: its samples run without a gap. Rougher than its clock (a few
+    tenths of a second), for a recording whose clock read nothing."""
+    seconds = recorded_seconds(path)
+    return stopped_at - seconds if seconds else None
 
 
 def record_span(directory: Path, file: str, video_start: float, shift: float) -> None:
