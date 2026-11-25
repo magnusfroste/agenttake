@@ -54,9 +54,13 @@ FADE_IN = 1.0
 # end, and only then fades out, over the last FADE_OUT. A 3 s fade from the
 # film's last 3 s began as the last line ended, so the music never came up
 # at all (the julkalender proof, 2026-11-25).
+# The closing card is 3 s and the last line often ends as it starts: the
+# music comes up quickly then, over END_LIFT_SECONDS, holds, and fades over
+# the last FADE_OUT. With the slow release and a 2 s fade it rose as it
+# faded (the julkalender proof 0d3aef99, 2026-11-25).
 END_LIFT_DB = 4.0
-END_LIFT_SECONDS = 1.0
-FADE_OUT = 2.0
+END_LIFT_SECONDS = 0.5
+FADE_OUT = 1.5
 # A track that is not a loop joins itself with this long a crossfade.
 CROSSFADE = 3.0
 # The film's sound with music: music has more above 12 kHz than a voice.
@@ -208,7 +212,8 @@ def bed(track: Track, film_seconds: float, voice: float, spans: Sequence[tuple[f
             joined = f"[mj{number}]"
             filters.append(f"{source}[{first_input + number}:a]acrossfade=d={crossfade:.3f}{joined}")
             source = joined
-    ducked = page_sound.duck(spans, depth=DUCK_DB, lead=LEAD, after=AFTER, release=RELEASE, hold=HOLD)
+    ducked = page_sound.duck(spans, depth=DUCK_DB, lead=LEAD, after=AFTER, release=RELEASE, hold=HOLD,
+                             last_release=END_LIFT_SECONDS)
     fade_out = min(FADE_OUT, film_seconds / 3)
     lift = end_lift(spans, film_seconds - fade_out)
     if lift:
