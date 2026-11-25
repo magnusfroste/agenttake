@@ -731,8 +731,9 @@ def _mux_segment_audio(
     if track:
         voice = (page_sound.voice_loudness([clip for _, clip in clips]) if clips
                  else page_sound.VOICE_LUFS)
-        # Down for the narrator and for the page's own sound alike.
-        spans = lines + [(offset, offset + probe_duration(clip)) for offset, clip in page]
+        # Down for the narrator and for the page's own sound alike: where
+        # the page is heard, not the silence around it.
+        spans = lines + [span for offset, clip in page for span in page_sound.sounding(clip, offset)]
         music_filters, music_arguments = music_library.bed(track, duration, voice, spans, input_count + 1)
         if music_filters:
             command.extend(music_arguments)
