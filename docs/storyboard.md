@@ -45,7 +45,8 @@ You need nothing but these tools. Every reply says what comes next under
    sits 8 LU under the voice where nobody speaks, goes 14 dB further down
    under every line and under the page's own sound (down over 0.5 s before,
    back up over 1 s, kept down through a gap under 2 s), and fades out over
-   the last 3 s. `rerender(music=...)` changes it without recording again.
+   the last 2 s; after the last line it comes up 4 dB more over the closing
+   card before it fades. `rerender(music=...)` changes it without recording again.
 4. **Shoot.** `shoot_storyboard(session_id, plan_id)`, and again while
    `to_come` is not empty. `status: "shooting"` means `shoot_status` until
    `done`.

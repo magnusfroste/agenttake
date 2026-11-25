@@ -49,7 +49,14 @@ AFTER = 0.2
 RELEASE = 1.0
 HOLD = 2.0
 FADE_IN = 1.0
-FADE_OUT = 3.0
+# The end: after the last line the music comes up, END_LIFT_DB over the
+# pausmusik level, over the closing card, as a film's music swells at its
+# end, and only then fades out, over the last FADE_OUT. A 3 s fade from the
+# film's last 3 s began as the last line ended, so the music never came up
+# at all (the julkalender proof, 2026-11-25).
+END_LIFT_DB = 4.0
+END_LIFT_SECONDS = 1.0
+FADE_OUT = 2.0
 # A track that is not a loop joins itself with this long a crossfade.
 CROSSFADE = 3.0
 # The film's sound with music: music has more above 12 kHz than a voice.
@@ -163,6 +170,20 @@ def gain(track: Track, voice: float) -> float:
     return voice - BELOW_VOICE_LU - heard
 
 
+def end_lift(spans: Sequence[tuple[float, float]], fade_start: float) -> str:
+    """The volume filter that brings the music END_LIFT_DB up after the last
+    line, as the closing card plays; "" with no line, or too little time
+    after it to be heard before the fade."""
+    ends = [end for start, end in spans if end > start]
+    if not ends:
+        return ""
+    start = max(ends) + AFTER
+    if fade_start - start < END_LIFT_SECONDS:
+        return ""
+    return (f"volume='pow(10,{END_LIFT_DB / 20:.4f}*clip((t-{start:.3f})/{END_LIFT_SECONDS},0,1))'"
+            ":eval=frame")
+
+
 def bed(track: Track, film_seconds: float, voice: float, spans: Sequence[tuple[float, float]],
         first_input: int) -> tuple[list[str], list[str]]:
     """The music as one track [music]: the inputs to add (ffmpeg arguments)
@@ -189,6 +210,9 @@ def bed(track: Track, film_seconds: float, voice: float, spans: Sequence[tuple[f
             source = joined
     ducked = page_sound.duck(spans, depth=DUCK_DB, lead=LEAD, after=AFTER, release=RELEASE, hold=HOLD)
     fade_out = min(FADE_OUT, film_seconds / 3)
+    lift = end_lift(spans, film_seconds - fade_out)
+    if lift:
+        ducked = f"{ducked},{lift}" if ducked else lift
     filters.append(
         f"{source}aformat=channel_layouts=stereo,{page_sound.MONO},aresample={SAMPLE_RATE},"
         f"atrim=0:{film_seconds:.3f},asetpts=N/SR/TB,volume={gain(track, voice):.2f}dB,"
