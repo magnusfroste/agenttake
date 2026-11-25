@@ -115,11 +115,12 @@ def test_music_goes_down_under_the_line_and_fades_with_the_film(library, tmp_pat
     assert rate == "48000"
     assert probe_duration(film) == pytest.approx(10.0, abs=0.1)
     levels = _band_levels(film, 1000)
-    before, under, after = _at(levels, 2.0), _at(levels, 4.5), _at(levels, 7.0)
+    before, under, after = _at(levels, 2.0), _at(levels, 4.5), _at(levels, 7.5)
     # Heard where nobody speaks, 14 dB down under the line.
     assert before > -40
     assert before - under == pytest.approx(music.DUCK_DB, abs=2.0)
-    assert after == pytest.approx(before, abs=2.0)
+    # Nothing said after it: up, and the end's lift on top.
+    assert after == pytest.approx(before + music.END_LIFT_DB, abs=2.0)
     # Fades in, and out with the film.
     assert _at(levels, 0.0) < before - 6
     assert _at(levels, 9.75) < after - 10
@@ -158,3 +159,24 @@ def test_list_music_and_render_config_take_the_library(library):
     assert listed["tracks"][0]["id"] == "still-water" and listed["tracks"][0]["licence"] == "CC0"
     assert server._render_config("", "", "#000000", "", "", "calm").music == "calm"
     assert server._render_config("", "", "#000000", "", "", "jazz").music == "none"
+
+
+@needs_ffmpeg
+def test_music_rises_over_the_closing_card_and_then_fades(library, tmp_path):
+    from reel_studio.render import _mux_segment_audio
+
+    video = tmp_path / "video.mp4"
+    _ffmpeg("-f", "lavfi", "-i", "color=black:size=160x90:rate=25:d=14", "-pix_fmt", "yuv420p", str(video))
+    line = tmp_path / "line.wav"
+    _ffmpeg("-f", "lavfi", "-i", "aevalsrc='0.1*sin(2*PI*300*t)':s=24000:d=3", str(line))
+    film = tmp_path / "film.mp4"
+    # A line from 3 to 6 s, nothing after it: the end of a film, its card.
+    _mux_segment_audio(video, [(3.0, line)], film, 14.0, music="bright")
+    levels = _band_levels(film, 2000)
+    before, card = _at(levels, 2.0), _at(levels, 10.0)
+    assert card - before == pytest.approx(music.END_LIFT_DB, abs=1.5)
+    # Still up 2.5 s before the end, faded at the end.
+    assert _at(levels, 11.5) == pytest.approx(card, abs=1.5)
+    assert _at(levels, 13.75) < card - 10
+    assert music.end_lift([], 10.0) == ""
+    assert music.end_lift([(1.0, 9.5)], 10.0) == ""
