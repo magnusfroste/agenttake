@@ -451,6 +451,10 @@ def test_a_line_over_the_page_still_speaking_is_found(tmp_path):
     assert found[0]["location"] == "step[1]"
     steps[1]["offset_seconds"] = 3.5
     assert review.talk_over_findings(tmp_path, steps) == []
+    # In a pause, with the page going on 0.2 s into the line: where a person
+    # would come in.
+    _tone(tmp_path / page_sound.CAPTURE_FILE, 8, "lt(t,3)+gt(t,3.7)")
+    assert review.talk_over_findings(tmp_path, steps) == []
 
 
 def test_the_ear_hears_the_sink(tmp_path):
