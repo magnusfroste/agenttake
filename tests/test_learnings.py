@@ -35,8 +35,8 @@ def kinds(text):
 
 
 def test_a_personal_number_outside_the_test_list_is_stopped():
-    assert kinds("customer 811218-9876 complained") == [("personal_number", True)]
-    assert kinds("customer 198112189876 complained") == [("personal_number", True)]
+    assert kinds("customer 811218-2384 complained") == [("personal_number", True)]
+    assert kinds("customer 198112182384 complained") == [("personal_number", True)]
 
 
 def test_a_number_on_the_test_list_passes():
@@ -45,11 +45,11 @@ def test_a_number_on_the_test_list_passes():
 
 
 def test_a_wrong_check_digit_is_no_personal_number():
-    assert sensitive.scan("order 811218-9877") == []
+    assert sensitive.scan("order 811218-2385") == []
 
 
 def test_ten_digits_without_a_separator_are_left_alone():
-    assert sensitive.scan("call 8112189876 now") == []
+    assert sensitive.scan("call 8112182384 now") == []
 
 
 def test_a_samordningsnummer_counts():
@@ -83,14 +83,14 @@ def test_the_list_is_fetched_beside_the_code():
 
 
 def test_a_report_never_repeats_the_value():
-    hit = sensitive.scan("811218-9876")[0]
-    assert "9876" not in hit["value"]
+    hit = sensitive.scan("811218-2384")[0]
+    assert "2384" not in hit["value"]
 
 
 def test_the_plan_refuses_a_real_looking_number(db):
     beats = [{"shot": "card", "text": "Hi", "line": "Hello", "background": "brand"},
              {"shot": "live_answer", "url": "https://example.com", "line": "A number.",
-              "input_text": "Case for 811218-9876"}]
+              "input_text": "Case for 811218-2384"}]
 
     async def probe(url):
         return {"status": 200, "final_url": url, "title": "x", "login_gate": False, "paywall": False}
@@ -102,15 +102,15 @@ def test_the_plan_refuses_a_real_looking_number(db):
 
 def test_only_steps_in_the_film_are_counted():
     steps = [{"idx": 1, "offscreen": 1, "ok": 1}, {"idx": 2, "offscreen": 0, "ok": 1}]
-    texts = {1: "811218-9876", 2: "811218-2392"}
+    texts = {1: "811218-2384", 2: "811218-2392"}
     assert sensitive.findings(steps, texts) == []
-    found = sensitive.findings(steps, {2: "811218-9876"})
+    found = sensitive.findings(steps, {2: "811218-2384"})
     assert found[0]["category"] == "sensitive_on_screen" and found[0]["severity"] == "high"
 
 
 def test_a_framed_shot_is_judged_by_its_frame():
     steps = [{"idx": 2, "offscreen": 0, "ok": 1}]
-    page = {2: "sidebar: customer 811218-9876"}
+    page = {2: "sidebar: customer 811218-2384"}
     assert sensitive.findings(steps, page, {2: "The answer in frame"}) == []
     assert sensitive.findings(steps, page)
     camera = Camera(1920, 1080, 1.0, [{"t": 5.0, "zoom": 1.5, "cx": 900.0, "cy": 500.0, "facts": {"frame_text": "in frame"}}])
