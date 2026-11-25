@@ -50,9 +50,10 @@ filmed and cut it with AgentTake.
 - 🎮 **Plays canvas apps** — a `tap` presses a point of the screen (held, for a
   pedal) where nothing has a name to click; a `system` beat gets past a start
   screen offscreen (`start`) and plays the page on camera (`taps`), with a soft
-  dot where a finger would press; `to_x`/`to_y` drags, and `expect` checks the
+  dot where a finger would press; `to_x`/`to_y` drags, `expect` checks the
   game's own state afterwards, so a press that missed fails the beat instead of
-  ending up in the film.
+  ending up in the film, and `react` keeps the camera on the game after the
+  last press so its answer is seen before the cut.
 - 🔁 **Edit without a reshoot** — hide a step, hold a result, speed up a wait,
   or rewrite a line, then `rerender`: no re-recording the browser.
 - 📐 **Any format** — 16:9 for X and YouTube, or 4:5 from a site's phone

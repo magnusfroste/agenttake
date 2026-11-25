@@ -2201,6 +2201,11 @@ class BrowserSession:
                         await self._touch_mark(x, y, False)
                     pointer = (x, y)
                 self.pointer, self.pointer_held = pointer, False
+                if action.then_ms and glide_started_at is not None:
+                    # Held from the first press, which is where the step
+                    # starts in the video, to then_ms after the last.
+                    pressed = time.monotonic() - self.t0 - glide_started_at
+                    annotation_duration = max(annotation_duration, pressed + action.then_ms / 1000)
             elif action_type == "card":
                 # Nothing happens in the browser: the render cuts a card in
                 # here instead of this step's footage.

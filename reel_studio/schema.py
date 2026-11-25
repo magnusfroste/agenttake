@@ -10,6 +10,10 @@ OFFSCREEN_WAIT_MAX_MS = 600000
 
 
 TAP_HOLD_MAX_MS = 5000
+# How long a tap step may stay on the page after its last press, for what
+# the press sets off: Lillstaden's oven card flew in just as the beat was cut
+# (Kotten take 4, 2026-11-24).
+TAP_THEN_MAX_MS = 6000
 # A drag's move when its point gives no ms.
 DRAG_MS = 700
 
@@ -85,6 +89,9 @@ class Action(BaseModel):
     # BÖRJA! are drawn, not built, so a click by ref or text found nothing
     # (skolappar.com, 2026-11-20).
     points: list[TapPoint] | None = None
+    # tap only: the camera stays on the page this long after the last press,
+    # however soon the line ends, so the game's answer to it is seen.
+    then_ms: int = Field(default=0, ge=0, le=TAP_THEN_MAX_MS)
 
     @model_validator(mode="after")
     def _taps_have_points(self) -> "Action":
@@ -132,7 +139,8 @@ ACTION_FIELDS: dict[str, str] = {
            "holds the press that long, up to 5000 — a gas pedal; left out, a tap; with to_x and to_y the press is a "
            "drag: down at x, y, moved to to_x, to_y over ms (default 700) and let go there — a piece pulled onto a "
            "board), ms optional (the pause between "
-           "presses, default 600) — presses where nothing has a ref or a text: a canvas game's keys or buttons; "
+           "presses, default 600), then_ms optional (the step stays on the page this long after the last press, "
+           "up to 6000: what the press sets off, a card flying in) — presses where nothing has a ref or a text: a canvas game's keys or buttons; "
            "a soft dot marks each press on screen, as a finger would",
     "card": "text (one or two lines; a newline breaks the line), background (\"brand\": the accent colour, the default; \"blur\": the frame before the card, blurred; or a hex colour such as \"#0b1320\") — a full-screen text card cut into the video here, mid-film, with this step's narration spoken over it; it lasts its line plus a short tail, at least 2.5 s, and dissolves in and out with transitions smooth",
 }
@@ -227,6 +235,8 @@ def action_json_schema() -> dict[str, Any]:
             "narration_timing": {"type": "string", "enum": ["before_action", "after_action", "after_settle"]},
             "background": {"type": "string", "description": "card only: brand (default), blur, or a hex colour like #0b1320"},
             "points": tap_points_json_schema(),
+            "then_ms": {"type": "integer", "minimum": 0, "maximum": TAP_THEN_MAX_MS,
+                        "description": "tap only: stay on the page this long after the last press"},
         },
     }
 

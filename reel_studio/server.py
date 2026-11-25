@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, ValidationError
 import uvicorn
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.types import ASGIApp
 
 from .engine import BrowserSession, output_root
@@ -338,6 +338,10 @@ confirm=true)`; this deletes media and metadata for only that session. Add
 `force=true` to also remove a stale active session orphaned by a restart.
 The theater's Manage mode deletes over HTTP with
 `DELETE /api/videos/{{id}}?confirm=true` and the same bearer token.
+A person approves a film on its watch page (`POST /api/videos/{{id}}/approve`,
+the bearer token; `?revoke=true` withdraws it). `?replaces=<an older film's id>`
+publishes it in that film's place: the older one is withdrawn, and its watch
+link, already shared, redirects to the new one (`?stay=1` shows the old).
 
 Optional `start_session` branding parameters: `title`, `subtitle`, `accent`,
 `cta_url`, `cta_text` (a closing card with a QR code of the link), `transitions`
@@ -728,16 +732,39 @@ def video_card(session: dict) -> str:
     </article>"""
 
 
-def approval_banner(session_id: str, title: str, approved: bool) -> str:
-    """On a watch page: whether a person has approved this film, and the button."""
+def approval_banner(session_id: str, title: str, approved: bool, replaced_by: str | None = None,
+                    published: list[dict] | None = None) -> str:
+    """On a watch page: whether a person has approved this film, and the button.
+
+    A film waiting for approval can take a published film's place: that film
+    is withdrawn and its link, already posted, leads here. Kotten take 4
+    replaced take 2 on 2026-11-24 by a withdraw and an approve, and the link
+    in a post still showed take 2, marked as awaiting approval."""
     safe_id, safe_title = html.escape(session_id, quote=True), html.escape(title, quote=True)
+    if replaced_by:
+        safe_new = html.escape(replaced_by, quote=True)
+        return (f'<div class="card" style="margin-bottom:16px;"><strong>Replaced.</strong> '
+                f'Its link leads to <a href="/watch/{safe_new}">the film published in its place</a>. '
+                f'<button type="button" class="button secondary" data-approve-id="{safe_id}" '
+                f'data-approve-title="{safe_title}">Publish this one again</button></div>')
     if approved:
         return (f'<p class="muted" style="margin-bottom:16px;">Approved and listed in the theater. '
                 f'<button type="button" class="delete-button" data-approve-id="{safe_id}" data-approve-title="{safe_title}" '
                 f'data-approve-revoke="true">Withdraw</button></p>')
+    others = [film for film in published or [] if film["id"] != session_id]
+    choice = ""
+    if others:
+        options = "".join(
+            f'<option value="{html.escape(film["id"], quote=True)}">'
+            f'{html.escape(display_title_for(film))} · {html.escape(str(film.get("finished_at") or "")[:16])}</option>'
+            for film in others[:30]
+        )
+        choice = (f' <label class="muted" style="margin-left:8px;">Replaces '
+                  f'<select data-replaces-for="{safe_id}"><option value="">nothing</option>{options}</select></label>')
     return (f'<div class="card" style="margin-bottom:16px;"><strong>Awaiting approval.</strong> '
             f'Only people with the link can see this film. '
-            f'<button type="button" class="button" data-approve-id="{safe_id}" data-approve-title="{safe_title}">Approve</button></div>')
+            f'<button type="button" class="button" data-approve-id="{safe_id}" data-approve-title="{safe_title}">Approve</button>'
+            f'{choice}</div>')
 
 
 def video_refresh_script(container_id: str, featured: bool = False) -> str:
@@ -901,9 +928,13 @@ def video_admin_script() -> str:
         event.preventDefault();
         const revoke = button.dataset.approveRevoke === "true";
         const verb = revoke ? "Withdraw" : "Approve";
-        if (!window.confirm(`${verb} "${button.dataset.approveTitle}"?`)) return;
+        const pick = document.querySelector(`[data-replaces-for="${button.dataset.approveId}"]`);
+        const replaces = !revoke && pick && pick.value ? pick.value : "";
+        const also = replaces ? ` It replaces "${pick.options[pick.selectedIndex].text}": that film is withdrawn and its link leads here.` : "";
+        if (!window.confirm(`${verb} "${button.dataset.approveTitle}"?${also}`)) return;
+        const query = revoke ? "?revoke=true" : (replaces ? `?replaces=${encodeURIComponent(replaces)}` : "");
         const response = await authorized((token) => fetch(
-          `/api/videos/${button.dataset.approveId}/approve${revoke ? "?revoke=true" : ""}`,
+          `/api/videos/${button.dataset.approveId}/approve${query}`,
           { method: "POST", headers: { Authorization: `Bearer ${token}` } },
         ));
         if (!response) return;
@@ -1122,7 +1153,8 @@ def watch_page(session_id: str, base_url: str = "/") -> str | None:
       <p class="muted">{html.escape(duration)} · {html.escape(finished_at)}</p>
     </section>
     
-    {approval_banner(session_id, title, bool(session.get("approved_at")))}
+    {approval_banner(session_id, title, bool(session.get("approved_at")), store.replacement_of(session_id),
+                     None if session.get("approved_at") else store.list_finished_sessions(approved=True))}
     <div style="background:#080b11; border:1px solid #2a354d; border-radius:14px; overflow:hidden; margin-bottom:32px;">
       <video controls autoplay preload="auto" poster="{html.escape(poster, quote=True)}" style="width:100%; max-height:75vh; display:block;" src="{video_url(session_id)}"></video>
     </div>
@@ -1814,6 +1846,11 @@ async def watch(request: Request) -> Response:
     session_id = request.path_params["session_id"]
     if not re.fullmatch(r"[0-9a-f]+", session_id):
         return HTMLResponse("<h1>Video not found</h1>", status_code=404)
+    # A film published in this one's place: the link already posted leads
+    # there. ?stay=1 shows this one, for the person who replaced it.
+    replacement = store.replacement_of(session_id)
+    if replacement and not request.query_params.get("stay"):
+        return RedirectResponse(f"/watch/{replacement}", status_code=302)
     base = str(request.base_url).rstrip("/")
     html_content = watch_page(session_id, base)
     if not html_content:
@@ -1866,9 +1903,19 @@ async def api_approve_video(request: Request) -> Response:
     if not re.fullmatch(r"[0-9a-f]+", session_id):
         return JSONResponse({"approved": False, "reason": "not_found"}, status_code=404)
     approve = request.query_params.get("revoke", "").strip().lower() not in {"1", "true", "yes"}
-    if not store.set_approved(session_id, approve):
+    # replaces=<an older film's id>: that film is withdrawn and its link
+    # leads to this one, so a post that shared it shows the new take.
+    replaces = request.query_params.get("replaces", "").strip() or None
+    if replaces is not None:
+        older = store.get_session(replaces) if re.fullmatch(r"[0-9a-f]+", replaces) else None
+        if not approve or replaces == session_id or not older or older.get("status") != "finished":
+            return JSONResponse({"approved": False, "reason": "invalid_replaces",
+                                 "message": "replaces names another finished film, and only on an approval"},
+                                status_code=400)
+    if not store.set_approved(session_id, approve, replaces):
         return JSONResponse({"approved": False, "reason": "not_found"}, status_code=404)
-    return JSONResponse({"approved": approve, "session_id": session_id})
+    return JSONResponse({"approved": approve, "session_id": session_id,
+                         **({"replaces": replaces} if replaces else {})})
 
 
 @mcp.custom_route("/backlog", methods=["GET"], include_in_schema=False)

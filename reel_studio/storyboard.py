@@ -77,7 +77,10 @@ SHOT_FIELDS: dict[str, str] = {
               "opens, to get past a start screen: a button's text, or {x, y} as fractions of the screen for a "
               "drawn one); taps optional (presses on camera while the line plays: a list of {x, y, ms}, "
               "fractions of the screen, ms holds a press — a key played, a pedal held; with to_x and to_y a "
-              "press drags there over ms, default 700 — a piece pulled onto a board; a soft dot marks each)",
+              "press drags there over ms, default 700 — a piece pulled onto a board; a soft dot marks each); "
+              "expect optional (a JavaScript expression true once the presses did what the line says: "
+              "SCENES.bakery.rollDone; still false, the beat failed); react optional (seconds, up to 6, the "
+              "camera stays on the game after the last press so its answer is seen before the cut)",
     "live_answer": "input_text, wait_for_text optional (words the answer must have), timeout optional (seconds, "
                    "default 120), url optional (default: the page before): sends offscreen, waits until the "
                    "answer stops growing, shows it; camera optional (1-2.5, default 1.5)",
@@ -141,6 +144,8 @@ ANSWER_POLL_SECONDS = 0.5
 EXPECT_SECONDS = 4.0
 EXPECT_POLL_SECONDS = 0.25
 EXPECT_MAX_CHARS = 300
+# A beat's react: seconds the camera stays on the game after the last press.
+REACT_MAX_SECONDS = 6.0
 SIGN_IN_TIMEOUT_MS = 30000
 IMAGE_READY = "image ready"
 IMAGE_FAILED = "image failed"
@@ -228,6 +233,12 @@ class StoryBeat(BaseModel):
                     "rehearsal says so, a shoot reports it failed so it is retaken. For a canvas game, where "
                     "there are no words to wait for.",
     )
+    react: float | None = Field(
+        default=None, ge=0, le=REACT_MAX_SECONDS,
+        description="system with taps: seconds the camera stays on the page after the last press, however "
+                    "soon the line ends, so what the press sets off is seen before the cut: a card that flies "
+                    "in, an oven that bakes. 1.5-3 for an animation; left out, the beat ends with its line.",
+    )
     timeout: float = Field(default=120, ge=1, le=OFFSCREEN_WAIT_MAX_MS / 1000)
 
 
@@ -254,6 +265,12 @@ def beats_json_schema() -> dict[str, Any]:
                      "description": "system: words of the line; as they are said the camera pushes in 8 % "
                                     "toward wait_for_text. Once or twice a film, on the word that carries the point"},
         "timeout": {"type": "number", "minimum": 1, "maximum": OFFSCREEN_WAIT_MAX_MS / 1000},
+        "expect": {"type": "string", "maxLength": EXPECT_MAX_CHARS,
+                   "description": "system: a JavaScript expression true once the presses did what the line says "
+                                  "(SCENES.bakery.rollDone); still false 4 s after them, the beat failed"},
+        "react": {"type": "number", "minimum": 0, "maximum": REACT_MAX_SECONDS,
+                  "description": "system with taps: seconds the camera stays on the page after the last press, "
+                                 "so the game's answer to it (a card flying in) is seen before the cut"},
         "start": {"type": "array",
                   "description": "system: presses done offscreen after the page opens (a start screen): a "
                                  "button's text, or {x, y} as fractions of the screen",
@@ -342,7 +359,10 @@ def film_language(beats: list[dict]) -> str:
 
 
 def beat_seconds(beat: dict) -> float:
-    return max(line_seconds(beat.get("line", ""), beat.get("language", "en")),
+    line = line_seconds(beat.get("line", ""), beat.get("language", "en"))
+    # The last press lands at about four fifths of the line; react runs from there.
+    reacted = line * 0.8 + float(beat.get("react") or 0) if beat.get("taps") and beat.get("react") else 0.0
+    return max(line, reacted,
                SHOT_MIN_SECONDS.get(beat["shot"], DEFAULT_MIN_SECONDS if beat.get("line") else 0.0))
 
 
@@ -453,6 +473,10 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
             elif len(beat["expect"]) > EXPECT_MAX_CHARS:
                 items.append(_item(number, label, "fix", "long_expect",
                                    f"expect is one expression of {EXPECT_MAX_CHARS} characters at most"))
+        if beat.get("react") and not beat.get("taps"):
+            items.append(_item(number, label, "warn", "react_not_used",
+                               "react keeps the camera on the page after a beat's last press: this beat has no "
+                               "taps, so it ends with its line"))
         for name in ("start", "taps"):
             if beat.get(name) and shot != "system":
                 items.append(_item(number, label, "warn", f"{name}_not_used",
@@ -1045,15 +1069,19 @@ def _start(presses: list | None) -> list[dict]:
     return ops
 
 
-def _play(line: str, taps: list, language: str = "en") -> dict:
+def _play(line: str, taps: list, language: str = "en", react: float | None = None) -> dict:
     """The beat's narrated step on a page played on camera: the presses
-    spread over the line, the last one done before it ends."""
+    spread over the line, the last one done before it ends, and with react
+    the camera on the page that long after it."""
     points = [_point(tap) for tap in taps]
     # A drag takes its move's time even when it names none.
     held_ms = sum(point.get("ms") or (DRAG_MS if "to_x" in point else 0) for point in points)
     line_ms = line_seconds(line, language) * 1000
     gap = (line_ms * 0.8 - held_ms) / max(1, len(points))
-    return _act({"type": "tap", "points": points, "ms": int(min(2000, max(250, gap)))}, line)
+    tap: dict[str, Any] = {"type": "tap", "points": points, "ms": int(min(2000, max(250, gap)))}
+    if react:
+        tap["then_ms"] = int(react * 1000)
+    return _act(tap, line)
 
 
 def glide_ms(line: str, language: str = "en") -> int:
@@ -1165,7 +1193,7 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             # before failed, or the shoot was taken up again.
             ops = [{"op": "stay", "url": beat["url"], "open": ops}]
         if beat.get("taps"):
-            said = _play(line, beat["taps"], beat.get("language", "en"))
+            said = _play(line, beat["taps"], beat.get("language", "en"), beat.get("react"))
         elif wait_text:
             said = _found(line, wait_text)
         else:
