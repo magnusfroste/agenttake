@@ -47,6 +47,53 @@ def test_sound_first_is_heard_to_the_end_and_then_commented_on():
     assert boards.beat_seconds(beats[0]) == pytest.approx(line + page_sound.FIRST_ESTIMATE_SECONDS + 1)
 
 
+def test_listen_caps_how_long_the_page_is_heard_before_the_line():
+    # Door 1 plays Tomten's greeting (8.5 s) and then the day's voice: the
+    # beat listened to both, 20.6 s in all, in the first proof film.
+    beats, items = boards.parse_storyboard([{**DOOR, "sound": "first", "listen": 9}])
+    assert not [item for item in items if item["severity"] == "fix"], items
+    heard = next(op for op in boards.recipe(beats[0]) if op.get("action", {}).get("until_quiet"))
+    assert heard["action"]["listen_ms"] == 9000
+    line = boards.line_seconds(DOOR["line"], beats[0].get("language", "en"))
+    assert boards.beat_seconds(beats[0]) == pytest.approx(line + 9)
+    assert "listen" in boards.beats_json_schema()["properties"]
+    # Only a sound first beat listens; longer than the wait is refused.
+    _, items = boards.parse_storyboard([{**DOOR, "sound": "under", "listen": 5}])
+    assert any(item["category"] == "listen_not_used" for item in items)
+    _, items = boards.parse_storyboard([{**DOOR, "sound": "first", "listen": 30}])
+    assert any(item["severity"] == "fix" for item in items)
+
+
+def test_wait_quiet_stops_at_its_limit_while_the_page_still_plays():
+    async def run(page):
+        await page.evaluate("""() => {
+          const c = new AudioContext(); const o = c.createOscillator();
+          o.connect(c.destination); o.start();
+        }""")
+        return await page_sound.wait_quiet(page, 1200)
+
+    assert 1.1 <= _chromium(run) < 2.0
+
+
+def test_a_heard_step_is_not_reported_as_a_still_picture():
+    from reel_studio import review
+
+    frame = bytes(((x // 3 + y // 3) % 2) * 180 + 30 for y in range(review.DETAIL_HEIGHT)
+                  for x in range(review.DETAIL_WIDTH))
+    frames = [frame] * int(16 * review.SCAN_FPS)
+    steps = [{"idx": 0, "action_type": "tap", "offset_seconds": 1.0, "offscreen": False, "narration_text": "",
+              "sound": "full"},
+             {"idx": 1, "action_type": "wait", "offset_seconds": 14.0, "offscreen": False,
+              "narration_text": "Där hör ni.", "sound": "under"}]
+    parts = [{"kind": "step", "step": 0, "start": 0.0, "duration": 12.0},
+             {"kind": "step", "step": 1, "start": 12.0, "duration": 4.0}]
+    stills = lambda found: [item for item in found if item["category"] == "long_still"]
+    assert not stills(review.film_findings(frames, parts, steps))
+    # The same picture without the page heard is still for 16 s.
+    silent = [{**step, "sound": ""} for step in steps]
+    assert [item["severity"] for item in stills(review.film_findings(frames, parts, silent))] == ["medium"]
+
+
 def test_what_sound_will_not_do():
     _, items = boards.parse_storyboard([{**DOOR, "taps": None, "sound": "first"}])
     assert [item["severity"] for item in items if item["category"] == "sound_first_without_taps"] == ["fix"]
