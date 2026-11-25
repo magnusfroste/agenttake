@@ -1,7 +1,7 @@
 ---
 name: film-director
 description: Direct sourced short films in AgentTake from storyboards.
-version: 0.16.1
+version: 0.16.2
 author: Magnus Froste (magnusfroste), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -102,8 +102,9 @@ Don't use for:
    makes the line a comment on it; either way the page goes down under your
    voice and comes back up when you stop, as a presenter brings a clip up
    and under; when the page goes on after what you
-   comment on (a greeting, then more), `listen` is the seconds heard before
-   the line. `probe` and `rehearse_beats` list what the page played, so you
+   comment on (a greeting, then more), `listen` is about the seconds heard
+   before the line: Take listens and comes in at the page's next pause, as a
+   person waits for the end of a sentence, so it need not be exact. `probe` and `rehearse_beats` list what the page played, so you
    know what you are commenting on. Save them with `write_file` to
    `storyboard.json` in your working directory. Retakes must reuse identical
    lines: AgentTake reuses the voice clip of an unchanged line, so a retake

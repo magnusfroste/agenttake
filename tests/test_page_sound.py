@@ -380,3 +380,101 @@ def test_the_film_is_set_to_its_loudness_with_its_peaks_limited_and_in_time(tmp_
     assert loudest / 24000 == pytest.approx(2.0, abs=0.02)
     from reel_studio.render import probe_duration
     assert probe_duration(film) == pytest.approx(6.0, abs=0.1)
+
+
+def test_a_pause_is_heard_after_sound_and_not_in_silence_or_a_word():
+    windows = lambda pattern, start=0.0: [(start + index * page_sound.EAR_WINDOW, level)
+                                          for index, level in enumerate(pattern)]
+    speech = [-20.0, -24.0, -21.0, -48.0, -22.0] * 8  # one 50 ms gap between words
+    breath = [-60.0] * 7
+    assert not page_sound.paused(windows(speech), len(speech) * page_sound.EAR_WINDOW)
+    levels = windows(speech + breath)
+    assert page_sound.paused(levels, len(levels) * page_sound.EAR_WINDOW)
+    # Nothing heard yet: no pause to come in at.
+    assert not page_sound.paused(windows([-90.0] * 20), 1.0)
+    assert page_sound.window_db([16384] * 400) == pytest.approx(-6.0, abs=0.1)
+
+
+class _Page:
+    def __init__(self, playing):
+        self.playing = playing
+
+    async def evaluate(self, script, *args):
+        return self.playing()
+
+    async def wait_for_timeout(self, ms):
+        await asyncio.sleep(ms / 1000)
+
+
+class _Ear:
+    """Speech that pauses for a breath 1.5 s in, and again 3.0 s in."""
+
+    def __init__(self):
+        import time
+        self.started = time.monotonic()
+
+    def since(self, started):
+        import time
+        now = time.monotonic()
+        levels, at = [], self.started
+        while at <= now:
+            t = at - self.started
+            levels.append((at, -60.0 if 1.5 <= t < 1.9 or 3.0 <= t < 3.4 else -20.0))
+            at += page_sound.EAR_WINDOW
+        return [entry for entry in levels if entry[0] >= started]
+
+
+def test_with_listen_the_line_comes_in_at_the_first_pause_after_it():
+    page = _Page(lambda: 1)
+    # Listen 2 s: the breath at 1.5 s is too early, the one at 3.0 s is it.
+    waited = asyncio.run(page_sound.wait_heard(page, _Ear(), 2000))
+    assert waited["ended"] == "pause"
+    assert 3.2 <= waited["seconds"] <= 3.5
+    # Without an ear, listen is where the line comes in.
+    waited = asyncio.run(page_sound.wait_heard(page, None, 1000))
+    assert waited["ended"] == "limit" and waited["seconds"] == pytest.approx(1.0, abs=0.15)
+    # Without listen, the page is heard to its end.
+    waited = asyncio.run(page_sound.wait_heard(_Page(lambda: 0), _Ear(), 0))
+    assert waited["ended"] == "quiet"
+
+
+@needs_ffmpeg
+def test_a_line_over_the_page_still_speaking_is_found(tmp_path):
+    from reel_studio import review
+
+    _tone(tmp_path / page_sound.CAPTURE_FILE, 8, "lt(t,3)")
+    page_sound.record_span(tmp_path, page_sound.CAPTURE_FILE, 0.0, 0.0)
+    steps = [{"idx": 0, "offset_seconds": 0.5, "sound": "full", "narration_duration": 0.0},
+             {"idx": 1, "offset_seconds": 2.0, "narration_duration": 2.0}]
+    found = review.talk_over_findings(tmp_path, steps)
+    assert [finding["category"] for finding in found] == ["talks_over_page"]
+    assert found[0]["location"] == "step[1]"
+    steps[1]["offset_seconds"] = 3.5
+    assert review.talk_over_findings(tmp_path, steps) == []
+
+
+def test_the_ear_hears_the_sink(tmp_path):
+    import time
+
+    if not page_sound.available() or not shutil.which("paplay") or not shutil.which("parec"):
+        pytest.skip("no PulseAudio")
+    opened = page_sound.open_sink("eartest")
+    if opened is None:
+        pytest.skip("no PulseAudio server")
+    sink, module = opened
+    tone = tmp_path / "tone.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=1", "-ac", "2", "-ar",
+                    "48000", str(tone)], check=True)
+    try:
+        ear = page_sound.open_ear(sink)
+        assert ear is not None
+        started = time.monotonic()
+        time.sleep(0.5)
+        subprocess.run(["paplay", "-d", sink, str(tone)], check=True, timeout=20)
+        time.sleep(0.6)
+        ear.close()
+    finally:
+        page_sound.close_sink(module)
+    levels = ear.since(started)
+    assert max(level for _, level in levels) > -35
+    assert page_sound.paused(levels, levels[-1][0])

@@ -484,6 +484,31 @@ def lost_step_findings(parts: Sequence[dict], steps: Sequence[dict]) -> list[dic
       if position not in placed and (step.get("narration_text") or "").strip()]
 
 
+def talk_over_findings(directory: Path, steps: Sequence[dict]) -> list[dict]:
+    """A line that comes in while the page it comments on still speaks: the
+    narrator talking over Tomten, where a person would wait for the pause."""
+    from . import sound as page_sound
+
+    timed = [step for step in steps if step.get("offset_seconds") is not None]
+    findings: list[dict] = []
+    for heard, line in zip(timed, timed[1:]):
+        if heard.get("sound") != "full" or not float(line.get("narration_duration") or 0):
+            continue
+        measured = page_sound.talk_over(directory, float(heard["offset_seconds"]), float(line["offset_seconds"]))
+        if not measured or not measured["over"]:
+            continue
+        below = measured["loud_db"] - measured["page_db"]
+        findings.append({
+            "category": "talks_over_page", "severity": "medium", "location": f"step[{line.get('idx', 0)}]",
+            "measured": measured,
+            "message": f"The line comes in while the page still speaks: {below:.0f} dB under its level "
+                       "while it was heard, so the narrator talks over it.",
+            "fix": "Give the beat listen about where the page has said what the line comments on; the line then "
+                   "comes in at the page's next pause. Or leave listen out, and the page is heard to its end.",
+        })
+    return findings
+
+
 def film_findings(frames: Sequence[bytes], parts: Sequence[dict], steps: Sequence[dict],
                   fps: int = SCAN_FPS, holds: dict[int, list[float]] | None = None) -> list[dict]:
     """What shows only in the moving picture: a page that had not loaded, a
