@@ -398,3 +398,19 @@ def test_an_auto_title_before_an_opening_card_stands_on_the_films_footage(tmp_pa
     intro = result.timeline[0]
     red, green, blue = _rgb(result.path, intro["duration"] / 2, "iw*0.2:ih*0.2:0:0")
     assert blue > red and blue > green, (red, green, blue)
+
+
+def test_the_closing_qr_stands_above_the_small_print_in_every_format():
+    # In a portrait film the small print ("Directed and narrated by an AI
+    # agent") runs the card's width, and a QR in the corner covered it.
+    for width, height in ((1080, 1920), (1080, 1350), (1920, 1080), (720, 1280)):
+        bottom, size = render.small_print_metrics(height)
+        for lines in (1, 2):
+            x, y, side = render.qr_box(width, height, lines)
+            top_of_small_print = height - bottom - lines * size * 1.5
+            assert y + side < top_of_small_print, (width, height, lines)
+            assert y > height // 2 and x + side < width
+        # Without small print the QR keeps its corner.
+        margin = max(24, int(height * 0.06))
+        x, y, side = render.qr_box(width, height, 0)
+        assert (x + side, y + side) == (width - margin, height - margin)
