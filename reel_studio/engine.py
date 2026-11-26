@@ -2089,7 +2089,7 @@ class BrowserSession:
             "in_viewport": await self._box_in_viewport(box),
         }
 
-    async def _text_box(self, text: str) -> dict | None:
+    async def _press_box(self, text: str) -> dict | None:
         """Where the visible element showing ``text`` is, exactly first
         (a button "1" among "1", "7", "10"), then containing it."""
         for exact in (True, False):
@@ -2246,7 +2246,7 @@ class BrowserSession:
                     if point.text:
                         # The button that shows the words, where the page
                         # put it this time.
-                        box = await self._text_box(point.text)
+                        box = await self._press_box(point.text)
                         if box is None:
                             return await self.error_result(
                                 "element_not_found", f"No visible button shows {point.text!r} to press")

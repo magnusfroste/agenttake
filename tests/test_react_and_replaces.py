@@ -192,3 +192,17 @@ def test_a_tap_presses_a_button_by_its_text_wherever_the_page_put_it(tmp_path):
     with pytest.raises(Exception):
         TapPoint(y=0.5)
     assert TapPoint(text="1").text == "1"
+
+
+def test_the_engine_has_one_method_of_each_name():
+    """A tap's text lookup was named as an older method and replaced it, so
+    every beat framed on words failed (skolappar video 1 take 5, 2026-11-26)."""
+    import ast
+    import inspect
+    from reel_studio import engine
+
+    tree = ast.parse(inspect.getsource(engine))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            names = [item.name for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            assert len(names) == len(set(names)), {name for name in names if names.count(name) > 1}
