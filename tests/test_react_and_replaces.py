@@ -166,3 +166,29 @@ def test_what_replaces_will_not_name(client, tmp_path):
         answer = http.post(f"/api/videos/{take}/approve?{query}", headers=_auth())
         assert answer.status_code == 400 and answer.json()["reason"] == "invalid_replaces", query
     assert http.post(f"/api/videos/{take}/approve?replaces={take}").status_code == 401
+
+
+def test_a_tap_presses_a_button_by_its_text_wherever_the_page_put_it(tmp_path):
+    """Tiokamrater shuffles its answers: a point hit a different one each
+    time (skolappar video 1, 2026-11-26)."""
+    from reel_studio.schema import Action, TapPoint
+
+    page_html = ("<div style='display:flex;gap:8px;padding:40px'>"
+                 + "".join(f"<button style='width:120px;height:60px' onclick=\"window.hit='{n}'\">{n}</button>"
+                           for n in ("7", "10", "1", "9"))
+                 + "</div>")
+
+    async def scenario(page):
+        session = _browser_session(page, tmp_path)
+        pressed, _ = await session.act(Action(type="tap", points=[{"text": "1"}], settle_ms=0))
+        hit = await page.evaluate("window.hit")
+        missing, _ = await session.act(Action(type="tap", points=[{"text": "42"}], settle_ms=0))
+        return pressed, hit, missing
+
+    pressed, hit, missing = _in_browser(page_html, scenario)
+    # Exactly "1", not "10".
+    assert hit == "1", pressed
+    assert not missing["ok"] and missing["error"]["type"] == "element_not_found"
+    with pytest.raises(Exception):
+        TapPoint(y=0.5)
+    assert TapPoint(text="1").text == "1"
