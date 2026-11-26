@@ -370,6 +370,29 @@ def _count_up_expression(value: int) -> str:
     return f"%{{eif\\:min({value},floor({start}+({value - start})*{progress}))\\:d}}"
 
 
+def small_print_metrics(height: int) -> tuple[int, int]:
+    """Where a card's small print sits: its gap from the foot and its size."""
+    return max(20, height // 24), max(16, height // 40)
+
+
+def small_print_top(height: int, lines: int) -> int:
+    """How far above the card's foot its small print reaches (0 without any)."""
+    if lines <= 0:
+        return 0
+    bottom, size = small_print_metrics(height)
+    return bottom + round(lines * size * 1.5) + size // 2
+
+
+def qr_box(width: int, height: int, small_lines: int = 0) -> tuple[int, int, int]:
+    """The closing card's QR code: x, y and side, in the bottom-right corner
+    but always above the small print, which runs across the card's foot (in
+    a portrait film it is as wide as the card, so a QR at the corner hid it)."""
+    side = max(96, int(height * 0.22)) // 2 * 2
+    margin = max(24, int(height * 0.06))
+    lift = max(margin, small_print_top(height, small_lines))
+    return width - side - margin, height - side - lift, side
+
+
 def card_filters(
     width: int,
     height: int,
@@ -426,8 +449,7 @@ def card_filters(
             f"drawbox=x=(iw-{length})/2:y={round(bottom_of_text + 0.6 * last_size)}:w={length}:h={thickness}:"
             f"color={signature.accent}@0.95:t=fill"
         )
-    bottom = max(20, height // 24)
-    size = max(16, height // 40)
+    bottom, size = small_print_metrics(height)
     for index, text in enumerate(line for line in small_print if line.strip()):
         filters.append(
             "drawtext="
@@ -513,14 +535,13 @@ def make_qr(url: str, output: Path) -> Path | None:
     return output if output.is_file() else None
 
 
-def _overlay_qr(card: Path, qr: Path, width: int, height: int) -> None:
-    """Put the QR code in the closing card's bottom-right corner."""
-    side = max(96, int(height * 0.22)) // 2 * 2
-    margin = max(24, int(height * 0.06))
+def _overlay_qr(card: Path, qr: Path, width: int, height: int, small_lines: int = 0) -> None:
+    """Put the QR code in the closing card's bottom-right corner, above its small print."""
+    x, y, side = qr_box(width, height, small_lines)
     out = card.with_name(card.stem + "-qr.mp4")
     result = subprocess.run(
         ["ffmpeg", "-loglevel", "error", "-y", "-i", str(card), "-i", str(qr),
-         "-filter_complex", f"[1:v]scale={side}:{side}:flags=neighbor[q];[0:v][q]overlay=W-w-{margin}:H-h-{margin}",
+         "-filter_complex", f"[1:v]scale={side}:{side}:flags=neighbor[q];[0:v][q]overlay={x}:{y}",
          "-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "25", str(out)],
     )
     if result.returncode == 0 and out.is_file():
@@ -582,6 +603,8 @@ def shown_address(url: str) -> str:
 
 def _closing_card(outro: Path, width: int, height: int, config: RenderConfig, background: Path | None, temporary: Path) -> None:
     signature = sig.current()
+    small_print = [line for line in (signature.ai_label, signature.signature_line if config.signed else "")
+                   if line and line.strip()]
     _card(
         outro, width, height, (signature.ink or config.accent) if background is None else config.accent,
         [
@@ -596,12 +619,12 @@ def _closing_card(outro: Path, width: int, height: int, config: RenderConfig, ba
         text_colour=signature.paper,
         # The house signs its film: its line and the AI label, small, at
         # the foot of the closing card, on every film the instance makes.
-        small_print=[line for line in (signature.ai_label, signature.signature_line if config.signed else "") if line],
+        small_print=small_print,
     )
     if config.closing_qr:
         qr = make_qr(config.cta_url.strip(), temporary / "closing-qr.png")
         if qr is not None:
-            _overlay_qr(outro, qr, width, height)
+            _overlay_qr(outro, qr, width, height, len(small_print))
 
 
 def _compose_video(
