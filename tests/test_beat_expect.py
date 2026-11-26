@@ -131,3 +131,44 @@ def test_a_rehearsal_runs_on_a_slowed_page_by_default(monkeypatch):
     assert asyncio.run(server._slow_down(SimpleNamespace(page=None), 1.0)) is False
     # A page that cannot be slowed (no Chromium devtools) is rehearsed as it is.
     assert asyncio.run(server._slow_down(SimpleNamespace(page=SimpleNamespace()), 4.0)) is False
+
+
+def test_setup_runs_a_page_hook_offscreen_before_the_camera_rolls():
+    """Klockan asks for a random hour; its own hook fixes it, so the drag on
+    camera sets the time the line says (skolappar video 1, 2026-11-26)."""
+    from reel_studio import storyboard as boards
+
+    beat = {"shot": "system", "url": "https://klockan.example/", "setup": "window.__kl.setTask(7, 0)",
+            "taps": [{"x": 0.3, "y": 0.6, "to_x": 0.37, "to_y": 0.66}], "line": "Ställ klockan på sju."}
+    beats, items = boards.parse_storyboard([beat])
+    assert not [item for item in items if item["severity"] == "fix"], items
+    ops = boards.recipe(beats[0])
+    kinds = [op["op"] for op in ops]
+    assert "setup" in kinds and kinds.index("setup") < kinds.index("shot")
+    assert ops[kinds.index("setup")]["js"] == "window.__kl.setTask(7, 0)"
+
+    class Page:
+        def __init__(self, answer):
+            self.answer, self.ran = answer, []
+
+        async def evaluate(self, script):
+            self.ran.append(script)
+            return self.answer
+
+    class Session:
+        def __init__(self, answer):
+            self.page = Page(answer)
+
+    async def never(*_):
+        raise AssertionError("no action should run")
+
+    import asyncio
+    setup_only = [op for op in ops if op["op"] == "setup"]
+    ok = asyncio.run(boards.run_ops(Session({"ok": True}), "s", setup_only, never))
+    assert ok["ok"]
+    failed = asyncio.run(boards.run_ops(Session({"ok": False, "error": "TypeError: __kl is undefined"}), "s",
+                                        setup_only, never))
+    assert not failed["ok"] and failed["reason"].startswith("setup_failed")
+    # Only a system shot has a page to set up.
+    _, items = boards.parse_storyboard([{"shot": "card", "text": "A", "line": "A.", "setup": "x()"}])
+    assert "setup_not_used" in {item["category"] for item in items}
