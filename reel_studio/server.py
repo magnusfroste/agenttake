@@ -3200,11 +3200,21 @@ async def edit_beat(
     beats = _plan_beats(plan)
     if not 1 <= beat <= len(beats):
         return {"ok": False, "error": {"type": "unknown_beat", "message": f"beat is 1-{len(beats)}"}}
+    changed = dict(beats[beat - 1])
     for key, value in changes.items():
         if value is None:
-            beats[beat - 1].pop(key, None)
+            changed.pop(key, None)
         else:
-            beats[beat - 1][key] = value
+            changed[key] = value
+    # A beat that does not parse is dropped from a plan, takes and all: a
+    # press held 10 s (the most is 5) took video 1's tracks beat out of its
+    # finished film (skolappar, 2026-11-26). Refuse the change instead.
+    _, items = boards.parse_storyboard([changed])
+    invalid = [item for item in items if item["category"] == "invalid_beat"]
+    if invalid:
+        return {"ok": False, "error": {"type": "invalid_beat", "message": "; ".join(item["message"] for item in invalid)},
+                "hint": "Nothing was changed: the beat is as it was. Fix the field and edit_beat again."}
+    beats[beat - 1] = changed
     result = await plan_storyboard(beats, plan_id=plan["plan_id"], target_seconds=int(plan.get("target_seconds") or 60))
     if not result.get("ok"):
         return result
