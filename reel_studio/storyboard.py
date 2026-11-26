@@ -79,6 +79,8 @@ SHOT_FIELDS: dict[str, str] = {
               "drawn one); taps optional (presses on camera while the line plays: a list of {x, y, ms}, "
               "fractions of the screen, ms holds a press — a key played, a pedal held; with to_x and to_y a "
               "press drags there over ms, default 700 — a piece pulled onto a board; a soft dot marks each); "
+              "setup optional (a JavaScript statement run offscreen before the camera rolls: a game's own "
+              "hook to fix a random task, window.__kl.setTask(7, 0)); "
               "expect optional (a JavaScript expression true once the presses did what the line says: "
               "SCENES.bakery.rollDone; still false, the beat failed); react optional (seconds, up to 6, the "
               "camera stays on the game after the last press so its answer is seen before the cut); sound "
@@ -229,6 +231,14 @@ class StoryBeat(BaseModel):
                     "(default 700). For a page with nothing to name: a canvas game. {text} presses the button "
                     "that shows those words, wherever it is: answers a page shuffles.",
     )
+    setup: str | None = Field(
+        default=None,
+        description="system: a JavaScript statement run in the page offscreen, after the start presses and "
+                    "before the camera rolls: a game's own hook to fix what it would draw at random, so the "
+                    "line and the presses fit it (window.__kl.setTask(7, 0): Klockan asks for seven), or "
+                    "Math.random held for one call (Tiokamrater: always 9 + ? = 10). It changes only the "
+                    "filmed browser, never the page itself; never use it to show what a real user would not see.",
+    )
     expect: str | None = Field(
         default=None,
         description="system: a JavaScript expression that is true once the beat's presses did what the line "
@@ -285,6 +295,9 @@ def beats_json_schema() -> dict[str, Any]:
                      "description": "system: words of the line; as they are said the camera pushes in 8 % "
                                     "toward wait_for_text. Once or twice a film, on the word that carries the point"},
         "timeout": {"type": "number", "minimum": 1, "maximum": OFFSCREEN_WAIT_MAX_MS / 1000},
+        "setup": {"type": "string", "maxLength": EXPECT_MAX_CHARS,
+                  "description": "system: a JavaScript statement run offscreen after the start presses: a "
+                                 "game's own hook to fix a random task (window.__kl.setTask(7, 0))"},
         "expect": {"type": "string", "maxLength": EXPECT_MAX_CHARS,
                    "description": "system: a JavaScript expression true once the presses did what the line says "
                                   "(SCENES.bakery.rollDone); still false 4 s after them, the beat failed"},
@@ -498,6 +511,14 @@ def parse_storyboard(raw: list | None) -> tuple[list[dict], list[dict]]:
                     items.append(_item(number, label, "fix", "nothing_to_point_at",
                                        f"{name} points at wait_for_text, and this beat has none: give the "
                                        "words it should point at, or leave it out"))
+        if beat.get("setup"):
+            if shot != "system":
+                items.append(_item(number, label, "warn", "setup_not_used",
+                                   f"setup runs on a system shot's page before its presses: a {shot} shot "
+                                   "has none"))
+            elif len(beat["setup"]) > EXPECT_MAX_CHARS:
+                items.append(_item(number, label, "fix", "long_setup",
+                                   f"setup is one statement of {EXPECT_MAX_CHARS} characters at most"))
         if beat.get("expect"):
             if shot != "system":
                 items.append(_item(number, label, "warn", "expect_not_used",
@@ -1255,6 +1276,9 @@ def recipe(beat: dict, retake: bool = False) -> list[dict]:
             # Opened all the same if the browser is somewhere else: the beat
             # before failed, or the shoot was taken up again.
             ops = [{"op": "stay", "url": beat["url"], "open": ops}]
+        if beat.get("setup"):
+            # Whether the page was opened or stayed on.
+            ops.append({"op": "setup", "js": beat["setup"]})
         sound = beat.get("sound")
         if beat.get("taps") and sound == "first":
             said = _heard_first(line, beat["taps"], beat.get("react"), beat.get("listen"))
@@ -1484,6 +1508,13 @@ def _with_answer(op: dict, answer: str) -> dict:
 
 # Compiled by the browser's devtools, not eval, so a page whose CSP forbids
 # eval is read too, in its own global scope.
+SETUP_JS = """() => {
+  try { %s; } catch (e) { return {ok: false, error: String(e).slice(0, 200)}; }
+  return {ok: true};
+}"""
+# After a setup the page redraws what it was told.
+SETUP_SETTLE_SECONDS = 0.6
+
 EXPECT_JS = """() => {
   let value;
   try { value = (%s); } catch (e) { return {met: false, value: "an error: " + e}; }
@@ -1535,6 +1566,17 @@ async def run_ops(session: Any, session_id: str, ops: list[dict], run_action: Ru
             continue
         if kind == "answer_start":
             before = await session.page_text()
+            continue
+        if kind == "setup":
+            try:
+                done = await session.page.evaluate(SETUP_JS % op["js"])
+            except Exception as exc:  # a page that navigated away
+                done = {"ok": False, "error": str(exc).splitlines()[0][:200]}
+            if not done.get("ok"):
+                return {"ok": False, "op": number, "notes": notes,
+                        "reason": f"setup_failed: {op['js']!r} threw {done.get('error')}: check the hook's "
+                                  "name with probe(read=[...]) on the page"}
+            await asyncio.sleep(SETUP_SETTLE_SECONDS)
             continue
         if kind == "expect":
             met, value, seconds = await read_expect(session.page, op["js"], op.get("seconds", EXPECT_SECONDS))
