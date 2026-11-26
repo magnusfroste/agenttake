@@ -2089,6 +2089,26 @@ class BrowserSession:
             "in_viewport": await self._box_in_viewport(box),
         }
 
+    async def _text_box(self, text: str) -> dict | None:
+        """Where the visible element showing ``text`` is, exactly first
+        (a button "1" among "1", "7", "10"), then containing it."""
+        for exact in (True, False):
+            found = self.page.get_by_text(text, exact=exact)
+            try:
+                count = await found.count()
+            except Exception:
+                continue
+            for index in range(min(count, 20)):
+                candidate = found.nth(index)
+                try:
+                    if await candidate.is_visible():
+                        box = await candidate.bounding_box()
+                        if box and box["width"] > 0 and box["height"] > 0:
+                            return box
+                except Exception:
+                    continue
+        return None
+
     async def error_result(self, error_type: str, message: str) -> tuple[dict, Path | None]:
         screenshot: Path | None = None
         try:
@@ -2223,6 +2243,14 @@ class BrowserSession:
                     if index:
                         await self.page.wait_for_timeout(action.ms or TAP_GAP_MS)
                     x, y = point.x * width, point.y * height
+                    if point.text:
+                        # The button that shows the words, where the page
+                        # put it this time.
+                        box = await self._text_box(point.text)
+                        if box is None:
+                            return await self.error_result(
+                                "element_not_found", f"No visible button shows {point.text!r} to press")
+                        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
                     await self.page.mouse.move(x, y)
                     if glide_started_at is None:
                         glide_started_at = time.monotonic() - self.t0

@@ -226,7 +226,8 @@ class StoryBeat(BaseModel):
         default=None,
         description="system: presses on camera while the line plays, spread over it: {x, y, ms} as fractions "
                     "of the screen, ms holding a press (a pedal); with to_x, to_y the press drags there over ms "
-                    "(default 700). For a page with nothing to name: a canvas game.",
+                    "(default 700). For a page with nothing to name: a canvas game. {text} presses the button "
+                    "that shows those words, wherever it is: answers a page shuffles.",
     )
     expect: str | None = Field(
         default=None,
@@ -303,7 +304,8 @@ def beats_json_schema() -> dict[str, Any]:
                   "items": {"anyOf": [{"type": "string"}, tap_points_json_schema()["items"]]}},
         "taps": {**tap_points_json_schema(),
                  "description": "system: presses on camera spread over the line: {x, y, ms}, fractions of the "
-                                "screen; ms holds a press"},
+                                "screen; ms holds a press; {text} presses the button showing those words, "
+                                "wherever the page put it (answers it shuffles)"},
     }
     for name in ("url", "wait_for_text", "text", "background", "caption", "publication", "date", "username",
                  "password_secret", "input_text", "until_text"):
@@ -1097,7 +1099,7 @@ def _say(line: str, wait_for_text: str | None = None) -> dict:
 
 def _point(press: Any) -> dict:
     point = press.model_dump() if isinstance(press, BaseModel) else dict(press)
-    return {k: point[k] for k in ("x", "y", "ms", "to_x", "to_y") if point.get(k) is not None}
+    return {k: point[k] for k in ("x", "y", "ms", "to_x", "to_y", "text") if point.get(k) is not None}
 
 
 def _start(presses: list | None) -> list[dict]:

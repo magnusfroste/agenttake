@@ -26,12 +26,25 @@ class TapPoint(BaseModel):
     With to_x and to_y the press is a drag: it goes down at x, y, moves to
     to_x, to_y over ms (700 when left out) and lets go there. A canvas game
     builds by dragging: Rännan's sticks are pulled from a tray onto the grid,
-    and a tap could not move one (skolappar.com, 2026-11-24)."""
-    x: float = Field(ge=0.0, le=1.0)
-    y: float = Field(ge=0.0, le=1.0)
+    and a tap could not move one (skolappar.com, 2026-11-24).
+
+    With text the press lands on the middle of the button that shows it,
+    wherever the page put it: Tiokamrater shuffles its answers, so the
+    right one was never at the same point twice (skolappar video 1,
+    2026-11-26). x and y are then not needed."""
+    x: float = Field(default=0.5, ge=0.0, le=1.0)
+    y: float = Field(default=0.5, ge=0.0, le=1.0)
+    text: str | None = Field(default=None, min_length=1, max_length=80)
     ms: int = Field(default=0, ge=0, le=TAP_HOLD_MAX_MS)
     to_x: float | None = Field(default=None, ge=0.0, le=1.0)
     to_y: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _a_point_or_a_text(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("text") is None and ("x" not in value or "y" not in value):
+            raise ValueError("a press needs x and y, fractions of the screen, or the text of a button")
+        return value
 
     @model_validator(mode="after")
     def _a_drag_has_both_ends(self) -> "TapPoint":
@@ -197,10 +210,12 @@ def tap_points_json_schema() -> dict[str, Any]:
     return {
         "type": "array", "minItems": 1,
         "description": "tap only: where to press, as fractions of the screen; ms holds the press; "
-                       "to_x and to_y make it a drag to there over ms",
+                       "to_x and to_y make it a drag to there over ms; text presses the button showing "
+                       "those words wherever it is (then no x, y)",
         "items": {
-            "type": "object", "required": ["x", "y"],
+            "type": "object",
             "properties": {
+                "text": {"type": "string", "minLength": 1, "maxLength": 80},
                 "x": {"type": "number", "minimum": 0, "maximum": 1},
                 "y": {"type": "number", "minimum": 0, "maximum": 1},
                 "ms": {"type": "integer", "minimum": 0, "maximum": TAP_HOLD_MAX_MS},
