@@ -156,6 +156,15 @@ def test_edit_beat_changes_one_field_only(db, monkeypatch):
     assert beats[1]["line"] == "Changed."
 
 
+def test_edit_beat_refuses_a_change_that_does_not_parse_and_keeps_the_beat(db):
+    """A failed check used to save the plan without the beat (video 1)."""
+    _store_plan()
+    result = asyncio.run(server.edit_beat(2, {"taps": [{"x": 0.3, "y": 0.2, "ms": 10000}]}, plan_id="p1"))
+    assert not result["ok"] and result["error"]["type"] == "invalid_beat"
+    beats = store.get_storyboard("p1")["beats"]
+    assert [beat["label"] for beat in beats] == ["a", "b"] and "taps" not in beats[1]
+
+
 def test_edit_beat_refuses_an_unknown_field(db):
     _store_plan()
     result = asyncio.run(server.edit_beat(1, {"nonsense": 1}, plan_id="p1"))
